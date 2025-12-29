@@ -1,0 +1,29 @@
+INFO:     Started server process [67594]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54489 - "WebSocket /ws?sessionId=08cafb29-6b61-46b4-805c-9ba0438e243a" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:54625 - "WebSocket /ws?sessionId=08cafb29-6b61-46b4-805c-9ba0438e243a" 403
+INFO:     connection closed
+INFO:     127.0.0.1:54626 - "WebSocket /ws?sessionId=08cafb29-6b61-46b4-805c-9ba0438e243a" 403
+INFO:     connection closed
+INFO:     127.0.0.1:54667 - "WebSocket /ws?sessionId=91264a1c-7b1b-4692-852f-2520c6f13e2e" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:55070 - "WebSocket /ws?sessionId=524cc364-13cd-4187-acca-99ba530ed0e7" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:55157 - "WebSocket /ws?sessionId=01e562ec-b591-4b33-862b-0b2418cbdfa9" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:55538 - "WebSocket /ws?sessionId=58030136-7363-4ab4-9581-267d0d3a3306" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:55749 - "WebSocket /ws?sessionId=d9f544c6-4263-49ad-93b7-56f20334a334" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:56173 - "WebSocket /ws?sessionId=35925208-9adb-413a-9c56-363d437ee7a0" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
