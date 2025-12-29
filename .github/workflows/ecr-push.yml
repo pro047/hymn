@@ -75,5 +75,5 @@ jobs:
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy $IMAGE_URI" \
+            --comment "Deploy hymn-api" \
             --parameters commands="cd $WORKDIR && docker compose pull && docker compose up -d"
