@@ -58,12 +58,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      ssm: write
-    env:
-      AWS_REGION: ${{ env.AWS_REGION }}
-      IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
-      TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
-      WORKDIR: /app
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -72,6 +66,11 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy via SSM (docker compose pull && up)
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
+          TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
+          WORKDIR: /app
         run: |
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
