@@ -2,11 +2,8 @@ version: "3.8"
 
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${IMAGE:?Set IMAGE (ECR URI) in .env}
     ports:
       - "8000:8000"
-    environment:
-      # Add env vars as needed, e.g. DATABASE_URL, AWS_REGION, S3_BUCKET
-      APP_ENV: production
+    env_file:
+      - .env

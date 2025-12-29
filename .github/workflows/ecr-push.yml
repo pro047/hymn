@@ -12,6 +12,8 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.build-push.outputs.image }}
     permissions:
       contents: read
       id-token: write
@@ -40,6 +42,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push image
+        id: build-push
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
@@ -48,3 +51,30 @@ jobs:
           docker build -t "${IMAGE_URI}" -f Dockerfile .
           docker push "${IMAGE_URI}"
           echo "image=${IMAGE_URI}" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      ssm: write
+    env:
+      AWS_REGION: ${{ env.AWS_REGION }}
+      IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
+      TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
+      WORKDIR: /app
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy via SSM (docker compose pull && up)
+        run: |
+          aws ssm send-command \
+            --instance-ids "$TARGET_INSTANCE" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy $IMAGE_URI" \
+            --parameters commands="cd $WORKDIR && docker compose pull && docker compose up -d"

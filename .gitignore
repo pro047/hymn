@@ -30,3 +30,7 @@ dist/
 *.tfstate.backup
 infra/.terraform*
 infra/*.tfstate*
+
+# Env files
+.env
+.env.dev

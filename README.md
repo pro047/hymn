@@ -16,6 +16,17 @@ Lightweight FastAPI starter with a health endpoint and root greeting.
   Run with live code: `docker run --rm -p 8000:8000 -v $(pwd)/src:/app/src hymn-api:dev`
   (dev image uses `--reload`)
 
+## Environment
+- Prod: copy `.env.example` → `.env` and set values (include `IMAGE` = ECR URI).
+- Dev: copy `.env.dev.example` → `.env.dev` and set values (APP_ENV=development).
+- Keys:
+  - `APP_ENV`
+  - `AWS_REGION`
+  - `S3_BUCKET`
+  - `DATABASE_URL` (e.g., `postgresql://appuser:password@rds-endpoint:5432/postgres`)
+  - `IMAGE` (e.g., `<account>.dkr.ecr.ap-northeast-2.amazonaws.com/hymn-dev-api:<tag>`)
+- `docker-compose.yml` reads `.env`, `docker-compose.dev.yml` reads `.env.dev`.
+
 ## Available endpoints
 - `GET /health` → `{"status": "ok"}`
 - `GET /` → `{"message": "Hello from Hymn backend"}`
