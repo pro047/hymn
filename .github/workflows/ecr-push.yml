@@ -76,4 +76,17 @@ jobs:
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy hymn-api" \
-            --parameters commands="cd $WORKDIR && docker compose pull && docker compose up -d"
+            --parameters commands="mkdir -p $WORKDIR && cat > $WORKDIR/docker-compose.yml <<'EOF'
+version: \"3.8\"
+services:
+  app:
+    image: ${IMAGE_URI}
+    env_file:
+      - .env
+    ports:
+      - \"8000:8000\"
+EOF
+cat > $WORKDIR/.env <<'EOF'
+${{ secrets.ENV_PROD }}
+EOF
+cd $WORKDIR && docker compose pull && docker compose up -d"
