@@ -73,28 +73,19 @@ jobs:
           ENV_PROD: ${{ secrets.ENV_PROD }}
         run: |
           set -e
-          CMDS=$(cat <<'EOF'
-          mkdir -p /app
-          cat > /app/docker-compose.yml <<'YAML'
-          version: "3.8"
-          services:
-            app:
-              image: ${IMAGE_URI}
-              env_file:
-                - .env
-              ports:
-                - "8000:8000"
-          YAML
-          
-          cat > /app/.env <<'ENVFILE'
-          ${ENV_PROD}
-          ENVFILE
-          
-          cd /app && docker compose pull && docker compose up -d
-          EOF
-          )
+          PARAMS=$(jq -n \
+            --arg img "${IMAGE_URI}" \
+            --arg env "${ENV_PROD}" \
+            '{
+              commands: [
+                "mkdir -p /app",
+                "cat > /app/docker-compose.yml <<\"YAML\"\nversion: \"3.8\"\nservices:\n  app:\n    image: " + $img + "\n    env_file:\n      - .env\n    ports:\n      - \"8000:8000\"\nYAML",
+                "cat > /app/.env <<\"ENVFILE\"\n" + $env + "\nENVFILE",
+                "cd /app && docker compose pull && docker compose up -d"
+              ]
+            }')
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy hymn-api" \
-            --parameters commands="$CMDS"
+            --parameters "$PARAMS"
