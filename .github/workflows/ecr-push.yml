@@ -72,9 +72,9 @@ jobs:
           TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
         run: |
           set -e
-          CMDS=$(cat <<'EOF'
+          CMDS=$(cat <<EOF
           mkdir -p /app
-          cat > /app/docker-compose.yml <<'YAML'
+          cat > /app/docker-compose.yml <<EOF2
           version: "3.8"
           services:
             app:
@@ -83,11 +83,11 @@ jobs:
                 - .env
               ports:
                 - "8000:8000"
-          YAML
+          EOF2
 
-          cat > /app/.env <<'ENVFILE'
+          cat > /app/.env <<EOF3
           ${{ secrets.ENV_PROD }}
-          ENVFILE
+          EOF3
 
           cd /app && docker compose pull && docker compose up -d
           EOF
