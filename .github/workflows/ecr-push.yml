@@ -73,25 +73,25 @@ jobs:
         run: |
           set -e
           CMDS=$(cat <<'EOF'
-mkdir -p /app
-cat > /app/docker-compose.yml <<'YAML'
-version: "3.8"
-services:
-  app:
-    image: ${IMAGE_URI}
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-YAML
+          mkdir -p /app
+          cat > /app/docker-compose.yml <<'YAML'
+          version: "3.8"
+          services:
+            app:
+              image: ${IMAGE_URI}
+              env_file:
+                - .env
+              ports:
+                - "8000:8000"
+          YAML
 
-cat > /app/.env <<'ENVFILE'
-${{ secrets.ENV_PROD }}
-ENVFILE
+          cat > /app/.env <<'ENVFILE'
+          ${{ secrets.ENV_PROD }}
+          ENVFILE
 
-cd /app && docker compose pull && docker compose up -d
-EOF
-)
+          cd /app && docker compose pull && docker compose up -d
+          EOF
+          )
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
