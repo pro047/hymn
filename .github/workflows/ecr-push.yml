@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: ap-northeast-2
-  ECR_REPO: hymn-dev-api
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPO: ${{ secrets.ECR_REPO }}
 
 jobs:
   build-and-push:
