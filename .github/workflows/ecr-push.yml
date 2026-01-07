@@ -70,10 +70,30 @@ jobs:
           AWS_REGION: ${{ env.AWS_REGION }}
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
-          WORKDIR: /app
         run: |
+          set -e
+          CMDS=$(cat <<'EOF'
+mkdir -p /app
+cat > /app/docker-compose.yml <<'YAML'
+version: "3.8"
+services:
+  app:
+    image: ${IMAGE_URI}
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+YAML
+
+cat > /app/.env <<'ENVFILE'
+${{ secrets.ENV_PROD }}
+ENVFILE
+
+cd /app && docker compose pull && docker compose up -d
+EOF
+)
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy hymn-api" \
-            --parameters commands=$'mkdir -p $WORKDIR\ncat <<\"EOF\" > $WORKDIR/docker-compose.yml\nversion: \"3.8\"\nservices:\n  app:\n    image: ${IMAGE_URI}\n    env_file:\n      - .env\n    ports:\n      - \"8000:8000\"\nEOF\ncat <<\"EOF\" > $WORKDIR/.env\n${{ secrets.ENV_PROD }}\nEOF\ncd $WORKDIR && docker compose pull && docker compose up -d'"
+            --parameters commands="$CMDS"
