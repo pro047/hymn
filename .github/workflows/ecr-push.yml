@@ -70,24 +70,29 @@ jobs:
           AWS_REGION: ${{ env.AWS_REGION }}
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
+          ENV_PROD: ${{ secrets.ENV_PROD }}
         run: |
           set -e
-          CMDS="mkdir -p /app
-cat > /app/docker-compose.yml <<'EOF'
-version: \"3.8\"
-services:
-  app:
-    image: ${IMAGE_URI}
-    env_file:
-      - .env
-    ports:
-      - \"8000:8000\"
-EOF
-cat > /app/.env <<'EOF'
-${{ secrets.ENV_PROD }}
-EOF
-cd /app && docker compose pull && docker compose up -d"
-
+          CMDS=$(cat <<'EOF'
+          mkdir -p /app
+          cat > /app/docker-compose.yml <<'YAML'
+          version: "3.8"
+          services:
+            app:
+              image: ${IMAGE_URI}
+              env_file:
+                - .env
+              ports:
+                - "8000:8000"
+          YAML
+          
+          cat > /app/.env <<'ENVFILE'
+          ${ENV_PROD}
+          ENVFILE
+          
+          cd /app && docker compose pull && docker compose up -d
+          EOF
+          )
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
