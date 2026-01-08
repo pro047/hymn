@@ -59,6 +59,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Set image output
         id: image-uri
@@ -74,6 +76,16 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read compose file
+        id: compose-file
+        run: |
+          echo 'content<<EOF' >> $GITHUB_OUTPUT
+          cat docker-compose.yml >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -88,6 +100,7 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
           ENV_PROD: ${{ secrets.ENV_PROD }}
+          COMPOSE_CONTENT: ${{ steps.compose-file.outputs.content }}
         run: |
           set -e
           IMG="${IMAGE_URI}"
@@ -99,14 +112,16 @@ jobs:
             --arg img "${IMG}" \
             --arg env "${ENV_PROD}" \
             --arg region "${AWS_REGION}" \
+            --arg compose "${COMPOSE_CONTENT}" \
             '{
               commands: [
                 "if [ -z \"" + $img + "\" ]; then echo \"IMAGE_URI missing\" && exit 1; fi",
                 "REGISTRY=$(echo \"" + $img + "\" | cut -d/ -f1)",
                 "aws ecr get-login-password --region " + $region + " | sudo docker login --username AWS --password-stdin $REGISTRY",
                 "sudo mkdir -p /app",
-                "cat > /app/docker-compose.yml <<\"YAML\"\nservices:\n  app:\n    image: " + $img + "\n    env_file:\n      - .env\n    ports:\n      - \"80:8000\"\nYAML",
-                "printf \"" + $env + "\\n\" | sudo tee /app/.env >/dev/null",
+                "cat > /app/docker-compose.yml <<\"YAML\"\n" + $compose + "\nYAML",
+                "echo \"IMAGE=" + $img + "\" | sudo tee /app/.env >/dev/null",
+                "printf \"" + $env + "\\n\" | sudo tee -a /app/.env >/dev/null",
                 "cd /app && sudo docker compose pull && sudo docker compose up -d"
               ]
             }')
