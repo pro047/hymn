@@ -69,12 +69,19 @@ jobs:
         env:
           AWS_REGION: ${{ env.AWS_REGION }}
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
+          ECR_REPO: ${{ env.ECR_REPO }}
+          GITHUB_SHA: ${{ github.sha }}
           TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
           ENV_PROD: ${{ secrets.ENV_PROD }}
         run: |
           set -e
+          IMG="${IMAGE_URI}"
+          if [ -z "$IMG" ]; then
+            ACCT=$(aws sts get-caller-identity --query Account --output text)
+            IMG="${ACCT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${GITHUB_SHA}"
+          fi
           PARAMS=$(jq -n \
-            --arg img "${IMAGE_URI}" \
+            --arg img "${IMG}" \
             --arg env "${ENV_PROD}" \
             --arg region "${AWS_REGION}" \
             '{
