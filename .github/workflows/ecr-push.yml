@@ -83,7 +83,7 @@ jobs:
                 "aws ecr get-login-password --region " + $region + " | sudo docker login --username AWS --password-stdin $REGISTRY",
                 "sudo mkdir -p /app",
                 "cat > /app/docker-compose.yml <<\"YAML\"\nversion: \"3.8\"\nservices:\n  app:\n    image: ${IMAGE:?Missing IMAGE}\n    env_file:\n      - .env\n    ports:\n      - \"8000:8000\"\nYAML",
-                "cat > /app/.env <<\"ENVFILE\"\nIMAGE=" + $img + "\n" + $env + "\nENVFILE",
+                "cat > /app/.env <<\"ENVFILE\"\n" + $env + "\nENVFILE",
                 "cd /app && sudo docker compose pull && sudo docker compose up -d"
               ]
             }')
