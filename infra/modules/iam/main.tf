@@ -23,12 +23,25 @@ data "aws_iam_policy_document" "inline" {
     sid    = "EcrPull"
     effect = "Allow"
     actions = [
-      "ecr:GetAuthorizationToken",
+      "ecr:GetAuthorizationToken"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "EcrPullScoped"
+    effect = "Allow"
+    actions = [
       "ecr:BatchCheckLayerAvailability",
       "ecr:GetDownloadUrlForLayer",
       "ecr:BatchGetImage"
     ]
-    resources = ["*"]
+    resources = [var.ecr_repository_arn]
+    condition {
+      test     = "StringLikeIfExists"
+      variable = "ecr:ImageTag"
+      values   = var.ecr_allowed_tag_prefixes
+    }
   }
 
   statement {

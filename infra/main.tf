@@ -13,13 +13,19 @@ module "iam" {
   image_bucket_arn    = module.s3_bucket.bucket_arn
   image_bucket_name   = module.s3_bucket.bucket_name
   allow_ssm           = true
+  ecr_repository_arn  = module.ecr.repository_arn
+  ecr_allowed_tag_prefixes = [
+    "${var.environment}-*",
+    var.environment
+  ]
 }
 
 module "ecr" {
   source = "./modules/ecr"
 
-  project     = var.project
-  environment = var.environment
+  project          = var.project
+  environment      = var.environment
+  repository_name  = var.ecr_repository_name
 }
 
 module "s3_bucket" {

@@ -10,6 +10,12 @@ variable "project" {
   default     = "hymn"
 }
 
+variable "ecr_repository_name" {
+  description = "Shared ECR repository name (leave empty to default to per-environment name)"
+  type        = string
+  default     = ""
+}
+
 variable "environment" {
   description = "Environment name (e.g., dev, prod)"
   type        = string
@@ -36,7 +42,7 @@ variable "ssh_key_name" {
 variable "image_bucket_name" {
   description = "S3 bucket for images"
   type        = string
-  default     = "hymn-images-dev"
+  default     = ""
 }
 
 variable "image_bucket_allowed_origins" {

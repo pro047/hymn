@@ -27,3 +27,7 @@ INFO:     connection closed
 INFO:     127.0.0.1:56173 - "WebSocket /ws?sessionId=35925208-9adb-413a-9c56-363d437ee7a0" 403
 INFO:     connection rejected (403 Forbidden)
 INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [67594]
