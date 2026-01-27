@@ -1,0 +1,131 @@
+name: Build and Deploy (Staging)
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPO: ${{ secrets.ECR_REPO_STAGING }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.image-uri.outputs.image }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python (cache for pip)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies (for cache warm)
+        run: pip install -r requirements.txt
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (multi-arch)
+        id: build-push
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set image output
+        id: image-uri
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: echo "image=${REGISTRY}/${ECR_REPO}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read compose file
+        id: compose-file
+        run: |
+          echo 'content<<EOF' >> $GITHUB_OUTPUT
+          cat docker-compose.yml >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy via SSM (docker compose pull && up)
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
+          ECR_REPO: ${{ env.ECR_REPO }}
+          GITHUB_SHA: ${{ github.sha }}
+          TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID_STAGING }}
+          ENV_STAGING: ${{ secrets.ENV_STAGING }}
+          COMPOSE_CONTENT: ${{ steps.compose-file.outputs.content }}
+        run: |
+          set -e
+          IMG="${IMAGE_URI}"
+          if [ -z "$IMG" ]; then
+            ACCT=$(aws sts get-caller-identity --query Account --output text)
+            IMG="${ACCT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${GITHUB_SHA}"
+          fi
+          PARAMS=$(jq -n \
+            --arg img "${IMG}" \
+            --arg env "${ENV_STAGING}" \
+            --arg region "${AWS_REGION}" \
+            --arg compose "${COMPOSE_CONTENT}" \
+            '{
+              commands: [
+                "if [ -z \"" + $img + "\" ]; then echo \"IMAGE_URI missing\" && exit 1; fi",
+                "REGISTRY=$(echo \"" + $img + "\" | cut -d/ -f1)",
+                "aws ecr get-login-password --region " + $region + " | sudo docker login --username AWS --password-stdin $REGISTRY",
+                "sudo mkdir -p /app",
+                "cat > /app/docker-compose.yml <<\"YAML\"\n" + $compose + "\nYAML",
+                "echo \"IMAGE=" + $img + "\" | sudo tee /app/.env >/dev/null",
+                "printf \"" + $env + "\\n\" | sudo tee -a /app/.env >/dev/null",
+                "cd /app && sudo docker compose pull && sudo docker compose up -d"
+              ]
+            }')
+          aws ssm send-command \
+            --instance-ids "$TARGET_INSTANCE" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy hymn-api (staging)" \
+            --parameters "$PARAMS"

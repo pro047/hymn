@@ -5,7 +5,7 @@ import DatePicker from "./DatePicker"
 
 export default function ScoreUploadModal({ open, onClose, onSubmit, loading }) {
   const [title, setTitle] = useState("")
-  const [churchId, setChurchId] = useState("church-uuid")
+  const [churchName, setChurchName] = useState("")
   const [weekOf, setWeekOf] = useState(null)
   const [file, setFile] = useState(null)
 
@@ -18,10 +18,10 @@ export default function ScoreUploadModal({ open, onClose, onSubmit, loading }) {
 
   const handleSubmit = (event) => {
     event.preventDefault()
-    if (!title || !churchId || !weekOf || !file) return
+    if (!title || !churchName || !weekOf || !file) return
     onSubmit({
       title,
-      churchId,
+      churchName,
       weekOf: weekLabel,
       file,
     })
@@ -52,11 +52,11 @@ export default function ScoreUploadModal({ open, onClose, onSubmit, loading }) {
           </label>
 
           <label className="field">
-            <span>교회 ID</span>
+            <span>교회 이름</span>
             <input
-              value={churchId}
-              onChange={(event) => setChurchId(event.target.value)}
-              placeholder="church-uuid"
+              value={churchName}
+              onChange={(event) => setChurchName(event.target.value.trim())}
+              placeholder="예: 작은샘골 사랑의 교회"
               required
             />
           </label>

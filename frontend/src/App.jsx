@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import ScoreUploadModal from './components/ScoreUploadModal'
+import { API_PATHS } from './api/paths'
 import './App.css'
 
 function App() {
@@ -8,7 +9,6 @@ function App() {
   const [error, setError] = useState('')
   const [isUploadOpen, setIsUploadOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
-  const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
   const tabs = [
     { id: 'scores', label: '악보' },
@@ -29,7 +29,7 @@ function App() {
 
   const fetchScores = async () => {
     try {
-      const response = await fetch(`${apiBase}/scores`)
+      const response = await fetch(API_PATHS.scores)
       if (!response.ok) {
         throw new Error('악보 목록을 불러오지 못했습니다.')
       }
@@ -45,15 +45,15 @@ function App() {
     fetchScores()
   }, [])
 
-  const createScoreWithUpload = async ({ title, churchId, weekOf, file }) => {
+  const createScoreWithUpload = async ({ title, churchName, weekOf, file }) => {
     setIsUploading(true)
     try {
-      const response = await fetch(`${apiBase}/scores`, {
+      const response = await fetch(API_PATHS.scores, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title,
-          church_id: churchId,
+          church_name: churchName,
           week_of: weekOf,
           storage_type: 's3',
           filename: file.name,
@@ -72,8 +72,9 @@ function App() {
       if (!uploadResponse.ok) {
         throw new Error('S3 업로드에 실패했습니다.')
       }
+      window.alert('업로드가 완료되었습니다.')
       setIsUploadOpen(false)
-      await fetchScores()
+      window.location.reload()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -85,7 +86,7 @@ function App() {
     const title = window.prompt('새 제목을 입력하세요.')
     if (!title) return
     try {
-      const response = await fetch(`${apiBase}/scores/${scoreId}`, {
+      const response = await fetch(API_PATHS.score(scoreId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title }),
@@ -103,7 +104,7 @@ function App() {
     const confirmed = window.confirm('정말 삭제할까요?')
     if (!confirmed) return
     try {
-      const response = await fetch(`${apiBase}/scores/${scoreId}`, {
+      const response = await fetch(API_PATHS.score(scoreId), {
         method: 'DELETE',
       })
       if (!response.ok) {

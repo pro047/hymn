@@ -6,8 +6,9 @@ from pydantic import BaseModel, Field
 
 class ScoreCreate(BaseModel):
     title: str = Field(..., max_length=255)
-    church_id: str
-    week_of: datetime
+    church_id: str | None = None
+    church_name: str | None = None
+    week_of: date
     storage_type: Literal['s3', 'local']
     # s3
     filename: Optional[str] = None  # optional original filename for extension hint
@@ -29,7 +30,9 @@ class ScoreResponse(BaseModel):
     church_id: str
     week_of: date
     title: str
+    file_url: str
     file_uri: str | None = None
+    download_url: str | None = None
     created_at: datetime
 
 class ScoreUpdate(BaseModel):
