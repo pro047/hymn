@@ -22,6 +22,24 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "github_repo" {
+  description = "GitHub repo in owner/name format for OIDC trust policy"
+  type        = string
+  default     = "pro047/hymn"
+}
+
+variable "github_branch" {
+  description = "GitHub branch allowed to assume OIDC role"
+  type        = string
+  default     = "develop"
+}
+
+variable "github_oidc_provider_arn" {
+  description = "Existing GitHub Actions OIDC provider ARN (leave empty to create)"
+  type        = string
+  default     = ""
+}
+
 variable "allowed_ssh_cidr" {
   description = "CIDR blocks allowed to SSH to EC2"
   type        = list(string)

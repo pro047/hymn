@@ -1,0 +1,9 @@
+environment = "stg"
+
+ecr_repository_name = "hymn-api"
+image_bucket_name   = "hymn-stg-images"
+image_bucket_allowed_origins = []
+
+github_repo   = "pro047/hymn"
+github_branch = "develop"
+github_oidc_provider_arn = "arn:aws:iam::989785488374:oidc-provider/token.actions.githubusercontent.com"
