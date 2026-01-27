@@ -54,7 +54,7 @@ jobs:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         with:
-          context: .
+          context: backend
           file: backend/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
