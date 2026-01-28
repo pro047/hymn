@@ -83,7 +83,7 @@ jobs:
         id: compose-file
         run: |
           echo 'content<<EOF' >> $GITHUB_OUTPUT
-          cat docker-compose.yml >> $GITHUB_OUTPUT
+          cat docker-compose.staging.yml >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
@@ -119,10 +119,10 @@ jobs:
                 "REGISTRY=$(echo \"" + $img + "\" | cut -d/ -f1)",
                 "aws ecr get-login-password --region " + $region + " | sudo docker login --username AWS --password-stdin $REGISTRY",
                 "sudo mkdir -p /app",
-                "cat > /app/docker-compose.yml <<\"YAML\"\n" + $compose + "\nYAML",
-                "echo \"IMAGE=" + $img + "\" | sudo tee /app/.env >/dev/null",
-                "printf \"" + $env + "\\n\" | sudo tee -a /app/.env >/dev/null",
-                "cd /app && sudo docker compose pull && sudo docker compose up -d"
+                "cat > /app/docker-compose.staging.yml <<\"YAML\"\n" + $compose + "\nYAML",
+                "echo \"IMAGE=" + $img + "\" | sudo tee /app/.env.staging >/dev/null",
+                "printf \"" + $env + "\\n\" | sudo tee -a /app/.env.staging >/dev/null",
+                "cd /app && sudo docker compose -f /app/docker-compose.staging.yml pull && sudo docker compose -f /app/docker-compose.staging.yml up -d"
               ]
             }')
           aws ssm send-command \
