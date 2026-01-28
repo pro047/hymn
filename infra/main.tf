@@ -47,7 +47,7 @@ module "ec2" {
   public_subnet_ids      = module.network.public_subnet_ids
   allowed_ssh_cidr       = var.allowed_ssh_cidr
   allowed_http_cidr      = var.allowed_http_cidr
-  instance_type          = "t4g.micro"
+  instance_type          = "t4g.small"
   ami_filter_name        = "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*"
   key_name               = var.ssh_key_name
   attach_eip             = true
