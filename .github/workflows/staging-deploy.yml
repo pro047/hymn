@@ -144,7 +144,7 @@ jobs:
                 "echo \"IMAGE_BACKEND=" + $img_backend + "\" | sudo tee /app/.env.staging >/dev/null",
                 "echo \"IMAGE_FRONTEND=" + $img_frontend + "\" | sudo tee -a /app/.env.staging >/dev/null",
                 "printf \"" + $env + "\\n\" | sudo tee -a /app/.env.staging >/dev/null",
-                "cd /app && sudo docker compose -f /app/docker-compose.staging.yml pull && sudo docker compose -f /app/docker-compose.staging.yml up -d"
+                "cd /app && sudo docker compose --env-file /app/.env.staging -f /app/docker-compose.staging.yml pull && sudo docker compose --env-file /app/.env.staging -f /app/docker-compose.staging.yml up -d"
               ]
             }')
           aws ssm send-command \
