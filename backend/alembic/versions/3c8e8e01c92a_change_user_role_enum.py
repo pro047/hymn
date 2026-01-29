@@ -15,17 +15,15 @@ def upgrade() -> None:
     op.execute("CREATE TYPE user_role AS ENUM ('admin', 'leader', 'member')")
 
     op.execute("""
-        UPDATE users
-        SET role = CASE role
-            WHEN 'editor' THEN 'leader'
-            WHEN 'viewer' THEN 'member'
-            ELSE role
-        END
-    """)
-    op.execute("""
         ALTER TABLE users
         ALTER COLUMN role TYPE user_role
-        USING role::text::user_role
+        USING (
+            CASE role
+                WHEN 'editor' THEN 'leader'
+                WHEN 'viewer' THEN 'member'
+                ELSE role::text
+            END
+        )::text::user_role
     """)
 
     op.execute("DROP TYPE user_role_old")
@@ -39,7 +37,7 @@ def downgrade() -> None:
         UPDATE users
         SET role = CASE role
             WHEN 'leader' THEN 'editor'
-            WEHN 'member' THEN 'viewer'
+            WHEN 'member' THEN 'viewer'
             ELSE role
         END
     """)
