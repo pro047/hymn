@@ -58,10 +58,9 @@ jobs:
           context: backend
           file: backend/Dockerfile
           push: true
+          no-cache: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Build and push frontend (multi-arch)
         id: build-push-frontend
@@ -73,12 +72,11 @@ jobs:
           context: frontend
           file: frontend/Dockerfile
           push: true
+          no-cache: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}-frontend
           build-args: |
             VITE_API_URL=${{ secrets.FRONTEND_API_URL_STAGING }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Set image outputs
         id: image-uri
