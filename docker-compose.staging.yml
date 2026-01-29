@@ -1,10 +1,16 @@
 version: "3.8"
 
 services:
-  app:
-    image: ${IMAGE:?Set IMAGE (ECR URI) in .env.staging}
+  backend:
+    image: ${IMAGE_BACKEND:?Set IMAGE_BACKEND (ECR URI) in .env.staging}
     ports:
-      - "8080:8000"
+      - "8000:8000"
     env_file:
       - .env.staging
+    restart: unless-stopped
+
+  frontend:
+    image: ${IMAGE_FRONTEND:?Set IMAGE_FRONTEND (ECR URI) in .env.staging}
+    ports:
+      - "8080:80"
     restart: unless-stopped
