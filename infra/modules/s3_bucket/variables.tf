@@ -14,7 +14,10 @@ variable "bucket_name" {
 variable "allowed_origins" {
   description = "CORS allowed origins; leave empty to skip CORS"
   type        = list(string)
-  default     = []
+  default     = [
+    "http://staging.score-hymn.com",
+    "https://staging.score-hymn.com",
+  ]
 }
 
 variable "enable_versioning" {

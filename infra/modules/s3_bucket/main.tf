@@ -41,7 +41,7 @@ resource "aws_s3_bucket_cors_configuration" "this" {
   bucket = aws_s3_bucket.this.id
 
   cors_rule {
-    allowed_methods = ["GET", "PUT", "HEAD"]
+    allowed_methods = ["GET", "PUT", "POST", "HEAD"]
     allowed_origins = var.allowed_origins
     allowed_headers = ["*"]
     expose_headers  = ["ETag"]

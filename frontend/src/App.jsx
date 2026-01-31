@@ -1,120 +1,120 @@
-import { useEffect, useMemo, useState } from 'react'
-import ScoreUploadModal from './components/ScoreUploadModal'
-import { API_PATHS } from './api/paths'
-import './App.css'
+import { useEffect, useMemo, useState } from "react";
+import ScoreUploadModal from "./components/ScoreUploadModal";
+import { API_PATHS } from "./api/paths";
+import "./App.css";
 
 function App() {
-  const [activeTab, setActiveTab] = useState('scores')
-  const [scores, setScores] = useState([])
-  const [error, setError] = useState('')
-  const [isUploadOpen, setIsUploadOpen] = useState(false)
-  const [isUploading, setIsUploading] = useState(false)
+  const [activeTab, setActiveTab] = useState("scores");
+  const [scores, setScores] = useState([]);
+  const [error, setError] = useState("");
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   const tabs = [
-    { id: 'scores', label: '악보' },
-    { id: 'weeks', label: '주차' },
-    { id: 'uploads', label: '업로드' },
-    { id: 'settings', label: '설정' },
-  ]
+    { id: "scores", label: "악보" },
+    { id: "weeks", label: "주차" },
+    { id: "uploads", label: "업로드" },
+    { id: "settings", label: "설정" },
+  ];
 
   const weekSummaries = useMemo(() => {
-    const uniqueWeeks = new Map()
+    const uniqueWeeks = new Map();
     scores.forEach((score) => {
       if (!uniqueWeeks.has(score.week_of)) {
-        uniqueWeeks.set(score.week_of, score)
+        uniqueWeeks.set(score.week_of, score);
       }
-    })
-    return Array.from(uniqueWeeks.values()).slice(0, 3)
-  }, [scores])
+    });
+    return Array.from(uniqueWeeks.values()).slice(0, 3);
+  }, [scores]);
 
   const fetchScores = async () => {
     try {
-      const response = await fetch(API_PATHS.scores)
+      const response = await fetch(API_PATHS.scores);
       if (!response.ok) {
-        throw new Error('악보 목록을 불러오지 못했습니다.')
+        throw new Error("악보 목록을 불러오지 못했습니다.");
       }
-      const data = await response.json()
-      setScores(data)
-      setError('')
+      const data = await response.json();
+      setScores(data);
+      setError("");
     } catch (err) {
-      setError(err.message)
+      setError(err.message);
     }
-  }
+  };
 
   useEffect(() => {
-    fetchScores()
-  }, [])
+    fetchScores();
+  }, []);
 
   const createScoreWithUpload = async ({ title, churchName, weekOf, file }) => {
-    setIsUploading(true)
+    setIsUploading(true);
     try {
       const response = await fetch(API_PATHS.scores, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title,
           church_name: churchName,
           week_of: weekOf,
-          storage_type: 's3',
+          storage_type: "s3",
           filename: file.name,
           content_type: file.type,
         }),
-      })
+      });
       if (!response.ok) {
-        throw new Error('악보 생성에 실패했습니다.')
+        throw new Error("악보 생성에 실패했습니다.");
       }
-      const data = await response.json()
+      const data = await response.json();
       const uploadResponse = await fetch(data.upload_url, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type },
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
-      })
+      });
       if (!uploadResponse.ok) {
-        throw new Error('S3 업로드에 실패했습니다.')
+        throw new Error("S3 업로드에 실패했습니다.");
       }
-      window.alert('업로드가 완료되었습니다.')
-      setIsUploadOpen(false)
-      window.location.reload()
+      window.alert("업로드가 완료되었습니다.");
+      setIsUploadOpen(false);
+      window.location.reload();
     } catch (err) {
-      setError(err.message)
+      setError(err.message);
     } finally {
-      setIsUploading(false)
+      setIsUploading(false);
     }
-  }
+  };
 
   const updateScore = async (scoreId) => {
-    const title = window.prompt('새 제목을 입력하세요.')
-    if (!title) return
+    const title = window.prompt("새 제목을 입력하세요.");
+    if (!title) return;
     try {
       const response = await fetch(API_PATHS.score(scoreId), {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
-      })
+      });
       if (!response.ok) {
-        throw new Error('악보 수정에 실패했습니다.')
+        throw new Error("악보 수정에 실패했습니다.");
       }
-      await fetchScores()
+      await fetchScores();
     } catch (err) {
-      setError(err.message)
+      setError(err.message);
     }
-  }
+  };
 
   const deleteScore = async (scoreId) => {
-    const confirmed = window.confirm('정말 삭제할까요?')
-    if (!confirmed) return
+    const confirmed = window.confirm("정말 삭제할까요?");
+    if (!confirmed) return;
     try {
       const response = await fetch(API_PATHS.score(scoreId), {
-        method: 'DELETE',
-      })
+        method: "DELETE",
+      });
       if (!response.ok) {
-        throw new Error('악보 삭제에 실패했습니다.')
+        throw new Error("악보 삭제에 실패했습니다.");
       }
-      await fetchScores()
+      await fetchScores();
     } catch (err) {
-      setError(err.message)
+      setError(err.message);
     }
-  }
+  };
 
   return (
     <div className="app">
@@ -130,7 +130,11 @@ function App() {
           <button className="ghost-button" type="button">
             주차 만들기
           </button>
-          <button className="primary-button" type="button" onClick={() => setIsUploadOpen(true)}>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => setIsUploadOpen(true)}
+          >
             악보 업로드
           </button>
         </div>
@@ -141,7 +145,7 @@ function App() {
           <button
             key={tab.id}
             type="button"
-            className={`tab ${activeTab === tab.id ? 'active' : ''}`}
+            className={`tab ${activeTab === tab.id ? "active" : ""}`}
             onClick={() => setActiveTab(tab.id)}
           >
             {tab.label}
@@ -154,9 +158,7 @@ function App() {
           <div>
             <p className="pill">이번 주</p>
             <h2>주일 2부 - 1월 19일</h2>
-            <p className="muted">
-              흐름을 정리하세요: 시작, 응답, 헌금, 성찬.
-            </p>
+            <p className="muted">흐름을 정리하세요: 시작, 응답, 헌금, 성찬.</p>
           </div>
           <div className="hero-meta">
             <div>
@@ -251,7 +253,11 @@ function App() {
                   style={{ animationDelay: `${index * 80}ms` }}
                 >
                   <span className="stage-index">{index + 1}</span>
-                  <button type="button" className="stage-link" onClick={() => updateScore(score.id)}>
+                  <button
+                    type="button"
+                    className="stage-link"
+                    onClick={() => updateScore(score.id)}
+                  >
                     {score.title}
                   </button>
                   <div className="stage-actions-inline">
@@ -283,7 +289,7 @@ function App() {
         loading={isUploading}
       />
     </div>
-  )
+  );
 }
 
-export default App
+export default App;

@@ -80,7 +80,7 @@ def create_score(payload: ScoreCreate, session: Session = Depends(get_session)):
         session.refresh(score)
         return {
             "score_id": score.id,
-            "upload_url": presign_put(key, 900, payload.content_type),
+            "upload_url": presign_put(key, 900),
             "download_url": presign_get(key),
             "s3_key": key,
         }

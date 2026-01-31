@@ -24,17 +24,15 @@ s3_client = session.client(
 )
 
 
-def presign_put(key: str, expires: int = 900, content_type: Optional[str] = None) -> str:
+def presign_put(key: str, expires: int = 900) -> str:
     """Generate a presigned PUT URL for clients to upload directly to S3."""
     params = {"Bucket": S3_BUCKET, "Key": key}
-    if content_type:
-        params["ContentType"] = content_type
     url = s3_client.generate_presigned_url(
         "put_object",
         Params=params,
         ExpiresIn=expires,
     )
-    return rewrite_presigned_url(url)
+    return url
 
 
 def presign_get(key: str, expires: int = 900) -> str:
