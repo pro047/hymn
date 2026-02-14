@@ -1,5 +1,5 @@
 locals {
-  name = "${var.project}-${var.environment}-api"
+  name = var.repository_name != "" ? var.repository_name : "${var.project}-${var.environment}-api"
 }
 
 resource "aws_ecr_repository" "this" {
@@ -33,4 +33,12 @@ resource "aws_ecr_lifecycle_policy" "this" {
 
 output "repository_url" {
   value = aws_ecr_repository.this.repository_url
+}
+
+output "repository_arn" {
+  value = aws_ecr_repository.this.arn
+}
+
+output "repository_name" {
+  value = aws_ecr_repository.this.name
 }

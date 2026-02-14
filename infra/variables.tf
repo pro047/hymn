@@ -10,10 +10,40 @@ variable "project" {
   default     = "hymn"
 }
 
+variable "ecr_repository_name" {
+  description = "Shared ECR repository name (leave empty to default to per-environment name)"
+  type        = string
+  default     = ""
+}
+
 variable "environment" {
   description = "Environment name (e.g., dev, prod)"
   type        = string
   default     = "dev"
+}
+
+variable "create_nat_gateway" {
+  description = "Whether to create NAT Gateway and NAT EIP for private subnet egress"
+  type        = bool
+  default     = true
+}
+
+variable "github_repo" {
+  description = "GitHub repo in owner/name format for OIDC trust policy"
+  type        = string
+  default     = "pro047/hymn"
+}
+
+variable "github_branch" {
+  description = "GitHub branch allowed to assume OIDC role"
+  type        = string
+  default     = "develop"
+}
+
+variable "github_oidc_provider_arn" {
+  description = "Existing GitHub Actions OIDC provider ARN (leave empty to create)"
+  type        = string
+  default     = ""
 }
 
 variable "allowed_ssh_cidr" {
@@ -36,7 +66,7 @@ variable "ssh_key_name" {
 variable "image_bucket_name" {
   description = "S3 bucket for images"
   type        = string
-  default     = "hymn-images-dev"
+  default     = ""
 }
 
 variable "image_bucket_allowed_origins" {

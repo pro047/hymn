@@ -33,4 +33,11 @@ infra/*.tfstate*
 
 # Env files
 .env
-.env.dev
+.env.*
+!.env.example
+!.env.dev.example
+
+# Frontend deps/build
+frontend/node_modules/
+frontend/.pnpm-store/
+frontend/dist/

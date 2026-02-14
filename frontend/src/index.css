@@ -1,0 +1,26 @@
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Pretendard:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+@source "./src/**/*.{js,jsx,ts,tsx}";
+
+:root {
+  font-family: "Geist", "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #ffffff;
+}
+
+#root {
+  min-height: 100vh;
+}

@@ -1,13 +1,50 @@
-version: "3.8"
-
 services:
-  app:
+  backend:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile.dev
     ports:
       - "8000:8000"
     volumes:
-      - ./src:/app/src
+      - ./backend/src:/app/src
     env_file:
       - .env.dev
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      - db
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: postgres
+    ports:
+      - "55432:5432" # host:container (avoids clashing with a local Postgres on 5432)
+    volumes:
+      - dev-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  dev-postgres-data:

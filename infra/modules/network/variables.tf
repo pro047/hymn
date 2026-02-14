@@ -5,3 +5,8 @@ variable "project" {
 variable "environment" {
   type = string
 }
+
+variable "create_nat_gateway" {
+  type    = bool
+  default = true
+}
