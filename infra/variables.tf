@@ -22,6 +22,12 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "create_nat_gateway" {
+  description = "Whether to create NAT Gateway and NAT EIP for private subnet egress"
+  type        = bool
+  default     = true
+}
+
 variable "github_repo" {
   description = "GitHub repo in owner/name format for OIDC trust policy"
   type        = string

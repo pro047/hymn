@@ -1,13 +1,17 @@
-name: Build and Push to ECR
+name: Build and Deploy (Production)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REPO: ${{ secrets.ECR_REPO }}
+  AWS_REGION: ${{ secrets.AWS_REGION_PROD }}
+  ECR_REPO: ${{ secrets.ECR_REPO_PROD }}
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: true
 
 jobs:
   build-and-push:
@@ -21,20 +25,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python (cache for pip)
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: backend/requirements.txt
-
-      - name: Install dependencies (for cache warm)
-        run: pip install -r backend/requirements.txt
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_PROD }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -47,27 +41,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push (multi-arch)
+      - name: Build and push backend (multi-arch)
         id: build-push
         uses: docker/build-push-action@v5
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
         with:
           context: backend
           file: backend/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Set image output
         id: image-uri
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: echo "image=${REGISTRY}/${ECR_REPO}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
+        run: echo "image=${REGISTRY}/${ECR_REPO}:${{ github.sha }}" >> $GITHUB_OUTPUT
 
   deploy:
     needs: build-and-push
@@ -89,7 +79,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_PROD }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy via SSM (docker compose pull && up)
@@ -98,7 +88,7 @@ jobs:
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           ECR_REPO: ${{ env.ECR_REPO }}
           GITHUB_SHA: ${{ github.sha }}
-          TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID }}
+          TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID_PROD }}
           ENV_PROD: ${{ secrets.ENV_PROD }}
           COMPOSE_CONTENT: ${{ steps.compose-file.outputs.content }}
         run: |
@@ -128,5 +118,5 @@ jobs:
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy hymn-api" \
+            --comment "Deploy hymn-api (production)" \
             --parameters "$PARAMS"

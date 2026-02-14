@@ -31,14 +31,18 @@ cd infra
 terraform init
 terraform plan \
   -var 'ssh_key_name=your-keypair' \
-  -var 'rds_password=change-me' \
   -var 'image_bucket_allowed_origins=["https://api.your-domain.com"]'
 terraform apply
 ```
 
+`rds_password` is required, and should be injected via environment variable:
+```sh
+export TF_VAR_rds_password='change-me'
+```
+
 ## Variables to set
 - `ssh_key_name` (required) – existing EC2 key pair.
-- `rds_password` (required, sensitive).
+- `rds_password` (required, sensitive) - inject with `TF_VAR_rds_password` (for CI, store as GitHub Secret).
 - `image_bucket_allowed_origins` – keep empty until you know the web origins; add domains for CORS.
 - `project`/`environment` – default `hymn`/`dev`; update if you want different names.
 - `allowed_ssh_cidr` – lock down SSH (default is 0.0.0.0/0; replace with your IP/32).

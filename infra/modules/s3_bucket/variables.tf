@@ -24,3 +24,13 @@ variable "enable_versioning" {
   type    = bool
   default = false
 }
+
+variable "prevent_destroy" {
+  type    = bool
+  default = true
+}
+
+variable "force_destroy" {
+  type    = bool
+  default = false
+}
