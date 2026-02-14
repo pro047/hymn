@@ -33,7 +33,7 @@ class User(Base):
     church_id: Mapped[str] = mapped_column(ForeignKey("churches.id", ondelete="CASCADE"), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(Enum("admin", "editor", "viewer", name="user_role"), nullable=False, default="viewer")
+    role: Mapped[str] = mapped_column(Enum("leader", "member", name="user_role"), nullable=False, default="member")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
     church: Mapped["Church"] = relationship(back_populates="users")
