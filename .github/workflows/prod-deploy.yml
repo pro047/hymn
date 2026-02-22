@@ -42,7 +42,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push backend (multi-arch)
+      - name: Build and push backend (arm64)
         id: build-push-backend
         uses: docker/build-push-action@v5
         env:
@@ -51,10 +51,12 @@ jobs:
           context: backend
           file: backend/Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build and push frontend (multi-arch)
+      - name: Build and push frontend (arm64)
         id: build-push-frontend
         uses: docker/build-push-action@v5
         env:
@@ -63,8 +65,10 @@ jobs:
           context: frontend
           file: frontend/Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}-frontend
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             VITE_API_BASE_URL=${{ secrets.FRONTEND_API_URL_PROD }}
 
@@ -143,7 +147,9 @@ jobs:
                 "echo \"IMAGE_BACKEND=" + $img_backend + "\" | sudo tee /app/.env.prod >/dev/null",
                 "echo \"IMAGE_FRONTEND=" + $img_frontend + "\" | sudo tee -a /app/.env.prod >/dev/null",
                 "printf \"" + $env + "\\n\" | sudo tee -a /app/.env.prod >/dev/null",
-                "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml pull && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml up -d",
+                "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml pull",
+                "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml run --rm backend alembic upgrade head",
+                "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml up -d",
                 "sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled",
                 "cat > /tmp/score-hymn.nginx.conf <<\"NGINX\"\n" + $nginx_conf + "\nNGINX",
                 "sudo mv /tmp/score-hymn.nginx.conf /etc/nginx/sites-available/score-hymn",

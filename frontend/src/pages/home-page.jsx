@@ -45,42 +45,35 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-white text-stone-900">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-4 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between">
-          <div className="flex items-start gap-4">
-            <div className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-stone-200 bg-stone-900 text-sm font-semibold text-stone-50">
+      <header className="border-b border-stone-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
+          <div className="flex items-start gap-3">
+            <div className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 bg-stone-900 text-xs font-semibold text-stone-50">
               H
             </div>
-            <div className="space-y-1">
-              <p className="text-xs font-medium uppercase tracking-[0.16em] text-stone-500">Hymn Console</p>
-              <h1 className="text-lg font-semibold tracking-tight text-stone-950">Worship Planner</h1>
+            <div className="space-y-0.5">
+              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-stone-500">Hymn Console</p>
+              <h1 className="text-base font-semibold tracking-tight text-stone-950">Worship Planner</h1>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="outline">
-              주차 만들기
-            </Button>
-            <Button type="button" onClick={() => setIsUploadOpen(true)}>
-              악보 업로드
-            </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {tabs.map((tab) => (
+              <Button
+                key={tab.id}
+                type="button"
+                size="sm"
+                variant={activeTab === tab.id ? "default" : "ghost"}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </Button>
+            ))}
           </div>
-        </header>
-
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-stone-200 bg-white p-2 shadow-sm">
-          {tabs.map((tab) => (
-            <Button
-              key={tab.id}
-              type="button"
-              size="sm"
-              variant={activeTab === tab.id ? "default" : "ghost"}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </Button>
-          ))}
         </div>
+      </header>
 
-        <HeroSection totalSongs={scores.length} />
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
+        <HeroSection totalSongs={scores.length} onUpload={() => setIsUploadOpen(true)} />
 
         {error ? (
           <Alert variant="destructive">
