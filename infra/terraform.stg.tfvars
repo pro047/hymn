@@ -6,8 +6,10 @@ image_bucket_name   = "hymn-stg-images"
 image_bucket_allowed_origins = [
   "http://staging.score-hymn.com",
   "https://staging.score-hymn.com",
+  "https://www.score-hymn.com",
 ]
 
 github_repo              = "pro047/hymn"
-github_branch            = "develop"
+# deploys run from main since the pipeline rewire (2026-07)
+github_branch            = "main"
 github_oidc_provider_arn = "arn:aws:iam::989785488374:oidc-provider/token.actions.githubusercontent.com"
