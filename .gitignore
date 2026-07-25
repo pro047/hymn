@@ -41,3 +41,12 @@ infra/*.tfstate*
 frontend/node_modules/
 frontend/.pnpm-store/
 frontend/dist/
+
+# Local databases
+*.db
+
+# Nested repo (managed as a separate repository)
+/hymn_app/
+
+# Local data backups (S3 image dumps)
+/infra/hymn-images-dev-backup/
