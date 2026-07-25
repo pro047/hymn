@@ -28,7 +28,7 @@ class ScoreCreateResponse(BaseModel):
 class ScoreResponse(BaseModel):
     id: str
     church_id: str
-    week_of: date
+    week_of: date | None = None
     title: str
     file_url: str
     file_uri: str | None = None

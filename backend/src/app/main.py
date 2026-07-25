@@ -3,12 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.auth import router as auth_router
 from app.routes.score import router as score_router
+from app.routes.saved_score import router as saved_score_router
 
 app = FastAPI(title="Hymn Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://staging.score-hymn.com"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://staging.score-hymn.com",
+        "https://staging.score-hymn.com",
+        "https://www.score-hymn.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -16,6 +22,7 @@ app.add_middleware(
 
 app.include_router(score_router)
 app.include_router(auth_router)
+app.include_router(saved_score_router)
 
 @app.get("/health")
 def health():

@@ -8,28 +8,44 @@ import HeroSection from "../features/home/sections/hero-section"
 import RecentScoresCard from "../features/home/sections/recent-scores-card"
 import StageCard from "../features/home/sections/stage-card"
 import WeekSummaryCard from "../features/home/sections/week-summary-card"
+import SavedScoresCard from "../features/score/components/saved-scores-card"
 import ScoreUploadDialog from "../features/score/components/score-upload-dialog"
 import { useScores } from "../features/score/hooks/use-scores"
 
 const tabs = [
   { id: "scores", label: "악보" },
   { id: "weeks", label: "주차" },
-  { id: "uploads", label: "업로드" },
+  { id: "library", label: "보관함" },
   { id: "settings", label: "설정" },
 ]
 
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState("scores")
-  const [isUploadOpen, setIsUploadOpen] = useState(false)
+  const [uploadDialogState, setUploadDialogState] = useState({
+    open: false,
+    mode: null,
+    file: null,
+    savedScore: null,
+    lockMode: false,
+    saveToLibrary: false,
+    sessionKey: 0,
+  })
 
   const {
     scores,
+    savedScores,
+    savedScoreIds,
     weekSummaries,
     error,
     isUploading,
+    pendingSaveScoreId,
+    isApplyingSavedScore,
     createScoreWithUpload,
     updateScore,
     deleteScore,
+    toggleSavedScore,
+    removeSavedScore,
+    applySavedScoreToWeek,
   } = useScores()
 
   const upcomingSundayWeekOf = useMemo(() => {
@@ -42,6 +58,30 @@ export default function HomePage() {
   const upcomingSundayScores = useMemo(() => {
     return scores.filter((score) => String(score.week_of).slice(0, 10) === upcomingSundayWeekOf)
   }, [scores, upcomingSundayWeekOf])
+
+  const openUploadDialog = ({ mode = null, file = null, savedScore = null, lockMode = false, saveToLibrary = false } = {}) => {
+    setUploadDialogState({
+      open: true,
+      mode,
+      file,
+      savedScore,
+      lockMode,
+      saveToLibrary,
+      sessionKey: Date.now(),
+    })
+  }
+
+  const closeUploadDialog = () => {
+    setUploadDialogState({
+      open: false,
+      mode: null,
+      file: null,
+      savedScore: null,
+      lockMode: false,
+      saveToLibrary: false,
+      sessionKey: 0,
+    })
+  }
 
   return (
     <div className="min-h-screen bg-white text-stone-900">
@@ -73,7 +113,7 @@ export default function HomePage() {
       </header>
 
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
-        <HeroSection totalSongs={scores.length} onUpload={() => setIsUploadOpen(true)} />
+        <HeroSection totalSongs={scores.length} onUpload={() => openUploadDialog()} />
 
         {error ? (
           <Alert variant="destructive">
@@ -87,13 +127,38 @@ export default function HomePage() {
             <>
               <section className="grid gap-4 md:grid-cols-2">
                 <WeekSummaryCard weekSummaries={weekSummaries} />
-                <RecentScoresCard scores={scores} />
+                <RecentScoresCard
+                  scores={scores}
+                  savedScoreIds={savedScoreIds}
+                  pendingSaveScoreId={pendingSaveScoreId}
+                  onToggleSave={toggleSavedScore}
+                />
               </section>
               <StageCard
                 scores={upcomingSundayScores}
                 weekOf={upcomingSundayWeekOf}
                 onUpdate={updateScore}
                 onDelete={deleteScore}
+                savedScoreIds={savedScoreIds}
+                pendingSaveScoreId={pendingSaveScoreId}
+                onToggleSave={toggleSavedScore}
+              />
+            </>
+          ) : activeTab === "library" ? (
+            <>
+              <SavedScoresCard
+                scores={savedScores}
+                onApplyRequest={(score) => openUploadDialog({ mode: "library", savedScore: score })}
+                onQuickUpload={(file) =>
+                  openUploadDialog({
+                    mode: "pc",
+                    file,
+                    lockMode: true,
+                    saveToLibrary: true,
+                  })
+                }
+                onRemove={removeSavedScore}
+                pendingSaveScoreId={pendingSaveScoreId}
               />
             </>
           ) : (
@@ -107,10 +172,19 @@ export default function HomePage() {
       </div>
 
       <ScoreUploadDialog
-        open={isUploadOpen}
-        onClose={() => setIsUploadOpen(false)}
-        onSubmit={createScoreWithUpload}
-        loading={isUploading}
+        key={uploadDialogState.sessionKey}
+        open={uploadDialogState.open}
+        onClose={closeUploadDialog}
+        onUploadSubmit={createScoreWithUpload}
+        onApplySavedScore={applySavedScoreToWeek}
+        savedScores={savedScores}
+        uploadLoading={isUploading}
+        applyLoading={isApplyingSavedScore}
+        initialMode={uploadDialogState.mode}
+        initialFile={uploadDialogState.file}
+        initialSavedScore={uploadDialogState.savedScore}
+        lockMode={uploadDialogState.lockMode}
+        saveToLibrary={uploadDialogState.saveToLibrary}
       />
     </div>
   )
