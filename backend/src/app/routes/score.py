@@ -120,7 +120,7 @@ def create_score(payload: ScoreCreate, session: Session = Depends(get_session)):
 
 @router.get("/scores", response_model=list[ScoreResponse])
 def list_scores(session: Session = Depends(get_session)):
-    scores = session.query(Score).order_by(Score.created_at.asc()).all()
+    scores = session.query(Score).filter(Score.week_of.is_not(None)).order_by(Score.created_at.asc()).all()
     return [
         ScoreResponse(
             id=s.id,

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.auth import router as auth_router
 from app.routes.score import router as score_router
+from app.routes.saved_score import router as saved_score_router
 
 app = FastAPI(title="Hymn Backend")
 
@@ -16,6 +17,7 @@ app.add_middleware(
 
 app.include_router(score_router)
 app.include_router(auth_router)
+app.include_router(saved_score_router)
 
 @app.get("/health")
 def health():
