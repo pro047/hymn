@@ -1,5 +1,10 @@
-name: Build and Deploy (Production)
+name: Deploy (Production)
 
+# 단일 운영 환경 배포 워크플로.
+# NOTE: 시크릿 이름에 *_STAGING이 남아 있지만, 이 리소스들(ECR hymn-api,
+# hymn-stg-ec2, staging.score-hymn.com 인증서)이 곧 실제 운영 환경이다.
+# 과거 staging 환경을 운영으로 승격하면서 이름만 남은 것 — 값 재입력이
+# 가능해지면 *_PROD 없이 접미사 없는 이름으로 정리할 것.
 on:
   push:
     branches: [main]
@@ -7,7 +12,7 @@ on:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REPO: ${{ secrets.ECR_REPO_PROD }}
+  ECR_REPO: ${{ secrets.ECR_REPO_STAGING }}
 
 concurrency:
   group: prod-deploy
@@ -29,7 +34,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_PROD }}
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_STAGING }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -66,7 +71,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}-frontend
           build-args: |
-            VITE_API_BASE_URL=${{ secrets.FRONTEND_API_URL_PROD }}
+            VITE_API_BASE_URL=${{ secrets.FRONTEND_API_URL_STAGING }}
 
       - name: Set image outputs
         id: image-uri
@@ -103,7 +108,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_PROD }}
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN_STAGING }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy via SSM (docker compose pull && up)
@@ -113,8 +118,8 @@ jobs:
           IMAGE_FRONTEND: ${{ needs.build-and-push.outputs.frontend_image_uri }}
           ECR_REPO: ${{ env.ECR_REPO }}
           GITHUB_SHA: ${{ github.sha }}
-          TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID_PROD }}
-          ENV_PROD: ${{ secrets.ENV_PROD }}
+          TARGET_INSTANCE: ${{ secrets.EC2_INSTANCE_ID_STAGING }}
+          ENV_PROD: ${{ secrets.ENV_STAGING }}
           COMPOSE_CONTENT: ${{ steps.compose-file.outputs.content }}
           NGINX_CONF_CONTENT: ${{ steps.nginx-file.outputs.content }}
         run: |
@@ -157,5 +162,5 @@ jobs:
           aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy hymn-api (production)" \
+            --comment "Deploy hymn (production)" \
             --parameters "$PARAMS"
