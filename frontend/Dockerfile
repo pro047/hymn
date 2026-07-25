@@ -1,7 +1,7 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml* package-lock.json* yarn.lock* ./
+COPY package.json pnpm-workspace.yaml* pnpm-lock.yaml* package-lock.json* yarn.lock* ./
 RUN corepack enable && pnpm install --frozen-lockfile || npm install
 
 COPY . .
