@@ -1,12 +1,15 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
+import { API_PATHS } from "../api/paths";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 
 export default function SignupPage() {
+  const navigate = useNavigate();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,8 +18,10 @@ export default function SignupPage() {
   const [churchAddress, setChurchAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [agreed, setAgreed] = useState(false);
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const passwordRule = /^(?=.*[a-z])(?=.*[A-Z])[A-Za-z]{8,16}$/;
+  const passwordRule = /^(?=.*[a-z])(?=.*[A-Z]).{8,16}$/;
   const isPasswordValid = passwordRule.test(password);
   const isPasswordConfirmValid = passwordConfirm.length > 0 && password === passwordConfirm;
 
@@ -32,6 +37,50 @@ export default function SignupPage() {
     isPasswordValid &&
     isPasswordConfirmValid;
 
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    if (!canSubmit || isSubmitting) return;
+
+    setError("");
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch(API_PATHS.authSignup, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+          church: church.trim(),
+          church_address: churchAddress.trim(),
+          phone: phone.trim(),
+          agreed_terms: agreed,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.detail || "회원가입에 실패했습니다.");
+      }
+
+      const payload = await response.json();
+      const accessToken = payload?.tokens?.access_token;
+      const refreshToken = payload?.tokens?.refresh_token;
+      if (!accessToken || !refreshToken) {
+        throw new Error("토큰 응답이 올바르지 않습니다.");
+      }
+
+      localStorage.setItem("hymn_access_token", accessToken);
+      localStorage.setItem("hymn_refresh_token", refreshToken);
+      navigate("/", { replace: true });
+    } catch (submitError) {
+      setError(submitError.message || "회원가입 처리 중 오류가 발생했습니다.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-white px-4 text-stone-900 sm:px-6 lg:px-8">
       <div className="mx-auto w-full max-w-md">
@@ -40,10 +89,7 @@ export default function SignupPage() {
             <p className="mb-4 text-center text-lg font-normal text-stone-300">
               H Y M N
             </p>
-            <form
-              className="space-y-4"
-              onSubmit={(event) => event.preventDefault()}
-            >
+            <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-2">
                 <Label htmlFor="name" className="text-[14px] text-stone-600">
                   이름
@@ -89,14 +135,14 @@ export default function SignupPage() {
                 <Input
                   id="password"
                   type="password"
-                  placeholder="8 - 16 글자 영문 대,소문자"
+                  placeholder="8 - 16자, 영문 대소문자 포함"
                   autoComplete="new-password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                 />
                 {password.length > 0 && !isPasswordValid ? (
                   <p className="text-[12px] text-red-500">
-                    비밀번호는 8~16자 영문이며 대문자/소문자를 모두 포함해야 합니다.
+                    비밀번호는 8~16자이며 영문 대문자와 소문자를 모두 포함해야 합니다. 숫자와 특수문자는 사용할 수 있습니다.
                   </p>
                 ) : null}
               </div>
@@ -170,12 +216,19 @@ export default function SignupPage() {
                 <span>서비스 이용약관 및 개인정보 수집·이용에 동의합니다.</span>
               </label>
 
+              {error ? (
+                <Alert variant="destructive">
+                  <AlertTitle>회원가입 실패</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              ) : null}
+
               <Button
                 type="submit"
                 className="mt-4 w-full"
-                disabled={!canSubmit}
+                disabled={!canSubmit || isSubmitting}
               >
-                회원가입
+                {isSubmitting ? "회원가입 중..." : "회원가입"}
               </Button>
             </form>
 

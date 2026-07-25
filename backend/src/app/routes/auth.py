@@ -32,7 +32,7 @@ from app.services.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-PASSWORD_RULE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])[A-Za-z]{8,16}$")
+PASSWORD_RULE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z]).{8,16}$")
 
 
 @router.get("/check-email", response_model=EmailCheckResponse)
@@ -85,7 +85,7 @@ def signup(payload: SignupRequest, session: Session = Depends(get_session)):
     if not PASSWORD_RULE.fullmatch(payload.password):
         raise HTTPException(
             status_code=400,
-            detail="비밀번호는 8~16자 영문이며 대문자/소문자를 모두 포함해야 합니다.",
+            detail="비밀번호는 8~16자이며 영문 대문자와 소문자를 모두 포함해야 합니다. 숫자와 특수문자는 사용할 수 있습니다.",
         )
 
     normalized_email = payload.email.strip().lower()
