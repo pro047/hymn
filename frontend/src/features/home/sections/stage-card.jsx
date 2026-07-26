@@ -50,15 +50,17 @@ export default function StageCard({
                 {score.title}
               </button>
               <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  disabled={pendingSaveScoreId === score.id}
-                  onClick={() => onToggleSave(score.id)}
-                >
-                  {savedScoreIds.has(score.id) ? "저장 해제" : "저장"}
-                </Button>
+                {onToggleSave ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    disabled={pendingSaveScoreId === score.id}
+                    onClick={() => onToggleSave(score.id)}
+                  >
+                    {savedScoreIds.has(score.id) ? "저장 해제" : "저장"}
+                  </Button>
+                ) : null}
                 <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score.id)}>
                   수정
                 </Button>

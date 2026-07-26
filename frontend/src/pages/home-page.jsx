@@ -10,12 +10,13 @@ import StageCard from "../features/home/sections/stage-card";
 import WeekSummaryCard from "../features/home/sections/week-summary-card";
 import SavedScoresCard from "../features/score/components/saved-scores-card";
 import ScoreUploadDialog from "../features/score/components/score-upload-dialog";
+import { SAVED_SCORES_ENABLED } from "../features/score/feature-flags";
 import { useScores } from "../features/score/hooks/use-scores";
 
 const tabs = [
   { id: "scores", label: "악보" },
   { id: "weeks", label: "주차" },
-  { id: "library", label: "보관함" },
+  ...(SAVED_SCORES_ENABLED ? [{ id: "library", label: "보관함" }] : []),
   { id: "settings", label: "설정" },
 ];
 
@@ -141,7 +142,7 @@ export default function HomePage() {
                   scores={scores}
                   savedScoreIds={savedScoreIds}
                   pendingSaveScoreId={pendingSaveScoreId}
-                  onToggleSave={toggleSavedScore}
+                  onToggleSave={SAVED_SCORES_ENABLED ? toggleSavedScore : null}
                 />
               </section>
               <StageCard
@@ -151,7 +152,7 @@ export default function HomePage() {
                 onDelete={deleteScore}
                 savedScoreIds={savedScoreIds}
                 pendingSaveScoreId={pendingSaveScoreId}
-                onToggleSave={toggleSavedScore}
+                onToggleSave={SAVED_SCORES_ENABLED ? toggleSavedScore : null}
               />
             </>
           ) : activeTab === "library" ? (

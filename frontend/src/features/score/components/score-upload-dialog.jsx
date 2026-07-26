@@ -5,6 +5,7 @@ import DatePicker from "../../../components/DatePicker";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Label } from "../../../components/ui/label";
+import { SAVED_SCORES_ENABLED } from "../feature-flags";
 
 function getInitialMode(initialMode) {
   if (initialMode) return initialMode;
@@ -133,13 +134,15 @@ export default function ScoreUploadDialog({
             <div className="space-y-2">
               <Label>추가 방식</Label>
               <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant={mode === "library" ? "default" : "outline"}
-                  onClick={() => setMode("library")}
-                >
-                  보관함
-                </Button>
+                {SAVED_SCORES_ENABLED ? (
+                  <Button
+                    type="button"
+                    variant={mode === "library" ? "default" : "outline"}
+                    onClick={() => setMode("library")}
+                  >
+                    보관함
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant={mode === "pc" ? "default" : "outline"}

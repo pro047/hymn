@@ -32,15 +32,17 @@ export default function RecentScoresCard({
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant="outline">등록</Badge>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  disabled={pendingSaveScoreId === score.id}
-                  onClick={() => onToggleSave(score.id)}
-                >
-                  {savedScoreIds.has(score.id) ? "저장 해제" : "저장"}
-                </Button>
+                {onToggleSave ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    disabled={pendingSaveScoreId === score.id}
+                    onClick={() => onToggleSave(score.id)}
+                  >
+                    {savedScoreIds.has(score.id) ? "저장 해제" : "저장"}
+                  </Button>
+                ) : null}
               </div>
             </div>
           ))
