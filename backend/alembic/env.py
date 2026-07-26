@@ -3,9 +3,7 @@ import sys
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import create_engine
-from sqlalchemy import pool
-from typing import Optional
+from sqlalchemy import create_engine, pool
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SRC_DIR = os.path.join(BASE_DIR, "src")
@@ -27,7 +25,7 @@ target_metadata = Base.metadata
 
 def get_url() -> str:
     # Prefer env var DATABASE_URL; fallback to alembic.ini
-    url: Optional[str] = os.getenv("DATABASE_URL")
+    url: str | None = os.getenv("DATABASE_URL")
     if not url:
         url = config.get_main_option("sqlalchemy.url")
     if not url:

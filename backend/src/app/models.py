@@ -18,6 +18,7 @@ class Church(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Seoul")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
@@ -31,13 +32,28 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     church_id: Mapped[str] = mapped_column(ForeignKey("churches.id", ondelete="CASCADE"), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(Enum("leader", "member", name="user_role"), nullable=False, default="member")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
     church: Mapped["Church"] = relationship(back_populates="users")
     uploaded_scores: Mapped[list["Score"]] = relationship(back_populates="uploader")
+    saved_scores: Mapped[list["SavedScore"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    # id is the JWT jti claim of the issued refresh token
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
 
 class Score(Base):
@@ -47,18 +63,24 @@ class Score(Base):
     church_id: Mapped[str] = mapped_column(ForeignKey("churches.id", ondelete="CASCADE"), nullable=False)
     uploader_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    week_of: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    week_of: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     file_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    status: Mapped[str] = mapped_column(Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft")
+    status: Mapped[str] = mapped_column(
+        Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft"
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False
+    )
 
     church: Mapped["Church"] = relationship(back_populates="scores")
     uploader: Mapped["User"] = relationship(back_populates="uploaded_scores")
     assets: Mapped[list["ScoreAsset"]] = relationship(back_populates="score", cascade="all, delete-orphan")
     set_items: Mapped[list["SetItem"]] = relationship(back_populates="score", cascade="all, delete-orphan")
-
+    saved_by: Mapped[list["SavedScore"]] = relationship(
+        back_populates="score", cascade="all, delete-orphan"
+    )
 
 class ScoreAsset(Base):
     __tablename__ = "score_assets"
@@ -71,6 +93,20 @@ class ScoreAsset(Base):
 
     score: Mapped["Score"] = relationship(back_populates="assets")
 
+class SavedScore(Base):
+    __tablename__ = "saved_scores"
+    __table_args__ = (
+        UniqueConstraint("user_id", "score_id", name="uq_saved_scores_user_score"),
+        )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    score_id: Mapped[str] = mapped_column(ForeignKey("scores.id", ondelete="CASCADE"), nullable=False)
+    use_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="saved_scores")
+    score: Mapped["Score"] = relationship(back_populates="saved_by")
 
 class Week(Base):
     __tablename__ = "weeks"

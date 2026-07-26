@@ -1,5 +1,5 @@
-import { Badge } from "../../../components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card"
+import { Badge } from "../../../components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
 export default function WeekSummaryCard({ weekSummaries }) {
   return (
@@ -28,5 +28,5 @@ export default function WeekSummaryCard({ weekSummaries }) {
         )}
       </CardContent>
     </Card>
-  )
+  );
 }

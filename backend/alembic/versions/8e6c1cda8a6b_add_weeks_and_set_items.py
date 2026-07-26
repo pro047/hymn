@@ -1,8 +1,7 @@
 """add weeks and set_items tables plus file_uri on scores"""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "8e6c1cda8a6b"
 down_revision = "da94023e5267"

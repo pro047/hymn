@@ -1,8 +1,16 @@
-import { Button } from "../../../components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card"
+import { Button } from "../../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
-export default function StageCard({ scores, weekOf, onUpdate, onDelete }) {
-  const stageScores = scores.slice(0, 5)
+export default function StageCard({
+  scores,
+  weekOf,
+  onUpdate,
+  onDelete,
+  savedScoreIds,
+  pendingSaveScoreId,
+  onToggleSave,
+}) {
+  const stageScores = scores.slice(0, 5);
 
   return (
     <Card>
@@ -42,6 +50,17 @@ export default function StageCard({ scores, weekOf, onUpdate, onDelete }) {
                 {score.title}
               </button>
               <div className="flex items-center gap-1">
+                {onToggleSave ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    disabled={pendingSaveScoreId === score.id}
+                    onClick={() => onToggleSave(score.id)}
+                  >
+                    {savedScoreIds.has(score.id) ? "저장 해제" : "저장"}
+                  </Button>
+                ) : null}
                 <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score.id)}>
                   수정
                 </Button>
@@ -60,5 +79,5 @@ export default function StageCard({ scores, weekOf, onUpdate, onDelete }) {
         )}
       </CardContent>
     </Card>
-  )
+  );
 }
