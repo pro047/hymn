@@ -1,15 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { apiFetch } from "../../../api/client";
 import { API_PATHS } from "../../../api/paths";
-
-function getAuthHeaders() {
-  const token = localStorage.getItem("hymn_access_token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-function hasAccessToken() {
-  return Boolean(localStorage.getItem("hymn_access_token"));
-}
+import { isAuthenticated } from "../../../lib/auth-storage";
 
 export function useScores() {
   const [scores, setScores] = useState([]);
@@ -49,14 +42,12 @@ export function useScores() {
   }, []);
 
   const fetchSavedScores = useCallback(async () => {
-    if (!hasAccessToken()) {
+    if (!isAuthenticated()) {
       setSavedScores([]);
       return;
     }
     try {
-      const response = await fetch(API_PATHS.savedScores, {
-        headers: getAuthHeaders(),
-      });
+      const response = await apiFetch(API_PATHS.savedScores);
       if (!response.ok) {
         throw new Error("저장소 목록을 불러오지 못했습니다.");
       }
@@ -80,35 +71,38 @@ export function useScores() {
     file,
     saveToLibrary = false,
   }) => {
-    if (saveToLibrary && !hasAccessToken()) {
+    if (saveToLibrary && !isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return { ok: false };
     }
 
     setIsUploading(true);
     try {
-      const response = await fetch(saveToLibrary ? API_PATHS.savedScoreUpload : API_PATHS.scores, {
+      // Decide the whole request shape once, instead of branching per field.
+      const { request, url, payload } = saveToLibrary
+        ? {
+            request: apiFetch,
+            url: API_PATHS.savedScoreUpload,
+            payload: { title, filename: file.name, content_type: file.type },
+          }
+        : {
+            request: fetch,
+            url: API_PATHS.scores,
+            payload: {
+              title,
+              church_name: churchName,
+              week_of: weekOf,
+              storage_type: "s3",
+              filename: file.name,
+              content_type: file.type,
+            },
+          };
+      const response = await request(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(saveToLibrary ? getAuthHeaders() : {}),
         },
-        body: JSON.stringify(
-          saveToLibrary
-            ? {
-                title,
-                filename: file.name,
-                content_type: file.type,
-              }
-            : {
-                title,
-                church_name: churchName,
-                week_of: weekOf,
-                storage_type: "s3",
-                filename: file.name,
-                content_type: file.type,
-              }
-        ),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -171,15 +165,14 @@ export function useScores() {
   };
 
   const saveScore = async (scoreId) => {
-    if (!hasAccessToken()) {
+    if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return;
     }
     setPendingSaveScoreId(scoreId);
     try {
-      const response = await fetch(API_PATHS.savedScore(scoreId), {
+      const response = await apiFetch(API_PATHS.savedScore(scoreId), {
         method: "POST",
-        headers: getAuthHeaders(),
       });
       if (!response.ok) {
         throw new Error("악보 저장에 실패했습니다.");
@@ -193,15 +186,14 @@ export function useScores() {
   };
 
   const removeSavedScore = async (scoreId) => {
-    if (!hasAccessToken()) {
+    if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return;
     }
     setPendingSaveScoreId(scoreId);
     try {
-      const response = await fetch(API_PATHS.savedScore(scoreId), {
+      const response = await apiFetch(API_PATHS.savedScore(scoreId), {
         method: "DELETE",
-        headers: getAuthHeaders(),
       });
       if (!response.ok) {
         throw new Error("저장소 삭제에 실패했습니다.");
@@ -223,17 +215,16 @@ export function useScores() {
   };
 
   const applySavedScoreToWeek = async ({ scoreId, weekOf }) => {
-    if (!hasAccessToken()) {
+    if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return { ok: false };
     }
     setIsApplyingSavedScore(true);
     try {
-      const response = await fetch(API_PATHS.applySavedScore(scoreId), {
+      const response = await apiFetch(API_PATHS.applySavedScore(scoreId), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...getAuthHeaders(),
         },
         body: JSON.stringify({ week_of: weekOf }),
       });

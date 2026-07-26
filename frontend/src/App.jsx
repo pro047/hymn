@@ -1,13 +1,11 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
+import { logout } from "./api/client";
 import { Button } from "./components/ui/button";
+import { isAuthenticated } from "./lib/auth-storage";
 import HomePage from "./pages/home-page";
 import LoginPage from "./pages/login-page";
 import SignupPage from "./pages/signup-page";
-
-function isAuthenticated() {
-  return Boolean(localStorage.getItem("hymn_access_token"));
-}
 
 function ProtectedHomePage() {
   if (!isAuthenticated()) {
@@ -17,17 +15,7 @@ function ProtectedHomePage() {
   return (
     <div className="relative">
       <div className="fixed right-4 top-4 z-20">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            localStorage.removeItem("hymn_access_token");
-            localStorage.removeItem("hymn_refresh_token");
-            localStorage.removeItem("hymn_church_code");
-            window.location.href = "/login";
-          }}
-        >
+        <Button type="button" variant="outline" size="sm" onClick={logout}>
           로그아웃
         </Button>
       </div>

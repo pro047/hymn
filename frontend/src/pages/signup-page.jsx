@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { API_PATHS } from "../api/paths";
+import { setTokens } from "../lib/auth-storage";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
@@ -71,8 +72,7 @@ export default function SignupPage() {
         throw new Error("토큰 응답이 올바르지 않습니다.");
       }
 
-      localStorage.setItem("hymn_access_token", accessToken);
-      localStorage.setItem("hymn_refresh_token", refreshToken);
+      setTokens({ accessToken, refreshToken });
       navigate("/", { replace: true });
     } catch (submitError) {
       setError(submitError.message || "회원가입 처리 중 오류가 발생했습니다.");
