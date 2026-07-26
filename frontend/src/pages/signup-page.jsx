@@ -86,9 +86,7 @@ export default function SignupPage() {
       <div className="mx-auto w-full max-w-md">
         <Card className="border-stone-200">
           <CardContent className="pt-6">
-            <p className="mb-4 text-center text-lg font-normal text-stone-300">
-              H Y M N
-            </p>
+            <p className="mb-4 text-center text-lg font-normal text-stone-300">H Y M N</p>
             <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-2">
                 <Label htmlFor="name" className="text-[14px] text-stone-600">
@@ -142,7 +140,8 @@ export default function SignupPage() {
                 />
                 {password.length > 0 && !isPasswordValid ? (
                   <p className="text-[12px] text-red-500">
-                    비밀번호는 8~16자이며 영문 대문자와 소문자를 모두 포함해야 합니다. 숫자와 특수문자는 사용할 수 있습니다.
+                    비밀번호는 8~16자이며 영문 대문자와 소문자를 모두 포함해야 합니다. 숫자와
+                    특수문자는 사용할 수 있습니다.
                   </p>
                 ) : null}
               </div>
@@ -223,21 +222,14 @@ export default function SignupPage() {
                 </Alert>
               ) : null}
 
-              <Button
-                type="submit"
-                className="mt-4 w-full"
-                disabled={!canSubmit || isSubmitting}
-              >
+              <Button type="submit" className="mt-4 w-full" disabled={!canSubmit || isSubmitting}>
                 {isSubmitting ? "회원가입 중..." : "회원가입"}
               </Button>
             </form>
 
             <p className="mt-4 text-center text-[12px] text-stone-500">
               이미 계정이 있으신가요?{" "}
-              <Link
-                to="/login"
-                className="font-medium text-stone-700 underline underline-offset-2"
-              >
+              <Link to="/login" className="font-medium text-stone-700 underline underline-offset-2">
                 로그인
               </Link>
             </p>

@@ -1,9 +1,14 @@
-import { Badge } from "../../../components/ui/badge"
-import { Button } from "../../../components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card"
+import { Badge } from "../../../components/ui/badge";
+import { Button } from "../../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
-export default function RecentScoresCard({ scores, savedScoreIds, pendingSaveScoreId, onToggleSave }) {
-  const recentScores = scores.slice(0, 3)
+export default function RecentScoresCard({
+  scores,
+  savedScoreIds,
+  pendingSaveScoreId,
+  onToggleSave,
+}) {
+  const recentScores = scores.slice(0, 3);
 
   return (
     <Card>
@@ -42,5 +47,5 @@ export default function RecentScoresCard({ scores, savedScoreIds, pendingSaveSco
         )}
       </CardContent>
     </Card>
-  )
+  );
 }

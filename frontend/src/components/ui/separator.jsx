@@ -1,4 +1,4 @@
-import { cn } from "../../lib/utils"
+import { cn } from "../../lib/utils";
 
 function Separator({ className, orientation = "horizontal", ...props }) {
   return (
@@ -12,7 +12,7 @@ function Separator({ className, orientation = "horizontal", ...props }) {
       )}
       {...props}
     />
-  )
+  );
 }
 
-export { Separator }
+export { Separator };

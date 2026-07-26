@@ -1,17 +1,17 @@
-import { Navigate, Route, Routes } from "react-router-dom"
+import { Navigate, Route, Routes } from "react-router-dom";
 
-import { Button } from "./components/ui/button"
-import HomePage from "./pages/home-page"
-import LoginPage from "./pages/login-page"
-import SignupPage from "./pages/signup-page"
+import { Button } from "./components/ui/button";
+import HomePage from "./pages/home-page";
+import LoginPage from "./pages/login-page";
+import SignupPage from "./pages/signup-page";
 
 function isAuthenticated() {
-  return Boolean(localStorage.getItem("hymn_access_token"))
+  return Boolean(localStorage.getItem("hymn_access_token"));
 }
 
 function ProtectedHomePage() {
   if (!isAuthenticated()) {
-    return <Navigate to="/login" replace />
+    return <Navigate to="/login" replace />;
   }
 
   return (
@@ -22,10 +22,10 @@ function ProtectedHomePage() {
           variant="outline"
           size="sm"
           onClick={() => {
-            localStorage.removeItem("hymn_access_token")
-            localStorage.removeItem("hymn_refresh_token")
-            localStorage.removeItem("hymn_church_code")
-            window.location.href = "/login"
+            localStorage.removeItem("hymn_access_token");
+            localStorage.removeItem("hymn_refresh_token");
+            localStorage.removeItem("hymn_church_code");
+            window.location.href = "/login";
           }}
         >
           로그아웃
@@ -33,21 +33,21 @@ function ProtectedHomePage() {
       </div>
       <HomePage />
     </div>
-  )
+  );
 }
 
 function LoginRoute() {
   if (isAuthenticated()) {
-    return <Navigate to="/" replace />
+    return <Navigate to="/" replace />;
   }
-  return <LoginPage />
+  return <LoginPage />;
 }
 
 function SignupRoute() {
   if (isAuthenticated()) {
-    return <Navigate to="/" replace />
+    return <Navigate to="/" replace />;
   }
-  return <SignupPage />
+  return <SignupPage />;
 }
 
 function App() {
@@ -58,7 +58,7 @@ function App() {
       <Route path="/" element={<ProtectedHomePage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-  )
+  );
 }
 
-export default App
+export default App;

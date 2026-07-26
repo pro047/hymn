@@ -1,8 +1,8 @@
-import { useRef } from "react"
-import { Trash2 } from "lucide-react"
+import { useRef } from "react";
+import { Trash2 } from "lucide-react";
 
-import { Button } from "../../../components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card"
+import { Button } from "../../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
 export default function SavedScoresCard({
   scores,
@@ -11,22 +11,24 @@ export default function SavedScoresCard({
   onQuickUpload,
   pendingSaveScoreId,
 }) {
-  const fileInputRef = useRef(null)
+  const fileInputRef = useRef(null);
 
   const handleFileChange = (event) => {
-    const selectedFile = event.target.files?.[0] || null
+    const selectedFile = event.target.files?.[0] || null;
     if (selectedFile) {
-      onQuickUpload?.(selectedFile)
+      onQuickUpload?.(selectedFile);
     }
-    event.target.value = ""
-  }
+    event.target.value = "";
+  };
 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <div>
           <CardTitle>악보 보관함</CardTitle>
-          <p className="mt-1 text-xs text-stone-500">저장한 악보를 여러 주차에 다시 반영하거나 새 이미지를 바로 추가합니다.</p>
+          <p className="mt-1 text-xs text-stone-500">
+            저장한 악보를 여러 주차에 다시 반영하거나 새 이미지를 바로 추가합니다.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <input
@@ -75,8 +77,8 @@ export default function SavedScoresCard({
                   className="absolute right-2 top-2 h-8 w-8 rounded-full border-stone-200 bg-white/95 opacity-0 shadow-sm transition group-hover:opacity-100"
                   disabled={pendingSaveScoreId === score.score_id}
                   onClick={(event) => {
-                    event.stopPropagation()
-                    onRemove(score.score_id)
+                    event.stopPropagation();
+                    onRemove(score.score_id);
                   }}
                 >
                   <Trash2 className="h-4 w-4" />
@@ -87,5 +89,5 @@ export default function SavedScoresCard({
         )}
       </CardContent>
     </Card>
-  )
+  );
 }

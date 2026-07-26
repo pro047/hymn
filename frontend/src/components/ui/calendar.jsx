@@ -1,9 +1,9 @@
-import * as React from "react"
-import { DayPicker } from "react-day-picker"
-import { ChevronLeft, ChevronRight } from "lucide-react"
+import * as React from "react";
+import { DayPicker } from "react-day-picker";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
-import { cn } from "../../lib/utils"
-import { buttonVariants } from "./button"
+import { cn } from "../../lib/utils";
+import { buttonVariants } from "./button";
 
 function Calendar({ className, classNames, showOutsideDays = true, ...props }) {
   return (
@@ -40,8 +40,7 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }) {
         day_outside:
           "day-outside text-stone-400 opacity-50 aria-selected:bg-stone-900 aria-selected:text-stone-50 aria-selected:opacity-30",
         day_disabled: "text-stone-400 opacity-50",
-        day_range_middle:
-          "aria-selected:bg-stone-900 aria-selected:text-stone-50",
+        day_range_middle: "aria-selected:bg-stone-900 aria-selected:text-stone-50",
         day_hidden: "invisible",
         ...classNames,
       }}
@@ -51,7 +50,7 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }) {
       }}
       {...props}
     />
-  )
+  );
 }
 
-export { Calendar }
+export { Calendar };
