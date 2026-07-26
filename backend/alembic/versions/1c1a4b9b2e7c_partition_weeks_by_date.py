@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "1c1a4b9b2e7c"
 down_revision = "8e6c1cda8a6b"

@@ -2,8 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.auth import router as auth_router
-from app.routes.score import router as score_router
 from app.routes.saved_score import router as saved_score_router
+from app.routes.score import router as score_router
 
 app = FastAPI(title="Hymn Backend")
 

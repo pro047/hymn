@@ -63,7 +63,7 @@ def get_current_user(
         token = parse_bearer_token(authorization)
         claims = decode_token(token)
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
 
     if claims.get("type") != "access":
         raise HTTPException(status_code=401, detail="Invalid token type")
