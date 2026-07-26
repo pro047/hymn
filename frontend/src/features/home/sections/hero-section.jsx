@@ -1,6 +1,6 @@
-import { Badge } from "../../../components/ui/badge"
-import { Button } from "../../../components/ui/button"
-import { Card, CardContent } from "../../../components/ui/card"
+import { Badge } from "../../../components/ui/badge";
+import { Button } from "../../../components/ui/button";
+import { Card, CardContent } from "../../../components/ui/card";
 
 export default function HeroSection({ totalSongs, onUpload }) {
   return (
@@ -14,7 +14,9 @@ export default function HeroSection({ totalSongs, onUpload }) {
             <h1 className="text-2xl font-semibold tracking-tight text-stone-950 md:text-3xl">
               주간 콘티를 빠르게 정리합니다
             </h1>
-            <p className="text-sm text-stone-600">점검, 공유, 수정 흐름을 한 화면에서 관리하세요.</p>
+            <p className="text-sm text-stone-600">
+              점검, 공유, 수정 흐름을 한 화면에서 관리하세요.
+            </p>
           </div>
           <Button type="button" onClick={onUpload}>
             악보 업로드
@@ -36,5 +38,5 @@ export default function HeroSection({ totalSongs, onUpload }) {
         </div>
       </CardContent>
     </Card>
-  )
+  );
 }

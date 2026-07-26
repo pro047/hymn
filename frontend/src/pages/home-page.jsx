@@ -1,26 +1,26 @@
-import { useMemo, useState } from "react"
-import { addDays, format, startOfWeek } from "date-fns"
+import { useMemo, useState } from "react";
+import { addDays, format, startOfWeek } from "date-fns";
 
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert"
-import { Button } from "../components/ui/button"
-import { Separator } from "../components/ui/separator"
-import HeroSection from "../features/home/sections/hero-section"
-import RecentScoresCard from "../features/home/sections/recent-scores-card"
-import StageCard from "../features/home/sections/stage-card"
-import WeekSummaryCard from "../features/home/sections/week-summary-card"
-import SavedScoresCard from "../features/score/components/saved-scores-card"
-import ScoreUploadDialog from "../features/score/components/score-upload-dialog"
-import { useScores } from "../features/score/hooks/use-scores"
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
+import { Button } from "../components/ui/button";
+import { Separator } from "../components/ui/separator";
+import HeroSection from "../features/home/sections/hero-section";
+import RecentScoresCard from "../features/home/sections/recent-scores-card";
+import StageCard from "../features/home/sections/stage-card";
+import WeekSummaryCard from "../features/home/sections/week-summary-card";
+import SavedScoresCard from "../features/score/components/saved-scores-card";
+import ScoreUploadDialog from "../features/score/components/score-upload-dialog";
+import { useScores } from "../features/score/hooks/use-scores";
 
 const tabs = [
   { id: "scores", label: "악보" },
   { id: "weeks", label: "주차" },
   { id: "library", label: "보관함" },
   { id: "settings", label: "설정" },
-]
+];
 
 export default function HomePage() {
-  const [activeTab, setActiveTab] = useState("scores")
+  const [activeTab, setActiveTab] = useState("scores");
   const [uploadDialogState, setUploadDialogState] = useState({
     open: false,
     mode: null,
@@ -29,7 +29,7 @@ export default function HomePage() {
     lockMode: false,
     saveToLibrary: false,
     sessionKey: 0,
-  })
+  });
 
   const {
     scores,
@@ -46,20 +46,26 @@ export default function HomePage() {
     toggleSavedScore,
     removeSavedScore,
     applySavedScoreToWeek,
-  } = useScores()
+  } = useScores();
 
   const upcomingSundayWeekOf = useMemo(() => {
-    const today = new Date()
-    const thisWeekStart = startOfWeek(today, { weekStartsOn: 1 })
-    const upcomingSunday = addDays(thisWeekStart, 6)
-    return format(upcomingSunday, "yyyy-MM-dd")
-  }, [])
+    const today = new Date();
+    const thisWeekStart = startOfWeek(today, { weekStartsOn: 1 });
+    const upcomingSunday = addDays(thisWeekStart, 6);
+    return format(upcomingSunday, "yyyy-MM-dd");
+  }, []);
 
   const upcomingSundayScores = useMemo(() => {
-    return scores.filter((score) => String(score.week_of).slice(0, 10) === upcomingSundayWeekOf)
-  }, [scores, upcomingSundayWeekOf])
+    return scores.filter((score) => String(score.week_of).slice(0, 10) === upcomingSundayWeekOf);
+  }, [scores, upcomingSundayWeekOf]);
 
-  const openUploadDialog = ({ mode = null, file = null, savedScore = null, lockMode = false, saveToLibrary = false } = {}) => {
+  const openUploadDialog = ({
+    mode = null,
+    file = null,
+    savedScore = null,
+    lockMode = false,
+    saveToLibrary = false,
+  } = {}) => {
     setUploadDialogState({
       open: true,
       mode,
@@ -68,8 +74,8 @@ export default function HomePage() {
       lockMode,
       saveToLibrary,
       sessionKey: Date.now(),
-    })
-  }
+    });
+  };
 
   const closeUploadDialog = () => {
     setUploadDialogState({
@@ -80,8 +86,8 @@ export default function HomePage() {
       lockMode: false,
       saveToLibrary: false,
       sessionKey: 0,
-    })
-  }
+    });
+  };
 
   return (
     <div className="min-h-screen bg-white text-stone-900">
@@ -92,8 +98,12 @@ export default function HomePage() {
               H
             </div>
             <div className="space-y-0.5">
-              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-stone-500">Hymn Console</p>
-              <h1 className="text-base font-semibold tracking-tight text-stone-950">Worship Planner</h1>
+              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-stone-500">
+                Hymn Console
+              </p>
+              <h1 className="text-base font-semibold tracking-tight text-stone-950">
+                Worship Planner
+              </h1>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -187,5 +197,5 @@ export default function HomePage() {
         saveToLibrary={uploadDialogState.saveToLibrary}
       />
     </div>
-  )
+  );
 }

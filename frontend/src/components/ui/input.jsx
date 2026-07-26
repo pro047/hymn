@@ -1,4 +1,4 @@
-import { cn } from "../../lib/utils"
+import { cn } from "../../lib/utils";
 
 const Input = ({ className, type, ...props }) => {
   return (
@@ -10,7 +10,7 @@ const Input = ({ className, type, ...props }) => {
       )}
       {...props}
     />
-  )
-}
+  );
+};
 
-export { Input }
+export { Input };

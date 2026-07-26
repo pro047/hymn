@@ -1,5 +1,5 @@
-import { Button } from "../../../components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card"
+import { Button } from "../../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
 export default function StageCard({
   scores,
@@ -10,7 +10,7 @@ export default function StageCard({
   pendingSaveScoreId,
   onToggleSave,
 }) {
-  const stageScores = scores.slice(0, 5)
+  const stageScores = scores.slice(0, 5);
 
   return (
     <Card>
@@ -77,5 +77,5 @@ export default function StageCard({
         )}
       </CardContent>
     </Card>
-  )
+  );
 }

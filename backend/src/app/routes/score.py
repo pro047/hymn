@@ -1,5 +1,6 @@
 from datetime import timedelta
 from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -55,7 +56,7 @@ def create_score(payload: ScoreCreate, session: Session = Depends(get_session)):
         if not payload.filename:
             raise HTTPException(400, 'filename required for s3')
         ext = extension_from_input(payload.filename, payload.content_type)
-        key = f"scores/.../{uuid4()}.{ext}"
+        key = f"scores/{church_id}/{uuid4()}.{ext}"
         score = Score(
             church_id=church_id,
             title=payload.title,
@@ -84,7 +85,7 @@ def create_score(payload: ScoreCreate, session: Session = Depends(get_session)):
             "download_url": presign_get(key),
             "s3_key": key,
         }
-    
+
     if not payload.file_uri:
         raise HTTPException(400, 'file_uri required for local')
     score = Score(
@@ -156,7 +157,7 @@ def update_score(score_id: str, payload: ScoreUpdate, session: Session = Depends
     score = session.get(Score, score_id)
     if not score:
         raise HTTPException(404, "Score not found")
-    
+
     if payload.title is not None:
         score.title = payload.title
     if payload.week_of is not None:

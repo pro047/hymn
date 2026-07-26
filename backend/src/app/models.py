@@ -46,6 +46,16 @@ class User(Base):
     )
 
 
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    # id is the JWT jti claim of the issued refresh token
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+
 class Score(Base):
     __tablename__ = "scores"
 
@@ -56,9 +66,13 @@ class Score(Base):
     week_of: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     file_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    status: Mapped[str] = mapped_column(Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft")
+    status: Mapped[str] = mapped_column(
+        Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft"
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False
+    )
 
     church: Mapped["Church"] = relationship(back_populates="scores")
     uploader: Mapped["User"] = relationship(back_populates="uploaded_scores")

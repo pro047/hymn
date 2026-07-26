@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -11,9 +11,9 @@ class ScoreCreate(BaseModel):
     week_of: date
     storage_type: Literal['s3', 'local']
     # s3
-    filename: Optional[str] = None  # optional original filename for extension hint
-    content_type: Optional[str] = None
-    note: Optional[str] = None
+    filename: str | None = None  # optional original filename for extension hint
+    content_type: str | None = None
+    note: str | None = None
     # local
     file_uri: str | None = None
 

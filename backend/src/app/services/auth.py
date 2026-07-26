@@ -1,14 +1,14 @@
 import os
 import re
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from app.models import Church, User
-
+from app.models import Church, RefreshToken, User
 
 ACCESS_TOKEN_EXPIRES_IN_SECONDS = 60 * 60
 REFRESH_TOKEN_EXPIRES_IN_SECONDS = 60 * 60 * 24 * 30
@@ -52,11 +52,14 @@ def hash_password(plain_password: str) -> str:
 
 
 def _jwt_secret() -> str:
-    return os.getenv("AUTH_SECRET", "dev-insecure-auth-secret")
+    secret = os.getenv("AUTH_SECRET")
+    if not secret:
+        raise RuntimeError("AUTH_SECRET environment variable is not set")
+    return secret
 
 
 def _encode_token(payload: dict, *, expires_in: int) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     claims = {
         **payload,
         "iat": int(now.timestamp()),
@@ -69,7 +72,9 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
 
 
-def issue_token_bundle(*, user: User) -> TokenBundle:
+def issue_token_bundle(session: Session, *, user: User) -> TokenBundle:
+    jti = str(uuid.uuid4())
+    now = datetime.now(UTC)
     access = _encode_token(
         {
             "sub": user.id,
@@ -84,8 +89,17 @@ def issue_token_bundle(*, user: User) -> TokenBundle:
             "sub": user.id,
             "church_id": user.church_id,
             "type": "refresh",
+            "jti": jti,
         },
         expires_in=REFRESH_TOKEN_EXPIRES_IN_SECONDS,
+    )
+    session.add(
+        RefreshToken(
+            id=jti,
+            user_id=user.id,
+            # DB expires_at is for cleanup only; jose enforces the exp claim.
+            expires_at=(now + timedelta(seconds=REFRESH_TOKEN_EXPIRES_IN_SECONDS)).replace(tzinfo=None),
+        )
     )
     return TokenBundle(
         access_token=access,
@@ -95,7 +109,7 @@ def issue_token_bundle(*, user: User) -> TokenBundle:
 
 
 def issued_at_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def parse_bearer_token(authorization: str | None) -> str:

@@ -60,9 +60,7 @@ export default function LoginPage() {
       <div className="mx-auto w-full max-w-md">
         <Card className="border-stone-200">
           <CardContent className="pt-6">
-            <p className="mb-4 text-center text-lg font-normal text-stone-300">
-              H Y M N
-            </p>
+            <p className="mb-4 text-center text-lg font-normal text-stone-300">H Y M N</p>
             <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-2">
                 <Label htmlFor="email" className="text-stone-500">
@@ -109,11 +107,7 @@ export default function LoginPage() {
                 </Alert>
               ) : null}
 
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={!canSubmit || isSubmitting}
-              >
+              <Button type="submit" className="w-full" disabled={!canSubmit || isSubmitting}>
                 {isSubmitting ? "로그인 중..." : "로그인"}
               </Button>
             </form>
