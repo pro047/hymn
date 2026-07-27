@@ -4,8 +4,6 @@ create_nat_gateway = false
 ecr_repository_name = "hymn-api"
 image_bucket_name   = "hymn-stg-images"
 image_bucket_allowed_origins = [
-  "http://staging.score-hymn.com",
-  "https://staging.score-hymn.com",
   "https://www.score-hymn.com",
 ]
 
