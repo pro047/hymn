@@ -83,6 +83,12 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test (vitest)
+        run: pnpm test
+
       - name: Build
         run: pnpm build
         env:
