@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+import { requestAuth } from "../api/auth";
 import { API_PATHS } from "../api/paths";
+import { alertMessageOf, clearFieldError, toFormError, type ApiError } from "../lib/api-error";
 import { setTokens } from "../lib/auth-storage";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -9,47 +11,53 @@ import { Card, CardContent } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 
+// Backend field names this form renders inline; anything else lands in the alert.
+const RENDERED_FIELDS = ["email", "password"] as const;
+
 export default function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [apiError, setApiError] = useState<ApiError | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const canSubmit = email.trim() && password;
+  const canSubmit = Boolean(email.trim() && password);
+  const fieldErrors = apiError?.fieldErrors ?? {};
+  const alertMessage = alertMessageOf(apiError);
 
-  const handleSubmit = async (event) => {
+  const handleFieldChange =
+    (field: string, setValue: (value: string) => void) =>
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setValue(event.target.value);
+      setApiError((previous) => clearFieldError(previous, field));
+    };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canSubmit || isSubmitting) return;
 
-    setError("");
+    setApiError(null);
     setIsSubmitting(true);
     try {
-      const response = await fetch(API_PATHS.authLogin, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: email.trim().toLowerCase(),
-          password,
-        }),
+      const outcome = await requestAuth({
+        url: API_PATHS.authLogin,
+        body: { email: email.trim().toLowerCase(), password },
+        failureMessage: "로그인에 실패했습니다.",
+        unreadableMessage: "로그인 응답을 읽지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        renderedFields: RENDERED_FIELDS,
       });
 
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.detail || "로그인에 실패했습니다.");
+      if (!outcome.ok) {
+        setApiError(outcome.error);
+        return;
       }
 
-      const payload = await response.json();
-      const accessToken = payload?.tokens?.access_token;
-      const refreshToken = payload?.tokens?.refresh_token;
-      if (!accessToken || !refreshToken) {
-        throw new Error("토큰 응답이 올바르지 않습니다.");
-      }
-
-      setTokens({ accessToken, refreshToken });
+      setTokens(outcome.tokens);
       navigate("/", { replace: true });
-    } catch (submitError) {
-      setError(submitError.message || "로그인 처리 중 오류가 발생했습니다.");
+    } catch {
+      // requestAuth already classified every request failure; anything left is
+      // local (a blocked localStorage write), so it must not blame the network.
+      setApiError(toFormError("요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."));
     } finally {
       setIsSubmitting(false);
     }
@@ -71,9 +79,16 @@ export default function LoginPage() {
                   type="email"
                   placeholder="you@church.org"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={handleFieldChange("email", setEmail)}
                   autoComplete="email"
+                  aria-invalid={Boolean(fieldErrors.email)}
+                  aria-describedby={fieldErrors.email ? "email-error" : undefined}
                 />
+                {fieldErrors.email ? (
+                  <p id="email-error" className="text-[12px] text-red-500">
+                    {fieldErrors.email}
+                  </p>
+                ) : null}
               </div>
 
               <div className="space-y-2">
@@ -85,9 +100,16 @@ export default function LoginPage() {
                   type="password"
                   placeholder="비밀번호"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={handleFieldChange("password", setPassword)}
                   autoComplete="current-password"
+                  aria-invalid={Boolean(fieldErrors.password)}
+                  aria-describedby={fieldErrors.password ? "password-error" : undefined}
                 />
+                {fieldErrors.password ? (
+                  <p id="password-error" className="text-[12px] text-red-500">
+                    {fieldErrors.password}
+                  </p>
+                ) : null}
               </div>
 
               <p className="my-8 text-center text-[12px] text-stone-500">
@@ -100,10 +122,10 @@ export default function LoginPage() {
                 </Link>
               </p>
 
-              {error ? (
+              {alertMessage ? (
                 <Alert variant="destructive">
                   <AlertTitle>로그인 실패</AlertTitle>
-                  <AlertDescription>{error}</AlertDescription>
+                  <AlertDescription>{alertMessage}</AlertDescription>
                 </Alert>
               ) : null}
 
