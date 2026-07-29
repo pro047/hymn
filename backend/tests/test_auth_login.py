@@ -1,0 +1,131 @@
+"""Pins the *current* login behaviour ahead of the M4 service-layer rewrite."""
+
+import time
+
+from app.models import Church, User
+from app.services.auth import hash_password
+
+SIGNUP_PAYLOAD = {
+    "name": "tester",
+    "email": "tester@example.com",
+    "password": "Password1",
+    "church": "Test Church",
+    "church_address": "Seoul",
+    "phone": "01012345678",
+    "agreed_terms": True,
+}
+
+
+def _login(client, **overrides):
+    body = {"email": SIGNUP_PAYLOAD["email"], "password": SIGNUP_PAYLOAD["password"]}
+    return client.post("/auth/login", json={**body, **overrides})
+
+
+def test_login_with_valid_credentials_should_return_token_pair(client):
+    signup = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
+    assert signup.status_code == 201, signup.text
+
+    response = _login(client)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["tokens"]["access_token"]
+    assert body["tokens"]["token_type"] == "bearer"
+    assert body["user"]["email"] == SIGNUP_PAYLOAD["email"]
+    assert body["church"]["name"] == SIGNUP_PAYLOAD["church"]
+
+
+def test_login_with_uppercase_email_should_match_the_stored_account(client):
+    signup = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
+    assert signup.status_code == 201, signup.text
+
+    response = _login(client, email="Tester@Example.com")
+
+    assert response.status_code == 200, response.text
+
+
+def test_login_with_unknown_email_should_return_401(client):
+    response = _login(client, email="nobody@example.com")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+
+
+def test_login_with_wrong_password_should_return_401(client):
+    signup = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
+    assert signup.status_code == 201, signup.text
+
+    response = _login(client, password="WrongPass1")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+
+
+def test_login_for_user_without_password_hash_should_return_401(client, db_session):
+    church = Church(name="Legacy Church", address="Seoul")
+    db_session.add(church)
+    db_session.flush()
+    db_session.add(
+        User(
+            church_id=church.id,
+            email="legacy@example.com",
+            name="legacy",
+            password_hash=None,
+            role="member",
+        )
+    )
+    db_session.commit()
+
+    response = _login(client, email="legacy@example.com")
+
+    assert response.status_code == 401
+
+
+def test_login_password_longer_than_16_should_reach_the_hash_check(client, db_session):
+    """LoginRequest keeps max_length=128 on purpose: accounts predating the 16-char
+    policy must still be able to sign in. M2 must not tighten this alongside signup."""
+    long_password = "PasswordPassword1"
+    church = Church(name="Legacy Church", address="Seoul")
+    db_session.add(church)
+    db_session.flush()
+    db_session.add(
+        User(
+            church_id=church.id,
+            email="legacy@example.com",
+            name="legacy",
+            password_hash=hash_password(long_password),
+            role="member",
+        )
+    )
+    db_session.commit()
+
+    response = _login(client, email="legacy@example.com", password=long_password)
+
+    assert response.status_code == 200, response.text
+
+
+def test_login_with_malformed_email_should_return_422(client):
+    response = _login(client, email="a@b")
+
+    assert response.status_code == 422
+
+
+def test_login_for_unknown_email_should_answer_faster_than_a_wrong_password(client):
+    """Documents the user-enumeration oracle: a missing account skips bcrypt entirely.
+
+    M4 equalises the two by verifying against a dummy hash, at which point this
+    assertion must be inverted rather than deleted.
+    """
+    signup = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
+    assert signup.status_code == 201, signup.text
+
+    started = time.perf_counter()
+    _login(client, email="nobody@example.com")
+    unknown_email_seconds = time.perf_counter() - started
+
+    started = time.perf_counter()
+    _login(client, password="WrongPass1")
+    wrong_password_seconds = time.perf_counter() - started
+
+    # Loose factor: bcrypt costs tens of milliseconds while the miss path costs ~none.
+    assert unknown_email_seconds * 5 < wrong_password_seconds
