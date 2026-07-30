@@ -23,20 +23,19 @@ const SIGNUP_FIELDS = [
 // Recorded verbatim from the running backend on 2026-07-29:
 //   POST /auth/signup {"email":"a@b","phone":"010", …} -> 422
 // Hand-written fixtures drift from what FastAPI actually emits; this one cannot.
+// No `input` key: main.py strips it so a rejected password is never echoed back.
 const REAL_422 = {
   detail: [
     {
       type: "value_error",
       loc: ["body", "email"],
       msg: "value is not a valid email address: The part after the @-sign is not valid. It should have a period.",
-      input: "a@b",
       ctx: { reason: "The part after the @-sign is not valid. It should have a period." },
     },
     {
       type: "string_too_short",
       loc: ["body", "phone"],
       msg: "String should have at least 8 characters",
-      input: "010",
       ctx: { min_length: 8 },
     },
   ],
@@ -51,14 +50,12 @@ const REAL_422_AFTER_M2 = {
       type: "value_error",
       loc: ["body", "password"],
       msg: "Value error, 영문 대문자와 소문자를 모두 포함해야 합니다.",
-      input: "password1",
       ctx: { error: {} },
     },
     {
       type: "value_error",
       loc: ["body", "agreed_terms"],
       msg: "Value error, 약관 동의가 필요합니다.",
-      input: false,
       ctx: { error: {} },
     },
   ],

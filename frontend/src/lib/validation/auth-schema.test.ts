@@ -115,6 +115,27 @@ describe("signupFormSchema", () => {
 });
 
 describe("loginSchema", () => {
+  // Confirmed against pydantic EmailStr on 2026-07-30: every one of these
+  // constructs a LoginRequest fine, and accounts using them can exist because
+  // the pre-M2 signup page checked no email format at all. Rejecting them here
+  // would lock those users out — there is no password reset yet.
+  it.each([
+    "a@b.c",
+    "a@example.c",
+    "한글@example.com",
+    "a@한글.com",
+    "kim%name@daum.net",
+    "user=name@example.com",
+    "first!last@example.com",
+    "a@example-.com",
+  ])("서버가 받아주는 주소 %s 로는 로그인을 막지 않아야 한다", (email) => {
+    expect(loginSchema.safeParse({ email, password: "Password1" }).success).toBe(true);
+  });
+
+  it("이메일 칸이 비어 있으면 요청을 보내지 않아야 한다", () => {
+    expect(loginSchema.safeParse({ email: "   ", password: "Password1" }).success).toBe(false);
+  });
+
   it("17자 비밀번호는 로그인에서 허용해야 한다", () => {
     // Pinned against backend LoginRequest.password max_length=128: accounts made
     // before the 16-char signup cap must still be able to sign in.

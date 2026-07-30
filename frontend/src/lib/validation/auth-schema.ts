@@ -39,12 +39,24 @@ const tooLongMessage = (max: number) => `최대 ${max}자까지 입력할 수 �
 const requiredText = (max: number) =>
   z.string().trim().min(1, REQUIRED_MESSAGE).max(max, tooLongMessage(max));
 
-const emailField = z.string().trim().toLowerCase().pipe(z.email(INVALID_EMAIL_MESSAGE));
+// Signup only. zod's pattern is narrower than pydantic's EmailStr (it caps the
+// local part to `A-Za-z0-9_'+-.` and demands a 2+ char TLD), so this rejects a
+// handful of addresses the server would take. On signup that costs a rejected
+// registration; on login it would cost an account, which is why login does not
+// share it — see loginEmailField.
+const signupEmailField = z.string().trim().toLowerCase().pipe(z.email(INVALID_EMAIL_MESSAGE));
+
+// Login checks only that something was typed. Any format rule here risks being
+// stricter than EmailStr somewhere, and an account whose address the server
+// accepts but this schema rejects can never sign in — the request would not even
+// be sent, and there is no password-reset path to recover through. A malformed
+// address is the server's 422 to answer.
+const loginEmailField = z.string().trim().toLowerCase().pipe(z.string().min(1, REQUIRED_MESSAGE));
 
 /** The exact body POST /auth/signup accepts. Keep 1:1 with SignupRequest. */
 export const signupSchema = z.object({
   name: requiredText(NAME_MAX_LENGTH),
-  email: emailField,
+  email: signupEmailField,
   password: z
     .string()
     .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
@@ -73,9 +85,13 @@ export const signupFormSchema = signupSchema
     path: ["password_confirm"],
   });
 
-/** Keep 1:1 with LoginRequest — note the 128 cap, which signup does not share. */
+/**
+ * Deliberately looser than signup, in both fields: the 128-char cap and the
+ * format-free email exist so that no account the server accepts can be locked
+ * out of the login form.
+ */
 export const loginSchema = z.object({
-  email: emailField,
+  email: loginEmailField,
   password: z
     .string()
     .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))

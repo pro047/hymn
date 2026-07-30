@@ -120,6 +120,27 @@ def test_signup_with_malformed_email_should_return_422(client):
     assert response.status_code == 422
 
 
+def test_signup_422_should_not_echo_the_submitted_password(client):
+    rejected = "password1"
+
+    response = client.post("/auth/signup", json=_payload(password=rejected))
+
+    # Pydantic puts the rejected value in `input`. For a near-miss password that
+    # is a live credential the user is about to retry, and it would end up in
+    # devtools, HAR exports and any proxy that logs response bodies.
+    assert response.status_code == 422
+    assert rejected not in response.text
+    assert "input" not in _detail_for(response, "password")
+
+
+def test_signup_422_should_still_carry_the_context_the_client_renders(client):
+    response = client.post("/auth/signup", json=_payload(phone="010"))
+
+    # Stripping `input` must not take `ctx` with it — the frontend reads
+    # ctx.min_length to word its own message.
+    assert _detail_for(response, "phone")["ctx"]["min_length"] == 8
+
+
 def test_signup_with_trailing_hyphen_domain_should_return_422(client):
     response = client.post("/auth/signup", json=_payload(email="a@example-.com"))
 
