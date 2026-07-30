@@ -1,9 +1,18 @@
-"""Pins the *current* signup behaviour, including the parts M2 will change.
+"""Pins signup behaviour.
 
-Where a status code is knowingly wrong (manual `if` checks in the router return 400
-where Pydantic would return 422), the test asserts today's value and is marked with a
-`# M2:` comment so the milestone diff makes the change visible instead of silent.
+M2 moved every input rule out of the router's manual `if` checks and into
+SignupRequest, so what used to answer 400 with a bare string now answers 422 with
+Pydantic's item array. Tests that still carry a `# M3:` comment mark rules that are
+knowingly wrong today and change in a later milestone.
 """
+
+
+def _detail_for(response, field: str) -> dict:
+    """The 422 item raised for one field. `loc` is ["body", <field>]."""
+    items = response.json()["detail"]
+    matches = [item for item in items if item["loc"][-1] == field]
+    assert matches, f"no 422 item for {field!r}: {items}"
+    return matches[0]
 
 SIGNUP_PAYLOAD = {
     "name": "tester",
@@ -61,41 +70,47 @@ def test_signup_with_duplicate_email_should_return_409(client):
     assert response.json()["detail"] == "이미 사용 중인 이메일입니다."
 
 
-def test_signup_without_agreed_terms_should_return_400(client):
+def test_signup_without_agreed_terms_should_return_422(client):
     response = client.post("/auth/signup", json=_payload(agreed_terms=False))
 
-    # M2: moves into the schema, so this becomes 422.
-    assert response.status_code == 400
-    assert response.json()["detail"] == "약관 동의가 필요합니다."
+    assert response.status_code == 422
+    # The Korean wording must survive the move into the schema: the frontend
+    # strips pydantic's "Value error, " prefix and renders the rest verbatim.
+    assert "약관 동의가 필요합니다." in _detail_for(response, "agreed_terms")["msg"]
 
 
-def test_signup_password_without_uppercase_should_return_400(client):
+def test_signup_password_without_uppercase_should_return_422(client):
     response = client.post("/auth/signup", json=_payload(password="password1"))
 
-    # M2: moves to a field_validator, so this becomes 422.
-    assert response.status_code == 400
+    assert response.status_code == 422
+    item = _detail_for(response, "password")
+    assert item["type"] == "value_error"
+    assert "영문 대문자와 소문자" in item["msg"]
 
 
-def test_signup_password_without_lowercase_should_return_400(client):
+def test_signup_password_without_lowercase_should_return_422(client):
     response = client.post("/auth/signup", json=_payload(password="PASSWORD1"))
 
-    # M2: moves to a field_validator, so this becomes 422.
-    assert response.status_code == 400
+    assert response.status_code == 422
+    assert "영문 대문자와 소문자" in _detail_for(response, "password")["msg"]
 
 
 def test_signup_password_shorter_than_8_should_return_422(client):
     response = client.post("/auth/signup", json=_payload(password="Pass1"))
 
-    # Already schema-level (Field min_length=8).
     assert response.status_code == 422
+    # Length stays a Field constraint, so the frontend keeps its own Korean
+    # wording for it instead of echoing the server.
+    assert _detail_for(response, "password")["type"] == "string_too_short"
 
 
-def test_signup_password_longer_than_16_should_return_400(client):
+def test_signup_password_longer_than_16_should_return_422(client):
     response = client.post("/auth/signup", json=_payload(password="PasswordPassword1"))
 
-    # The 16-char cap is policy, but the schema allows 128 so the router rejects it.
-    # M2: SignupRequest max_length drops to 16, so this becomes 422.
-    assert response.status_code == 400
+    assert response.status_code == 422
+    item = _detail_for(response, "password")
+    assert item["type"] == "string_too_long"
+    assert item["ctx"]["max_length"] == 16
 
 
 def test_signup_with_malformed_email_should_return_422(client):
@@ -103,6 +118,16 @@ def test_signup_with_malformed_email_should_return_422(client):
 
     # EmailStr rejects a dotless domain that the browser's type="email" lets through.
     assert response.status_code == 422
+
+
+def test_signup_with_trailing_hyphen_domain_should_return_422(client):
+    response = client.post("/auth/signup", json=_payload(email="a@example-.com"))
+
+    # The frontend's zod pattern lets this through, so it is the one input that
+    # reaches the server invalid. Pinned in
+    # frontend/src/lib/validation/auth-schema.test.ts as a known divergence.
+    assert response.status_code == 422
+    assert _detail_for(response, "email")["type"] == "value_error"
 
 
 def test_signup_with_phone_shorter_than_8_should_return_422(client):

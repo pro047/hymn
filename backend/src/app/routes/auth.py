@@ -1,4 +1,3 @@
-import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -31,7 +30,6 @@ from app.services.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-PASSWORD_RULE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z]).{8,16}$")
 
 
 @router.get("/check-email", response_model=EmailCheckResponse)
@@ -79,18 +77,6 @@ def login(payload: LoginRequest, session: Session = Depends(get_session)):
 
 @router.post("/signup", response_model=SignupResponse, status_code=201)
 def signup(payload: SignupRequest, session: Session = Depends(get_session)):
-    if not payload.agreed_terms:
-        raise HTTPException(status_code=400, detail="약관 동의가 필요합니다.")
-
-    if not PASSWORD_RULE.fullmatch(payload.password):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "비밀번호는 8~16자이며 영문 대문자와 소문자를 모두 포함해야 합니다. "
-                "숫자와 특수문자는 사용할 수 있습니다."
-            ),
-        )
-
     normalized_email = payload.email.strip().lower()
     user_exists = session.query(User.id).filter(User.email == normalized_email).first()
     if user_exists:
