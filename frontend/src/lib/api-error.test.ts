@@ -13,6 +13,7 @@ const SIGNUP_FIELDS = [
   "name",
   "email",
   "password",
+  "password_confirm",
   "church",
   "church_address",
   "phone",
@@ -41,6 +42,28 @@ const REAL_422 = {
   ],
 };
 
+// Recorded verbatim from the running backend on 2026-07-29, after M2 moved the
+// rules into SignupRequest. Both items are `value_error` but must render very
+// differently: EmailStr's wording is replaced, a field_validator's is kept.
+const REAL_422_AFTER_M2 = {
+  detail: [
+    {
+      type: "value_error",
+      loc: ["body", "password"],
+      msg: "Value error, 영문 대문자와 소문자를 모두 포함해야 합니다.",
+      input: "password1",
+      ctx: { error: {} },
+    },
+    {
+      type: "value_error",
+      loc: ["body", "agreed_terms"],
+      msg: "Value error, 약관 동의가 필요합니다.",
+      input: false,
+      ctx: { error: {} },
+    },
+  ],
+};
+
 function responseStub(status: number, json: () => Promise<unknown>): Response {
   return { status, json } as unknown as Response;
 }
@@ -56,6 +79,20 @@ describe("normalizeApiError", () => {
     // formError holds only what the server said; the alert copy is derived.
     expect(error.formError).toBe("");
     expect(error.status).toBe(422);
+  });
+
+  it("M2 field_validator가 낸 한국어 사유는 접두사만 떼고 그대로 보여줘야 한다", () => {
+    const error = normalizeApiError(
+      REAL_422_AFTER_M2,
+      422,
+      "회원가입에 실패했습니다.",
+      SIGNUP_FIELDS
+    );
+
+    expect(error.fieldErrors).toEqual({
+      password: "영문 대문자와 소문자를 모두 포함해야 합니다.",
+      agreed_terms: "약관 동의가 필요합니다.",
+    });
   });
 
   it("HTTPException 문자열 detail을 받으면 그대로 formError에 담아야 한다", () => {

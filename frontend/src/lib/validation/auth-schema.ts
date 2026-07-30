@@ -1,0 +1,111 @@
+/**
+ * SOURCE OF TRUTH: backend/src/app/schemas/auth.py
+ *
+ * This is a deliberate copy, not a derivation — the server re-validates everything
+ * and its answer wins. The copy exists so a user learns what is wrong without a
+ * round trip. Loosening a rule here therefore only produces a 422; tightening one
+ * locks out input the server would have accepted. Change both files together.
+ *
+ * Parity cases are pinned in ./auth-schema.test.ts and mirrored by
+ * backend/tests/test_auth_signup.py.
+ */
+import { z } from "zod";
+
+import type { ApiError } from "../api-error";
+
+// Mirrors the module-level constants in backend/src/app/schemas/auth.py.
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 16;
+const LOGIN_PASSWORD_MAX_LENGTH = 128;
+const NAME_MAX_LENGTH = 255;
+const PHONE_MIN_LENGTH = 8;
+const PHONE_MAX_LENGTH = 32;
+
+// Worded to match what api-error.ts renders for the equivalent server rejection,
+// so the same mistake reads the same whether it was caught here or at the server.
+const REQUIRED_MESSAGE = "필수 입력 항목입니다.";
+const INVALID_EMAIL_MESSAGE = "올바른 이메일 주소를 입력해 주세요.";
+const PASSWORD_CASE_MESSAGE = "영문 대문자와 소문자를 모두 포함해야 합니다.";
+const AGREED_TERMS_MESSAGE = "약관 동의가 필요합니다.";
+const PASSWORD_MISMATCH_MESSAGE = "비밀번호가 일치하지 않습니다.";
+
+const tooShortMessage = (min: number) => `최소 ${min}자 이상 입력해 주세요.`;
+const tooLongMessage = (max: number) => `최대 ${max}자까지 입력할 수 있습니다.`;
+
+// `.trim()` runs before the length checks, so a field of nothing but spaces is
+// rejected here rather than passing min_length and reaching the server as "".
+// The parsed output is what gets sent, which keeps "what was validated" and
+// "what was submitted" from drifting apart.
+const requiredText = (max: number) =>
+  z.string().trim().min(1, REQUIRED_MESSAGE).max(max, tooLongMessage(max));
+
+const emailField = z.string().trim().toLowerCase().pipe(z.email(INVALID_EMAIL_MESSAGE));
+
+/** The exact body POST /auth/signup accepts. Keep 1:1 with SignupRequest. */
+export const signupSchema = z.object({
+  name: requiredText(NAME_MAX_LENGTH),
+  email: emailField,
+  password: z
+    .string()
+    .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
+    .max(PASSWORD_MAX_LENGTH, tooLongMessage(PASSWORD_MAX_LENGTH))
+    .regex(/[a-z]/, PASSWORD_CASE_MESSAGE)
+    .regex(/[A-Z]/, PASSWORD_CASE_MESSAGE),
+  church: requiredText(NAME_MAX_LENGTH),
+  church_address: requiredText(NAME_MAX_LENGTH),
+  phone: z
+    .string()
+    .trim()
+    .min(PHONE_MIN_LENGTH, tooShortMessage(PHONE_MIN_LENGTH))
+    .max(PHONE_MAX_LENGTH, tooLongMessage(PHONE_MAX_LENGTH)),
+  agreed_terms: z.literal(true, AGREED_TERMS_MESSAGE),
+});
+
+/**
+ * What the signup form gates on. `password_confirm` has no server counterpart —
+ * it lives here rather than as a separate boolean so the form has exactly one
+ * gate and every field reports through the same channel.
+ */
+export const signupFormSchema = signupSchema
+  .extend({ password_confirm: z.string() })
+  .refine((values) => values.password === values.password_confirm, {
+    message: PASSWORD_MISMATCH_MESSAGE,
+    path: ["password_confirm"],
+  });
+
+/** Keep 1:1 with LoginRequest — note the 128 cap, which signup does not share. */
+export const loginSchema = z.object({
+  email: emailField,
+  password: z
+    .string()
+    .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
+    .max(LOGIN_PASSWORD_MAX_LENGTH, tooLongMessage(LOGIN_PASSWORD_MAX_LENGTH)),
+});
+
+export type SignupBody = z.infer<typeof signupSchema>;
+export type LoginBody = z.infer<typeof loginSchema>;
+
+/**
+ * Reshapes zod issues into the same {@link ApiError} the server path produces, so
+ * the pages render one error model instead of two.
+ *
+ * `status: 0` marks "never reached the server", matching `toFormError`.
+ */
+export function toValidationError(error: z.ZodError): ApiError {
+  const fieldErrors: Record<string, string> = {};
+  const formLines: string[] = [];
+
+  for (const issue of error.issues) {
+    const field = issue.path[0];
+    // A schema-level issue (no path) has no field to sit under.
+    if (typeof field !== "string") {
+      formLines.push(issue.message);
+      continue;
+    }
+    // First issue per field wins; a second one would only overwrite the message
+    // the user is already reading. Mirrors fromValidationItems() in api-error.ts.
+    if (!(field in fieldErrors)) fieldErrors[field] = issue.message;
+  }
+
+  return { status: 0, formError: formLines.join(" "), fieldErrors };
+}

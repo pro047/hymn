@@ -5,6 +5,7 @@ import { requestAuth } from "../api/auth";
 import { API_PATHS } from "../api/paths";
 import { alertMessageOf, clearFieldError, toFormError, type ApiError } from "../lib/api-error";
 import { setTokens } from "../lib/auth-storage";
+import { loginSchema, toValidationError } from "../lib/validation/auth-schema";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
@@ -21,7 +22,6 @@ export default function LoginPage() {
   const [apiError, setApiError] = useState<ApiError | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const canSubmit = Boolean(email.trim() && password);
   const fieldErrors = apiError?.fieldErrors ?? {};
   const alertMessage = alertMessageOf(apiError);
 
@@ -34,14 +34,22 @@ export default function LoginPage() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canSubmit || isSubmitting) return;
+    if (isSubmitting) return;
+
+    // Mirrors LoginRequest, so a malformed address never costs a round trip. The
+    // 128-char cap here is wider than signup's on purpose — see auth-schema.ts.
+    const parsed = loginSchema.safeParse({ email, password });
+    if (!parsed.success) {
+      setApiError(toValidationError(parsed.error));
+      return;
+    }
 
     setApiError(null);
     setIsSubmitting(true);
     try {
       const outcome = await requestAuth({
         url: API_PATHS.authLogin,
-        body: { email: email.trim().toLowerCase(), password },
+        body: parsed.data,
         failureMessage: "로그인에 실패했습니다.",
         unreadableMessage: "로그인 응답을 읽지 못했습니다. 잠시 후 다시 시도해 주세요.",
         renderedFields: RENDERED_FIELDS,
@@ -129,7 +137,7 @@ export default function LoginPage() {
                 </Alert>
               ) : null}
 
-              <Button type="submit" className="w-full" disabled={!canSubmit || isSubmitting}>
+              <Button type="submit" className="w-full" disabled={isSubmitting}>
                 {isSubmitting ? "로그인 중..." : "로그인"}
               </Button>
             </form>

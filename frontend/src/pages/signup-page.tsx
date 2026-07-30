@@ -5,6 +5,7 @@ import { requestAuth } from "../api/auth";
 import { API_PATHS } from "../api/paths";
 import { alertMessageOf, clearFieldError, toFormError, type ApiError } from "../lib/api-error";
 import { setTokens } from "../lib/auth-storage";
+import { signupFormSchema, toValidationError } from "../lib/validation/auth-schema";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
@@ -16,14 +17,12 @@ const RENDERED_FIELDS = [
   "name",
   "email",
   "password",
+  "password_confirm",
   "church",
   "church_address",
   "phone",
   "agreed_terms",
 ] as const;
-
-const PASSWORD_MESSAGE =
-  "비밀번호는 8~16자이며 영문 대문자와 소문자를 모두 포함해야 합니다. 숫자와 특수문자는 사용할 수 있습니다.";
 
 export default function SignupPage() {
   const navigate = useNavigate();
@@ -38,29 +37,8 @@ export default function SignupPage() {
   const [apiError, setApiError] = useState<ApiError | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const passwordRule = /^(?=.*[a-z])(?=.*[A-Z]).{8,16}$/;
-  const isPasswordValid = passwordRule.test(password);
-  const isPasswordConfirmValid = passwordConfirm.length > 0 && password === passwordConfirm;
-
-  const canSubmit = Boolean(
-    name.trim() &&
-    email.trim() &&
-    password &&
-    passwordConfirm &&
-    church.trim() &&
-    churchAddress.trim() &&
-    phone.trim() &&
-    agreed &&
-    isPasswordValid &&
-    isPasswordConfirmValid
-  );
-
   const fieldErrors = apiError?.fieldErrors ?? {};
   const alertMessage = alertMessageOf(apiError);
-  // A server complaint about the password outranks the local rule hint, which
-  // the user has already satisfied by the time a submit can happen.
-  const passwordMessage =
-    fieldErrors.password || (password.length > 0 && !isPasswordValid ? PASSWORD_MESSAGE : "");
 
   const handleFieldChange =
     (field: string, setValue: (value: string) => void) =>
@@ -76,7 +54,25 @@ export default function SignupPage() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canSubmit || isSubmitting) return;
+    if (isSubmitting) return;
+
+    // Same rules as the server, checked first so a fixable mistake costs no round
+    // trip. `password_confirm` is form-only and is dropped from the request body.
+    const parsed = signupFormSchema.safeParse({
+      name,
+      email,
+      password,
+      password_confirm: passwordConfirm,
+      church,
+      church_address: churchAddress,
+      phone,
+      agreed_terms: agreed,
+    });
+    if (!parsed.success) {
+      setApiError(toValidationError(parsed.error));
+      return;
+    }
+    const { password_confirm: _passwordConfirm, ...body } = parsed.data;
 
     setApiError(null);
     setIsSubmitting(true);
@@ -84,15 +80,7 @@ export default function SignupPage() {
     try {
       const outcome = await requestAuth({
         url: API_PATHS.authSignup,
-        body: {
-          name: name.trim(),
-          email: email.trim().toLowerCase(),
-          password,
-          church: church.trim(),
-          church_address: churchAddress.trim(),
-          phone: phone.trim(),
-          agreed_terms: agreed,
-        },
+        body,
         failureMessage: "회원가입에 실패했습니다.",
         // The account exists at this point, so retrying signup would only 409.
         unreadableMessage:
@@ -186,12 +174,12 @@ export default function SignupPage() {
                   autoComplete="new-password"
                   value={password}
                   onChange={handleFieldChange("password", setPassword)}
-                  aria-invalid={Boolean(passwordMessage)}
-                  aria-describedby={passwordMessage ? "password-error" : undefined}
+                  aria-invalid={Boolean(fieldErrors.password)}
+                  aria-describedby={fieldErrors.password ? "password-error" : undefined}
                 />
-                {passwordMessage ? (
+                {fieldErrors.password ? (
                   <p id="password-error" className="text-[12px] text-red-500">
-                    {passwordMessage}
+                    {fieldErrors.password}
                   </p>
                 ) : null}
               </div>
@@ -206,17 +194,15 @@ export default function SignupPage() {
                   placeholder="비밀번호 확인"
                   autoComplete="new-password"
                   value={passwordConfirm}
-                  onChange={(event) => setPasswordConfirm(event.target.value)}
-                  aria-invalid={passwordConfirm.length > 0 && !isPasswordConfirmValid}
+                  onChange={handleFieldChange("password_confirm", setPasswordConfirm)}
+                  aria-invalid={Boolean(fieldErrors.password_confirm)}
                   aria-describedby={
-                    passwordConfirm.length > 0 && !isPasswordConfirmValid
-                      ? "password-confirm-error"
-                      : undefined
+                    fieldErrors.password_confirm ? "password-confirm-error" : undefined
                   }
                 />
-                {passwordConfirm.length > 0 && !isPasswordConfirmValid ? (
+                {fieldErrors.password_confirm ? (
                   <p id="password-confirm-error" className="text-[12px] text-red-500">
-                    비밀번호가 일치하지 않습니다.
+                    {fieldErrors.password_confirm}
                   </p>
                 ) : null}
               </div>
@@ -310,7 +296,7 @@ export default function SignupPage() {
                 </Alert>
               ) : null}
 
-              <Button type="submit" className="mt-4 w-full" disabled={!canSubmit || isSubmitting}>
+              <Button type="submit" className="mt-4 w-full" disabled={isSubmitting}>
                 {isSubmitting ? "회원가입 중..." : "회원가입"}
               </Button>
             </form>
