@@ -18,7 +18,11 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers defaults to True, which switches off every logger
+    # already created — including the app's — for the rest of the process. That
+    # silences application logging whenever migrations run in-process, which is
+    # what the test session does (conftest imports app.main, then upgrades).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

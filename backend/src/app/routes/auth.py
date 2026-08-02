@@ -1,11 +1,21 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from jose import JWTError
+from pydantic import EmailStr
 from sqlalchemy.orm import Session
 
 from app.db import get_session
 from app.models import Church, RefreshToken, User
+from app.rate_limit import (
+    CHECK_EMAIL_LIMIT,
+    LOGIN_LIMIT,
+    LOGOUT_LIMIT,
+    ME_LIMIT,
+    REFRESH_LIMIT,
+    SIGNUP_LIMIT,
+    limiter,
+)
 from app.schemas.auth import (
     AuthChurch,
     AuthUser,
@@ -33,14 +43,23 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.get("/check-email", response_model=EmailCheckResponse)
-def check_email(email: str, session: Session = Depends(get_session)):
+@limiter.limit(CHECK_EMAIL_LIMIT)
+def check_email(request: Request, email: EmailStr, session: Session = Depends(get_session)):
+    """Reports whether an address is free. Unauthenticated, hence the limit.
+
+    `request` is unused by the body but required on every @limiter.limit route:
+    slowapi inspects the signature while applying the decorator, so omitting it
+    raises at import and the whole app — /health and the score routes included —
+    fails to start.
+    """
     normalized = email.strip().lower()
     exists = session.query(User.id).filter(User.email == normalized).first() is not None
     return EmailCheckResponse(available=not exists)
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, session: Session = Depends(get_session)):
+@limiter.limit(LOGIN_LIMIT)
+def login(request: Request, payload: LoginRequest, session: Session = Depends(get_session)):
     user = (
         session.query(User)
         .filter(User.email == payload.email.strip().lower())
@@ -76,7 +95,8 @@ def login(payload: LoginRequest, session: Session = Depends(get_session)):
 
 
 @router.post("/signup", response_model=SignupResponse, status_code=201)
-def signup(payload: SignupRequest, session: Session = Depends(get_session)):
+@limiter.limit(SIGNUP_LIMIT)
+def signup(request: Request, payload: SignupRequest, session: Session = Depends(get_session)):
     normalized_email = payload.email.strip().lower()
     user_exists = session.query(User.id).filter(User.email == normalized_email).first()
     if user_exists:
@@ -124,7 +144,8 @@ def signup(payload: SignupRequest, session: Session = Depends(get_session)):
 
 
 @router.post("/refresh", response_model=RefreshResponse)
-def refresh(payload: RefreshRequest, session: Session = Depends(get_session)):
+@limiter.limit(REFRESH_LIMIT)
+def refresh(request: Request, payload: RefreshRequest, session: Session = Depends(get_session)):
     try:
         claims = decode_token(payload.refresh_token)
     except JWTError:
@@ -153,7 +174,8 @@ def refresh(payload: RefreshRequest, session: Session = Depends(get_session)):
 
 
 @router.post("/logout", status_code=204)
-def logout(payload: LogoutRequest, session: Session = Depends(get_session)):
+@limiter.limit(LOGOUT_LIMIT)
+def logout(request: Request, payload: LogoutRequest, session: Session = Depends(get_session)):
     if not payload.refresh_token:
         return
     try:
@@ -172,7 +194,9 @@ def logout(payload: LogoutRequest, session: Session = Depends(get_session)):
 
 
 @router.get("/me", response_model=SessionResponse)
+@limiter.limit(ME_LIMIT)
 def me(
+    request: Request,
     authorization: str | None = Header(default=None, alias="Authorization"),
     session: Session = Depends(get_session),
 ):

@@ -3,12 +3,19 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
+from app.rate_limit import limiter, rate_limit_handler
 from app.routes.auth import router as auth_router
 from app.routes.saved_score import router as saved_score_router
 from app.routes.score import router as score_router
 
 app = FastAPI(title="Hymn Backend")
+
+# slowapi's decorator reads the limiter off the app it is serving, so this
+# assignment is what makes @limiter.limit(...) in the routers do anything.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
 
 @app.exception_handler(RequestValidationError)

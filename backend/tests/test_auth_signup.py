@@ -175,13 +175,13 @@ def test_check_email_for_registered_address_should_report_unavailable(client):
     assert response.json() == {"available": False}
 
 
-def test_check_email_with_malformed_address_should_return_200(client):
+def test_check_email_with_malformed_address_should_return_422(client):
     response = client.get("/auth/check-email", params={"email": "not-an-email"})
 
-    # The query param is a plain `str`, so garbage is answered instead of rejected.
-    # M3: becomes EmailStr, so this becomes 422.
-    assert response.status_code == 200
-    assert response.json() == {"available": True}
+    # EmailStr rejects before the lookup runs, so a malformed address costs no
+    # query and reveals nothing. `loc` is ["query", "email"] here, not ["body", …].
+    assert response.status_code == 422
+    assert _detail_for(response, "email")["loc"][0] == "query"
 
 
 def test_me_with_access_token_should_return_session(client):

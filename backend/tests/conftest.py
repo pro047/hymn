@@ -27,6 +27,19 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session
 from app.main import app
+from app.rate_limit import limiter
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Gives every test an empty rate-limit window.
+
+    The limiter keys on the caller's address and TestClient always presents the
+    same one, so counters would otherwise accumulate across the whole session and
+    fail whichever test happened to run once a limit was reached.
+    """
+    limiter.reset()
+    yield
 
 
 @pytest.fixture(scope="session")
@@ -65,7 +78,14 @@ def db_session(engine):
 
 @pytest.fixture()
 def client(db_session):
+    """A client whose requests look like they came through the local nginx.
+
+    `client=` sets the socket peer. Loopback is what the rate limiter requires
+    before it will honour X-Real-IP, so this makes tests exercise the same path
+    production takes; TestClient's default peer ("testclient") is not an address
+    at all and would be treated as a direct, unproxied connection.
+    """
     app.dependency_overrides[get_session] = lambda: db_session
-    with TestClient(app) as test_client:
+    with TestClient(app, client=("127.0.0.1", 51000)) as test_client:
         yield test_client
     app.dependency_overrides.pop(get_session, None)
