@@ -10,6 +10,7 @@ from passlib.context import CryptContext
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import login_guard
 from app.models import Church, RefreshToken, User
 from app.schemas.auth import SignupRequest
 
@@ -29,6 +30,14 @@ class EmailAlreadyRegisteredError(AuthError):
 
 class InvalidCredentialsError(AuthError):
     pass
+
+
+class AccountLockedError(AuthError):
+    """Too many recent failures for this address, whoever is behind them."""
+
+    def __init__(self, retry_after_seconds: int):
+        super().__init__(retry_after_seconds)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class ChurchMissingError(AuthError):
@@ -123,6 +132,13 @@ def _decoy_password_hash() -> str:
 
 def authenticate(session: Session, *, email: str, password: str) -> AuthResult:
     """Signs a user in, or raises. `email` must already be normalized."""
+    locked_for = login_guard.seconds_until_unlocked(email)
+    if locked_for:
+        # Checked before the password is, so a correct guess on the eleventh
+        # try is refused too. A lockout that a right answer walks through is
+        # not a lockout.
+        raise AccountLockedError(locked_for)
+
     user = session.query(User).filter(User.email == email).first()
 
     # Deliberately unconditional, and deliberately not short-circuited: both the
@@ -131,7 +147,11 @@ def authenticate(session: Session, *, email: str, password: str) -> AuthResult:
     stored_hash = user.password_hash if user is not None else None
     password_matches = pwd_context.verify(password, stored_hash or _decoy_password_hash())
     if user is None or not stored_hash or not password_matches:
+        # Counted on the typed address whether or not it exists, so the
+        # lockout cannot be used to tell registered addresses apart.
+        login_guard.record_failure(email)
         raise InvalidCredentialsError
+    login_guard.clear(email)
 
     church = session.get(Church, user.church_id)
     if church is None:

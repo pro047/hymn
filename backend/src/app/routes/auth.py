@@ -5,6 +5,7 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.db import get_session
+from app.login_guard import ACCOUNT_LOCKED_MESSAGE
 from app.models import Church, User
 from app.rate_limit import (
     CHECK_EMAIL_LIMIT,
@@ -31,6 +32,7 @@ from app.schemas.auth import (
     TokenPair,
 )
 from app.services.auth import (
+    AccountLockedError,
     AuthResult,
     ChurchMissingError,
     EmailAlreadyRegisteredError,
@@ -90,6 +92,12 @@ def check_email(request: Request, email: NormalizedEmail, session: Session = Dep
 def login(request: Request, payload: LoginRequest, session: Session = Depends(get_session)):
     try:
         result = authenticate(session, email=payload.email, password=payload.password)
+    except AccountLockedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=ACCOUNT_LOCKED_MESSAGE,
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from None
     except InvalidCredentialsError:
         raise HTTPException(status_code=401, detail="Invalid credentials") from None
     except ChurchMissingError:

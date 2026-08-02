@@ -25,20 +25,24 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
+from app import login_guard
 from app.db import get_session
 from app.main import app
 from app.rate_limit import limiter
 
 
 @pytest.fixture(autouse=True)
-def reset_rate_limiter():
-    """Gives every test an empty rate-limit window.
+def reset_throttles():
+    """Gives every test empty rate-limit and lockout counters.
 
-    The limiter keys on the caller's address and TestClient always presents the
-    same one, so counters would otherwise accumulate across the whole session and
-    fail whichever test happened to run once a limit was reached.
+    Both key on something the whole session shares — the limiter on the
+    caller's address, which TestClient always presents the same, and the login
+    guard on the email, which the auth tests reuse across files. Without this
+    the counters accumulate and whichever test runs after a limit is reached is
+    the one that fails.
     """
     limiter.reset()
+    login_guard.reset()
     yield
 
 
