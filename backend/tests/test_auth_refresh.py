@@ -1,3 +1,5 @@
+from app.routes.auth import SESSION_EXPIRED_MESSAGE
+
 SIGNUP_PAYLOAD = {
     "name": "tester",
     "email": "tester@example.com",
@@ -13,6 +15,15 @@ def _signup(client) -> dict:
     response = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
     assert response.status_code == 201, response.text
     return response.json()["tokens"]
+
+
+def test_refresh_with_a_garbage_token_should_answer_in_korean(client):
+    """The client renders `detail` verbatim for a non-422 body, so an English
+    string here is an English string on the user's screen."""
+    response = client.post("/auth/refresh", json={"refresh_token": "x" * 40})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == SESSION_EXPIRED_MESSAGE
 
 
 def test_refresh_returns_rotated_token_pair(client):

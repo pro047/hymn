@@ -1,8 +1,10 @@
-"""Pins the *current* login behaviour ahead of the M4 service-layer rewrite."""
+"""Pins login behaviour. M0 wrote this to fix the pre-M4 shape; M4 rewrote the
+assertions that were pinning bugs on purpose (see the timing test at the end)."""
 
 import time
 
 from app.models import Church, User
+from app.routes.auth import INVALID_CREDENTIALS_MESSAGE
 from app.services.auth import hash_password
 
 SIGNUP_PAYLOAD = {
@@ -48,7 +50,7 @@ def test_login_with_unknown_email_should_return_401(client):
     response = _login(client, email="nobody@example.com")
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid credentials"
+    assert response.json()["detail"] == INVALID_CREDENTIALS_MESSAGE
 
 
 def test_login_with_wrong_password_should_return_401(client):
@@ -58,7 +60,7 @@ def test_login_with_wrong_password_should_return_401(client):
     response = _login(client, password="WrongPass1")
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid credentials"
+    assert response.json()["detail"] == INVALID_CREDENTIALS_MESSAGE
 
 
 def test_login_for_user_without_password_hash_should_return_401(client, db_session):

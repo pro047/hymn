@@ -49,7 +49,16 @@ from app.services.auth import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# Every `detail` here is rendered straight to the user: api-error.ts shows the
+# string as-is for a non-422 body, so an English one reaches the screen in
+# English. Wording is uniform on purpose — the credentials message must not
+# say which half was wrong, and the session ones must not say which check
+# rejected the token.
 EMAIL_TAKEN_MESSAGE = "이미 사용 중인 이메일입니다."
+INVALID_CREDENTIALS_MESSAGE = "이메일 또는 비밀번호가 올바르지 않습니다."
+SESSION_EXPIRED_MESSAGE = "로그인이 만료되었습니다. 다시 로그인해 주세요."
+CHURCH_MISSING_MESSAGE = "계정에 연결된 교회를 찾을 수 없습니다. 관리자에게 문의해 주세요."
+USER_MISSING_MESSAGE = "계정을 찾을 수 없습니다. 다시 로그인해 주세요."
 
 
 def _auth_response(model: type[LoginResponse], result: AuthResult) -> LoginResponse:
@@ -99,9 +108,9 @@ def login(request: Request, payload: LoginRequest, session: Session = Depends(ge
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from None
     except InvalidCredentialsError:
-        raise HTTPException(status_code=401, detail="Invalid credentials") from None
+        raise HTTPException(status_code=401, detail=INVALID_CREDENTIALS_MESSAGE) from None
     except ChurchMissingError:
-        raise HTTPException(status_code=404, detail="Church not found for user") from None
+        raise HTTPException(status_code=404, detail=CHURCH_MISSING_MESSAGE) from None
     return _auth_response(LoginResponse, result)
 
 
@@ -121,7 +130,7 @@ def refresh(request: Request, payload: RefreshRequest, session: Session = Depend
     try:
         tokens = rotate_refresh_token(session, payload.refresh_token)
     except InvalidRefreshTokenError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token") from None
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE) from None
     return RefreshResponse(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,
@@ -146,23 +155,23 @@ def me(
         token = parse_bearer_token(authorization)
         claims = decode_token(token)
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE) from None
 
     if claims.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Invalid token type")
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
     user_id = claims.get("sub")
     church_id = claims.get("church_id")
     if not user_id or not church_id:
-        raise HTTPException(status_code=401, detail="Invalid token claims")
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
     user = session.get(User, user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=USER_MISSING_MESSAGE)
 
     church = session.get(Church, church_id)
     if church is None:
-        raise HTTPException(status_code=404, detail="Church not found")
+        raise HTTPException(status_code=404, detail=CHURCH_MISSING_MESSAGE)
 
     return SessionResponse(
         user=AuthUser(
