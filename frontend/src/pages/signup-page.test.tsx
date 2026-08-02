@@ -25,6 +25,7 @@ import {
   EMAIL_CHECK_DEBOUNCE_MS,
   EMAIL_TAKEN_MESSAGE,
 } from "../lib/email-check";
+import { PASSWORD_RULE_HINT } from "../lib/validation/auth-schema";
 
 type Reply = {
   status?: number;
@@ -221,5 +222,117 @@ describe("회원가입 이메일 자동 조회", () => {
 
     // A 429 must not pin an address to "unchecked" for the rest of the session.
     expect(asked.filter((email) => email === "free@example.com")).toHaveLength(2);
+  });
+});
+
+const MISMATCH = "비밀번호가 일치하지 않습니다.";
+
+const setField = (label: string, value: string) =>
+  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+
+const submit = () => fireEvent.click(screen.getByRole("button", { name: "회원가입" }));
+
+/** Every field valid except what the caller overrides. */
+const fillForm = async (overrides: { password?: string; password_confirm?: string } = {}) => {
+  mockCheckEmail({});
+  renderSignup();
+
+  setField("이름", "홍길동");
+  setField("이메일", "tester@example.com");
+  setField("비밀번호", overrides.password ?? "Password1");
+  setField("비밀번호 확인", overrides.password_confirm ?? "Password1");
+  setField("교회", "한빛교회");
+  setField("교회주소", "서울");
+  setField("휴대폰 번호", "01012345678");
+  fireEvent.click(screen.getByRole("checkbox"));
+
+  // The lookup has to finish first: submitting mid-check is blocked on purpose,
+  // which would mask whatever the test is actually about.
+  await settle();
+};
+
+const fillWithMismatch = async () => {
+  await fillForm({ password: "Password1", password_confirm: "Password2" });
+  submit();
+};
+
+describe("비밀번호 확인 오류", () => {
+  it("불일치로 제출하면 확인 칸에 오류를 달아야 한다", async () => {
+    await fillWithMismatch();
+
+    expect(screen.getByText(MISMATCH)).toBeTruthy();
+    expect(screen.getByLabelText("비밀번호 확인").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("비밀번호 칸을 고쳐 일치시키면 오류가 사라져야 한다", async () => {
+    // The rule spans two fields but zod files it under one, so editing the side
+    // that carries no message used to leave it on screen.
+    await fillWithMismatch();
+
+    setField("비밀번호", "Password2");
+
+    expect(screen.queryByText(MISMATCH)).toBeNull();
+    expect(screen.getByLabelText("비밀번호 확인").getAttribute("aria-invalid")).toBe("false");
+  });
+
+  it("확인 칸을 고쳐도 오류가 사라져야 한다", async () => {
+    await fillWithMismatch();
+
+    setField("비밀번호 확인", "Password1");
+
+    expect(screen.queryByText(MISMATCH)).toBeNull();
+  });
+
+  it("이름을 고치는 것으로는 비밀번호 오류가 사라지지 않아야 한다", async () => {
+    // The pairing must stay narrow: an unrelated keystroke clearing a real error
+    // would hide a mistake the user has not fixed.
+    await fillWithMismatch();
+
+    setField("이름", "김철수");
+
+    expect(screen.getByText(MISMATCH)).toBeTruthy();
+  });
+
+  it("불일치를 해소하고 다시 제출하면 막히지 않아야 한다", async () => {
+    await fillWithMismatch();
+
+    setField("비밀번호", "Password2");
+    submit();
+
+    expect(screen.queryByText(MISMATCH)).toBeNull();
+    await settle();
+  });
+});
+
+describe("비밀번호 규칙 안내", () => {
+  it("오류가 없어도 규칙을 항상 보여줘야 한다", () => {
+    // Before this, the rules could only be discovered one rejected submit at a time.
+    mockCheckEmail({});
+    renderSignup();
+
+    expect(screen.getByText(PASSWORD_RULE_HINT)).toBeTruthy();
+  });
+
+  it("오류가 떠도 규칙 안내는 남아 있어야 한다", async () => {
+    await fillForm({ password: "short", password_confirm: "short" });
+
+    submit();
+
+    // Asserting through aria-describedby rather than the message text: the
+    // "최소 8자" wording is shared with the phone field, and this also pins that
+    // both descriptions stay attached to the input.
+    expect(screen.getByLabelText("비밀번호").getAttribute("aria-describedby")).toBe(
+      "password-error password-hint"
+    );
+    expect(screen.getByText(PASSWORD_RULE_HINT)).toBeTruthy();
+  });
+
+  it("규칙 안내를 오류와 함께 읽도록 연결해야 한다", () => {
+    mockCheckEmail({});
+    renderSignup();
+
+    expect(screen.getByLabelText("비밀번호").getAttribute("aria-describedby")).toBe(
+      "password-hint"
+    );
   });
 });

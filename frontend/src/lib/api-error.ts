@@ -178,7 +178,13 @@ export function alertMessageOf(error: ApiError | null): string {
 }
 
 /**
- * Drops one field's error after the user edits that field.
+ * Drops the given fields' errors after the user edits one of them.
+ *
+ * More than one field is accepted because a rule can span two of them while its
+ * message can only be filed under one — a mismatch reported on `password_confirm`
+ * is equally the business of `password`, and editing either one settles it. The
+ * caller decides which names travel together; this module has no opinion on the
+ * form's shape.
  *
  * `formError` is deliberately left alone: it describes the submission as a
  * whole and is often the *only* thing on screen (a 409 duplicate email has no
@@ -187,13 +193,23 @@ export function alertMessageOf(error: ApiError | null): string {
  *
  * Returns the same object when nothing changes, so React can skip the re-render.
  */
-export function clearFieldError(error: ApiError | null, field: string): ApiError | null {
+export function clearFieldErrors(
+  error: ApiError | null,
+  fields: readonly string[]
+): ApiError | null {
   if (error === null) return null;
-  if (!(field in error.fieldErrors)) return error;
+
+  const present = fields.filter((field) => field in error.fieldErrors);
+  if (present.length === 0) return error;
 
   const fieldErrors = { ...error.fieldErrors };
-  delete fieldErrors[field];
+  for (const field of present) delete fieldErrors[field];
   return { ...error, fieldErrors };
+}
+
+/** Single-field shorthand for {@link clearFieldErrors}. */
+export function clearFieldError(error: ApiError | null, field: string): ApiError | null {
+  return clearFieldErrors(error, [field]);
 }
 
 function labelOf(field: string): string {

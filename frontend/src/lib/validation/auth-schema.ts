@@ -82,6 +82,28 @@ export const signupFormSchema = signupSchema
   });
 
 /**
+ * Fields whose error the key field also settles.
+ *
+ * `refine` files its message under a single `path`, so the mismatch above lands
+ * on `password_confirm` alone even though `password` is half of the comparison.
+ * Without this map, fixing the mismatch from the `password` side leaves the
+ * message — and `aria-invalid` — on a field that is now correct.
+ *
+ * Declared beside the rule that creates the pairing rather than in the page, so
+ * that changing the `path` above and forgetting this stays a one-file mistake.
+ */
+export const FIELDS_SETTLED_TOGETHER: Readonly<Record<string, readonly string[]>> = {
+  password: ["password_confirm"],
+  password_confirm: ["password"],
+};
+
+/** Shown under the password input at all times, so the rules do not have to be
+ *  discovered one rejected submit at a time. Built from the constants above so
+ *  it cannot drift from what the schema actually enforces. */
+export const PASSWORD_RULE_HINT =
+  `${PASSWORD_MIN_LENGTH}~${PASSWORD_MAX_LENGTH}자, ` + PASSWORD_CASE_MESSAGE;
+
+/**
  * Still looser than signup in one field: the 128-char password cap exists so
  * that accounts created before the 16-char signup rule can sign in.
  */

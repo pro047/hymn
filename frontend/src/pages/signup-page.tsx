@@ -4,7 +4,13 @@ import { Link, useNavigate } from "react-router-dom";
 import { requestAuth } from "../api/auth";
 import { fetchEmailAvailability } from "../api/check-email";
 import { API_PATHS } from "../api/paths";
-import { alertMessageOf, clearFieldError, toFormError, type ApiError } from "../lib/api-error";
+import {
+  alertMessageOf,
+  clearFieldError,
+  clearFieldErrors,
+  toFormError,
+  type ApiError,
+} from "../lib/api-error";
 import { setTokens } from "../lib/auth-storage";
 import {
   EMAIL_AVAILABLE_MESSAGE,
@@ -14,7 +20,12 @@ import {
   resolveEmailCheck,
   type EmailCheckStatus,
 } from "../lib/email-check";
-import { signupFormSchema, toValidationError } from "../lib/validation/auth-schema";
+import {
+  FIELDS_SETTLED_TOGETHER,
+  PASSWORD_RULE_HINT,
+  signupFormSchema,
+  toValidationError,
+} from "../lib/validation/auth-schema";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
@@ -100,7 +111,11 @@ export default function SignupPage() {
     (field: string, setValue: (value: string) => void) =>
     (event: ChangeEvent<HTMLInputElement>) => {
       setValue(event.target.value);
-      setApiError((previous) => clearFieldError(previous, field));
+      // Also drops errors belonging to fields this one is judged against, so a
+      // mismatch fixed from either side stops being reported.
+      setApiError((previous) =>
+        clearFieldErrors(previous, [field, ...(FIELDS_SETTLED_TOGETHER[field] ?? [])])
+      );
     };
 
   const handleAgreedChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -238,18 +253,25 @@ export default function SignupPage() {
                 <Input
                   id="password"
                   type="password"
-                  placeholder="8 - 16자, 영문 대소문자 포함"
+                  placeholder="비밀번호"
                   autoComplete="new-password"
                   value={password}
                   onChange={handleFieldChange("password", setPassword)}
                   aria-invalid={Boolean(fieldErrors.password)}
-                  aria-describedby={fieldErrors.password ? "password-error" : undefined}
+                  // Both ids: the hint stays true whether or not there is an
+                  // error, so a screen reader should hear it either way.
+                  aria-describedby={
+                    fieldErrors.password ? "password-error password-hint" : "password-hint"
+                  }
                 />
                 {fieldErrors.password ? (
                   <p id="password-error" className="text-[12px] text-red-500">
                     {fieldErrors.password}
                   </p>
                 ) : null}
+                <p id="password-hint" className="text-[12px] text-stone-500">
+                  {PASSWORD_RULE_HINT}
+                </p>
               </div>
 
               <div className="space-y-2">

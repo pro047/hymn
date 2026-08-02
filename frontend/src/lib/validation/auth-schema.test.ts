@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { loginSchema, signupFormSchema, signupSchema, toValidationError } from "./auth-schema";
+import {
+  FIELDS_SETTLED_TOGETHER,
+  PASSWORD_RULE_HINT,
+  loginSchema,
+  signupFormSchema,
+  signupSchema,
+  toValidationError,
+} from "./auth-schema";
 
 const VALID_SIGNUP = {
   name: "tester",
@@ -118,6 +125,30 @@ describe("signupFormSchema", () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.path).toEqual(["password_confirm"]);
+  });
+
+  it("불일치 오류가 붙는 필드는 짝 선언에 들어 있어야 한다", () => {
+    // The page clears errors through FIELDS_SETTLED_TOGETHER. If the refine's
+    // path above moves and this map does not, the message survives a fix.
+    const result = signupFormSchema.safeParse({ ...VALID_SIGNUP, password_confirm: "Password2" });
+    const reportedOn = String(result.error?.issues[0]?.path[0]);
+
+    expect(FIELDS_SETTLED_TOGETHER[reportedOn]).toContain("password");
+    expect(FIELDS_SETTLED_TOGETHER.password).toContain(reportedOn);
+  });
+});
+
+describe("PASSWORD_RULE_HINT", () => {
+  it("안내가 말하는 길이 경계가 실제 규칙과 같아야 한다", () => {
+    // The hint is built from the same constants, so this fails only if someone
+    // hand-writes the numbers back in.
+    const [min, max] = (PASSWORD_RULE_HINT.match(/\d+/g) ?? []).map(Number);
+    const password = (length: number) => "Aa1" + "x".repeat(length - 3);
+
+    expect(signupSchema.safeParse(signupWith({ password: password(min) })).success).toBe(true);
+    expect(signupSchema.safeParse(signupWith({ password: password(min - 1) })).success).toBe(false);
+    expect(signupSchema.safeParse(signupWith({ password: password(max) })).success).toBe(true);
+    expect(signupSchema.safeParse(signupWith({ password: password(max + 1) })).success).toBe(false);
   });
 });
 
