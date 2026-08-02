@@ -24,7 +24,6 @@ const PHONE_MAX_LENGTH = 32;
 // Worded to match what api-error.ts renders for the equivalent server rejection,
 // so the same mistake reads the same whether it was caught here or at the server.
 const REQUIRED_MESSAGE = "필수 입력 항목입니다.";
-const INVALID_EMAIL_MESSAGE = "올바른 이메일 주소를 입력해 주세요.";
 const PASSWORD_CASE_MESSAGE = "영문 대문자와 소문자를 모두 포함해야 합니다.";
 const AGREED_TERMS_MESSAGE = "약관 동의가 필요합니다.";
 const PASSWORD_MISMATCH_MESSAGE = "비밀번호가 일치하지 않습니다.";
@@ -39,24 +38,21 @@ const tooLongMessage = (max: number) => `최대 ${max}자까지 입력할 수 �
 const requiredText = (max: number) =>
   z.string().trim().min(1, REQUIRED_MESSAGE).max(max, tooLongMessage(max));
 
-// Signup only. zod's pattern is narrower than pydantic's EmailStr (it caps the
-// local part to `A-Za-z0-9_'+-.` and demands a 2+ char TLD), so this rejects a
-// handful of addresses the server would take. On signup that costs a rejected
-// registration; on login it would cost an account, which is why login does not
-// share it — see loginEmailField.
-const signupEmailField = z.string().trim().toLowerCase().pipe(z.email(INVALID_EMAIL_MESSAGE));
-
-// Login checks only that something was typed. Any format rule here risks being
-// stricter than EmailStr somewhere, and an account whose address the server
-// accepts but this schema rejects can never sign in — the request would not even
-// be sent, and there is no password-reset path to recover through. A malformed
+// Both forms check only that something was typed. Any format rule here risks
+// being stricter than EmailStr somewhere: on login that costs an account (the
+// request is never sent and there is no password reset to recover through), on
+// signup it costs a registration the server would have accepted. A malformed
 // address is the server's 422 to answer.
-const loginEmailField = z.string().trim().toLowerCase().pipe(z.string().min(1, REQUIRED_MESSAGE));
+//
+// zod's own email pattern is not gone, it is demoted — lib/email-check.ts reuses
+// it to decide when an address is worth a duplicate lookup, where being strict
+// only skips a convenience.
+const emailField = z.string().trim().toLowerCase().pipe(z.string().min(1, REQUIRED_MESSAGE));
 
 /** The exact body POST /auth/signup accepts. Keep 1:1 with SignupRequest. */
 export const signupSchema = z.object({
   name: requiredText(NAME_MAX_LENGTH),
-  email: signupEmailField,
+  email: emailField,
   password: z
     .string()
     .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
@@ -86,12 +82,11 @@ export const signupFormSchema = signupSchema
   });
 
 /**
- * Deliberately looser than signup, in both fields: the 128-char cap and the
- * format-free email exist so that no account the server accepts can be locked
- * out of the login form.
+ * Still looser than signup in one field: the 128-char password cap exists so
+ * that accounts created before the 16-char signup rule can sign in.
  */
 export const loginSchema = z.object({
-  email: loginEmailField,
+  email: emailField,
   password: z
     .string()
     .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))

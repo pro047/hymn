@@ -25,7 +25,6 @@ const REJECTED_BY_BACKEND: ReadonlyArray<[string, Record<string, unknown>, strin
   ["비밀번호에 소문자가 없으면", { password: "PASSWORD1" }, "password"],
   ["비밀번호가 8자보다 짧으면", { password: "Pass1" }, "password"],
   ["비밀번호가 16자를 넘으면", { password: "PasswordPassword1" }, "password"],
-  ["이메일 도메인에 점이 없으면", { email: "a@b" }, "email"],
   ["휴대폰 번호가 8자보다 짧으면", { phone: "010" }, "phone"],
 ];
 
@@ -75,24 +74,32 @@ describe("signupSchema", () => {
 });
 
 /**
- * zod's email pattern and pydantic's email_validator do not agree everywhere.
- * These are the divergences found by cross-running both over 62 inputs; they are
- * pinned rather than fixed, so a future zod upgrade that shifts them shows up here.
+ * The signup gate holds no email format rule, on purpose: zod's pattern and
+ * pydantic's email_validator disagree on real addresses, and every disagreement
+ * in this direction is a registration the server would have taken. The rule
+ * still exists as a lookup trigger — see lib/email-check.test.ts, which pins the
+ * same inputs from the other side.
  */
-describe("백엔드와 판정이 갈리는 입력", () => {
-  it.each(["a@b.c", "한글@example.com", "a@한글.com", "a@example.c"])(
-    "%s 는 서버보다 엄격하게 거부해도 된다",
+describe("가입 이메일 게이트", () => {
+  it.each(["a@b.c", "한글@example.com", "a@한글.com", "a@example.c", "a@example-.com"])(
+    "서버가 받아주는 주소 %s 로는 가입을 막지 않아야 한다",
     (email) => {
-      // Stricter than the server only costs a rejected keystroke, never a 422.
-      expect(signupSchema.safeParse(signupWith({ email })).success).toBe(false);
+      expect(signupSchema.safeParse(signupWith({ email })).success).toBe(true);
     }
   );
 
-  it("도메인이 하이픈으로 끝나는 주소는 통과시켜 서버 422에 맡긴다", () => {
-    // The one known looser-than-server case. Pinned in
-    // backend/tests/test_auth_signup.py, which asserts the matching 422 — the
-    // user still sees a Korean field message via api-error.ts, not a crash.
-    expect(signupSchema.safeParse(signupWith({ email: "a@example-.com" })).success).toBe(true);
+  it("서버가 거부하는 주소도 통과시켜 422 판정에 맡겨야 한다", () => {
+    // backend/tests/test_auth_signup.py asserts the matching 422 for "a@b". The
+    // user reads a Korean field message through api-error.ts, so the cost of
+    // deferring is one round trip, not a worse error.
+    expect(signupSchema.safeParse(signupWith({ email: "a@b" })).success).toBe(true);
+  });
+
+  it("이메일 칸이 비어 있으면 요청을 보내지 않아야 한다", () => {
+    const result = signupSchema.safeParse(signupWith({ email: "   " }));
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path[0]).toBe("email");
   });
 });
 
