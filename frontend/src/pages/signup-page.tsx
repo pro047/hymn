@@ -1,10 +1,19 @@
-import { useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { requestAuth } from "../api/auth";
+import { fetchEmailAvailability } from "../api/check-email";
 import { API_PATHS } from "../api/paths";
 import { alertMessageOf, clearFieldError, toFormError, type ApiError } from "../lib/api-error";
 import { setTokens } from "../lib/auth-storage";
+import {
+  EMAIL_AVAILABLE_MESSAGE,
+  EMAIL_CHECK_DEBOUNCE_MS,
+  EMAIL_TAKEN_MESSAGE,
+  planEmailCheck,
+  resolveEmailCheck,
+  type EmailCheckStatus,
+} from "../lib/email-check";
 import { signupFormSchema, toValidationError } from "../lib/validation/auth-schema";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -24,6 +33,15 @@ const RENDERED_FIELDS = [
   "agreed_terms",
 ] as const;
 
+// What the lookup shows under the email field. `unknown` is absent on purpose:
+// "we did not check" is not worth a line of its own, and the address may simply
+// be half-typed.
+const EMAIL_STATUS_HINT: Partial<Record<EmailCheckStatus, { text: string; className: string }>> = {
+  checking: { text: "이메일 중복 확인 중...", className: "text-stone-500" },
+  available: { text: EMAIL_AVAILABLE_MESSAGE, className: "text-emerald-600" },
+  taken: { text: EMAIL_TAKEN_MESSAGE, className: "text-red-500" },
+};
+
 export default function SignupPage() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
@@ -36,9 +54,47 @@ export default function SignupPage() {
   const [agreed, setAgreed] = useState(false);
   const [apiError, setApiError] = useState<ApiError | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<EmailCheckStatus>("unknown");
+
+  // Read when an answer comes back, so a reply can be compared against what is
+  // in the field *now* rather than against the value that requested it.
+  const emailRef = useRef("");
+  // Answers already received, keyed by normalized address. A ref, not state:
+  // writing to it must never re-render, and the effect below reads it fresh.
+  const cacheRef = useRef(new Map<string, boolean>());
 
   const fieldErrors = apiError?.fieldErrors ?? {};
   const alertMessage = alertMessageOf(apiError);
+  // A real validation error outranks the lookup: it is the thing to fix first.
+  const emailHint = fieldErrors.email ? undefined : EMAIL_STATUS_HINT[emailStatus];
+
+  useEffect(() => {
+    emailRef.current = email;
+
+    const plan = planEmailCheck(email, cacheRef.current);
+    setEmailStatus(plan.status);
+    if (plan.action !== "query") return;
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      const available = await fetchEmailAvailability(plan.key, controller.signal);
+      // Only verdicts are worth remembering; a 429 would otherwise pin an
+      // address to "unchecked" for the rest of the session.
+      if (available !== null) cacheRef.current.set(plan.key, available);
+
+      // The cleanup below already cancels this effect's work, but an in-flight
+      // promise can still run its continuation after an abort. This asks the
+      // narrower question — is this answer about the address on screen? — and is
+      // what keeps a slow reply from stamping its verdict on a newer value.
+      const resolution = resolveEmailCheck(plan.key, emailRef.current, available);
+      if (resolution.apply) setEmailStatus(resolution.status);
+    }, EMAIL_CHECK_DEBOUNCE_MS);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [email]);
 
   const handleFieldChange =
     (field: string, setValue: (value: string) => void) =>
@@ -72,6 +128,15 @@ export default function SignupPage() {
       setApiError(toValidationError(parsed.error));
       return;
     }
+
+    // An answer is seconds away, and sending now would race it into a 409 that
+    // reads worse than waiting. Reported rather than enforced by disabling the
+    // button: a submit that silently does nothing has no way to explain itself.
+    if (emailStatus === "checking") {
+      setApiError(toFormError("이메일 중복 확인 중입니다. 잠시 후 다시 시도해 주세요."));
+      return;
+    }
+
     const { password_confirm: _passwordConfirm, ...body } = parsed.data;
 
     setApiError(null);
@@ -136,29 +201,32 @@ export default function SignupPage() {
                 <Label htmlFor="email" className="text-[14px] text-stone-600">
                   이메일
                 </Label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    id="email"
-                    type="email"
-                    placeholder="you@church.org"
-                    autoComplete="email"
-                    value={email}
-                    onChange={handleFieldChange("email", setEmail)}
-                    aria-invalid={Boolean(fieldErrors.email)}
-                    aria-describedby={fieldErrors.email ? "email-error" : undefined}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-10 shrink-0 px-1 text-stone-600 hover:cursor-pointer hover:bg-transparent hover:text-stone-900"
-                  >
-                    중복확인
-                  </Button>
-                </div>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="you@church.org"
+                  autoComplete="email"
+                  value={email}
+                  onChange={handleFieldChange("email", setEmail)}
+                  aria-invalid={Boolean(fieldErrors.email) || emailStatus === "taken"}
+                  aria-describedby={
+                    fieldErrors.email ? "email-error" : emailHint ? "email-status" : undefined
+                  }
+                />
                 {fieldErrors.email ? (
                   <p id="email-error" className="text-[12px] text-red-500">
                     {fieldErrors.email}
+                  </p>
+                ) : null}
+                {emailHint ? (
+                  // The result arrives without the user acting, so it has to be
+                  // announced rather than merely rendered.
+                  <p
+                    id="email-status"
+                    aria-live="polite"
+                    className={`text-[12px] ${emailHint.className}`}
+                  >
+                    {emailHint.text}
                   </p>
                 ) : null}
               </div>
