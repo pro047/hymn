@@ -122,11 +122,12 @@ def test_login_with_malformed_email_should_return_422(client):
     assert response.status_code == 422
 
 
-def test_login_for_unknown_email_should_answer_faster_than_a_wrong_password(client):
-    """Documents the user-enumeration oracle: a missing account skips bcrypt entirely.
+def test_login_for_unknown_email_should_cost_about_as_much_as_a_wrong_password(client):
+    """Closes the user-enumeration oracle M0 pinned in its opposite form.
 
-    M4 equalises the two by verifying against a dummy hash, at which point this
-    assertion must be inverted rather than deleted.
+    A missing account used to skip bcrypt, so the miss path answered in about no
+    time and response time alone told a caller whether an address was
+    registered. authenticate() now verifies against a decoy hash instead.
     """
     signup = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
     assert signup.status_code == 201, signup.text
@@ -139,5 +140,7 @@ def test_login_for_unknown_email_should_answer_faster_than_a_wrong_password(clie
     _login(client, password="WrongPass1")
     wrong_password_seconds = time.perf_counter() - started
 
-    # Loose factor: bcrypt costs tens of milliseconds while the miss path costs ~none.
-    assert unknown_email_seconds * 5 < wrong_password_seconds
+    # Lower bound only, and a wide one. What has to hold is that the miss path
+    # still pays for a bcrypt round; how closely the two match depends on how
+    # loaded the machine is. Drop the decoy and this ratio falls to ~0.01.
+    assert unknown_email_seconds > wrong_password_seconds * 0.5

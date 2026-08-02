@@ -31,15 +31,42 @@ from app.schemas.auth import (
     TokenPair,
 )
 from app.services.auth import (
+    AuthResult,
+    ChurchMissingError,
+    EmailAlreadyRegisteredError,
+    InvalidCredentialsError,
+    authenticate,
     decode_token,
-    hash_password,
     infer_church_code,
     issue_token_bundle,
     parse_bearer_token,
-    verify_password_for_user,
+    register_user,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+EMAIL_TAKEN_MESSAGE = "이미 사용 중인 이메일입니다."
+
+
+def _auth_response(model: type[LoginResponse], result: AuthResult) -> LoginResponse:
+    """Shapes the one payload /login and /signup both answer with."""
+    return model(
+        tokens=TokenPair(
+            access_token=result.tokens.access_token,
+            refresh_token=result.tokens.refresh_token,
+            expires_in=result.tokens.expires_in,
+        ),
+        user=AuthUser(
+            id=result.user_id,
+            church_id=result.church_id,
+            email=result.email,
+            name=result.name,
+            role=result.role,
+        ),
+        church=AuthChurch(
+            id=result.church_id, name=result.church_name, code=result.church_code
+        ),
+    )
 
 
 @router.get("/check-email", response_model=EmailCheckResponse)
@@ -59,81 +86,23 @@ def check_email(request: Request, email: NormalizedEmail, session: Session = Dep
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit(LOGIN_LIMIT)
 def login(request: Request, payload: LoginRequest, session: Session = Depends(get_session)):
-    user = session.query(User).filter(User.email == payload.email).first()
-    if user is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    if not verify_password_for_user(user, payload.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    church = session.get(Church, user.church_id)
-    if church is None:
-        raise HTTPException(status_code=404, detail="Church not found for user")
-
-    tokens = issue_token_bundle(session, user=user)
-    session.commit()
-    return LoginResponse(
-        tokens=TokenPair(
-            access_token=tokens.access_token,
-            refresh_token=tokens.refresh_token,
-            expires_in=tokens.expires_in,
-        ),
-        user=AuthUser(
-            id=user.id,
-            church_id=user.church_id,
-            email=user.email,
-            name=user.name,
-            role=user.role,
-        ),
-        church=AuthChurch(id=church.id, name=church.name, code=infer_church_code(church)),
-    )
+    try:
+        result = authenticate(session, email=payload.email, password=payload.password)
+    except InvalidCredentialsError:
+        raise HTTPException(status_code=401, detail="Invalid credentials") from None
+    except ChurchMissingError:
+        raise HTTPException(status_code=404, detail="Church not found for user") from None
+    return _auth_response(LoginResponse, result)
 
 
 @router.post("/signup", response_model=SignupResponse, status_code=201)
 @limiter.limit(SIGNUP_LIMIT)
 def signup(request: Request, payload: SignupRequest, session: Session = Depends(get_session)):
-    user_exists = session.query(User.id).filter(User.email == payload.email).first()
-    if user_exists:
-        raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
-
-    church = session.query(Church).filter(Church.name == payload.church).first()
-    if church is None:
-        church = Church(name=payload.church, address=payload.church_address)
-        session.add(church)
-        session.flush()
-    elif not church.address:
-        church.address = payload.church_address
-
-    user = User(
-        church_id=church.id,
-        email=payload.email,
-        name=payload.name,
-        phone=payload.phone,
-        password_hash=hash_password(payload.password),
-        role="member",
-    )
-    session.add(user)
-    session.commit()
-    session.refresh(user)
-    session.refresh(church)
-
-    tokens = issue_token_bundle(session, user=user)
-    session.commit()
-    return SignupResponse(
-        tokens=TokenPair(
-            access_token=tokens.access_token,
-            refresh_token=tokens.refresh_token,
-            expires_in=tokens.expires_in,
-        ),
-        user=AuthUser(
-            id=user.id,
-            church_id=user.church_id,
-            email=user.email,
-            name=user.name,
-            role=user.role,
-        ),
-        church=AuthChurch(id=church.id, name=church.name, code=infer_church_code(church)),
-    )
+    try:
+        result = register_user(session, payload)
+    except EmailAlreadyRegisteredError:
+        raise HTTPException(status_code=409, detail=EMAIL_TAKEN_MESSAGE) from None
+    return _auth_response(SignupResponse, result)
 
 
 @router.post("/refresh", response_model=RefreshResponse)

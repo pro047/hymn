@@ -6,6 +6,8 @@ Pydantic's item array. Tests that still carry a `# M3:` comment mark rules that 
 knowingly wrong today and change in a later milestone.
 """
 
+from app.models import Church
+
 
 def _detail_for(response, field: str) -> dict:
     """The 422 item raised for one field. `loc` is ["body", <field>]."""
@@ -123,6 +125,23 @@ def test_signup_with_duplicate_email_should_return_409(client):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "이미 사용 중인 이메일입니다."
+
+
+def test_signup_rejected_for_a_duplicate_email_should_leave_no_church_behind(client, db_session):
+    """A rejected signup must not persist the church it was about to join.
+
+    register_user creates the church before it inserts the user, so a failure
+    after that point has to take the whole transaction with it. Committing the
+    two separately would litter the table with churches that have no members.
+    """
+    first = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
+    assert first.status_code == 201, first.text
+
+    response = client.post("/auth/signup", json=_payload(church="Ghost Church"))
+
+    assert response.status_code == 409, response.text
+    names = {name for (name,) in db_session.query(Church.name).all()}
+    assert "Ghost Church" not in names
 
 
 def test_signup_without_agreed_terms_should_return_422(client):
