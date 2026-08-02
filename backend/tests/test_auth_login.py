@@ -104,6 +104,18 @@ def test_login_password_longer_than_16_should_reach_the_hash_check(client, db_se
     assert response.status_code == 200, response.text
 
 
+def test_login_with_a_newline_in_the_password_should_not_be_rejected_by_validation(client):
+    """Signup blocks control characters; login must not.
+
+    Accounts registered through the API before that rule existed still hold such
+    a password, and a 422 here would turn "wrong password" into "malformed
+    request" for them. The gate belongs on the way in only.
+    """
+    response = _login(client, password="Passwo\nrd1")
+
+    assert response.status_code == 401, response.text
+
+
 def test_login_with_malformed_email_should_return_422(client):
     response = _login(client, email="a@b")
 

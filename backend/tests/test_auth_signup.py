@@ -60,6 +60,61 @@ def test_signup_with_existing_church_name_should_reuse_that_church(client):
     assert second.json()["church"]["id"] == first.json()["church"]["id"]
 
 
+def test_signup_with_whitespace_only_church_should_return_422(client):
+    response = client.post("/auth/signup", json=_payload(church="   "))
+
+    assert response.status_code == 422, response.text
+    # Trimmed before min_length runs, so it reads as too short rather than
+    # reaching the DB as "" — Church.name is unique, so an empty name would
+    # collect unrelated congregations into one shared row.
+    assert _detail_for(response, "church")["type"] == "string_too_short"
+
+
+def test_signup_with_whitespace_only_name_should_return_422(client):
+    response = client.post("/auth/signup", json=_payload(name="   "))
+
+    assert response.status_code == 422, response.text
+    assert _detail_for(response, "name")["type"] == "string_too_short"
+
+
+def test_signup_with_phone_of_only_spaces_should_return_422(client):
+    """Eight spaces satisfied min_length=8 before the value was trimmed."""
+    response = client.post("/auth/signup", json=_payload(phone=" " * 8))
+
+    assert response.status_code == 422, response.text
+    assert _detail_for(response, "phone")["type"] == "string_too_short"
+
+
+def test_signup_should_store_the_church_name_trimmed(client):
+    response = client.post("/auth/signup", json=_payload(church="  Padded Church  "))
+
+    assert response.status_code == 201, response.text
+    assert response.json()["church"]["name"] == "Padded Church"
+
+
+def test_signup_with_a_newline_in_the_password_should_return_422(client):
+    """<input type="password"> strips CR/LF, so such a password can never be
+    retyped on the web form: the account would be created and never signed into."""
+    response = client.post("/auth/signup", json=_payload(password="Passwo\nrd1"))
+
+    assert response.status_code == 422, response.text
+    assert "제어 문자" in _detail_for(response, "password")["msg"]
+
+
+def test_signup_with_a_tab_in_the_password_should_return_422(client):
+    response = client.post("/auth/signup", json=_payload(password="Passwo\trd1"))
+
+    assert response.status_code == 422, response.text
+    assert "제어 문자" in _detail_for(response, "password")["msg"]
+
+
+def test_signup_with_spaces_inside_the_password_should_be_accepted(client):
+    """A space is typeable, so it stays a legal password character."""
+    response = client.post("/auth/signup", json=_payload(password="Pass word1"))
+
+    assert response.status_code == 201, response.text
+
+
 def test_signup_with_duplicate_email_should_return_409(client):
     first = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
     assert first.status_code == 201, first.text

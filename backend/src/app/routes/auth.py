@@ -2,7 +2,6 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from jose import JWTError
-from pydantic import EmailStr
 from sqlalchemy.orm import Session
 
 from app.db import get_session
@@ -23,6 +22,7 @@ from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
     LogoutRequest,
+    NormalizedEmail,
     RefreshRequest,
     RefreshResponse,
     SessionResponse,
@@ -44,7 +44,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.get("/check-email", response_model=EmailCheckResponse)
 @limiter.limit(CHECK_EMAIL_LIMIT)
-def check_email(request: Request, email: EmailStr, session: Session = Depends(get_session)):
+def check_email(request: Request, email: NormalizedEmail, session: Session = Depends(get_session)):
     """Reports whether an address is free. Unauthenticated, hence the limit.
 
     `request` is unused by the body but required on every @limiter.limit route:
@@ -52,19 +52,14 @@ def check_email(request: Request, email: EmailStr, session: Session = Depends(ge
     raises at import and the whole app — /health and the score routes included —
     fails to start.
     """
-    normalized = email.strip().lower()
-    exists = session.query(User.id).filter(User.email == normalized).first() is not None
+    exists = session.query(User.id).filter(User.email == email).first() is not None
     return EmailCheckResponse(available=not exists)
 
 
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit(LOGIN_LIMIT)
 def login(request: Request, payload: LoginRequest, session: Session = Depends(get_session)):
-    user = (
-        session.query(User)
-        .filter(User.email == payload.email.strip().lower())
-        .first()
-    )
+    user = session.query(User).filter(User.email == payload.email).first()
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -97,25 +92,23 @@ def login(request: Request, payload: LoginRequest, session: Session = Depends(ge
 @router.post("/signup", response_model=SignupResponse, status_code=201)
 @limiter.limit(SIGNUP_LIMIT)
 def signup(request: Request, payload: SignupRequest, session: Session = Depends(get_session)):
-    normalized_email = payload.email.strip().lower()
-    user_exists = session.query(User.id).filter(User.email == normalized_email).first()
+    user_exists = session.query(User.id).filter(User.email == payload.email).first()
     if user_exists:
         raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
 
-    church_name = payload.church.strip()
-    church = session.query(Church).filter(Church.name == church_name).first()
+    church = session.query(Church).filter(Church.name == payload.church).first()
     if church is None:
-        church = Church(name=church_name, address=payload.church_address.strip())
+        church = Church(name=payload.church, address=payload.church_address)
         session.add(church)
         session.flush()
     elif not church.address:
-        church.address = payload.church_address.strip()
+        church.address = payload.church_address
 
     user = User(
         church_id=church.id,
-        email=normalized_email,
-        name=payload.name.strip(),
-        phone=payload.phone.strip(),
+        email=payload.email,
+        name=payload.name,
+        phone=payload.phone,
         password_hash=hash_password(payload.password),
         role="member",
     )
