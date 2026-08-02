@@ -35,6 +35,15 @@ class ChurchMissingError(AuthError):
     pass
 
 
+class InvalidRefreshTokenError(AuthError):
+    """One error for every way a refresh can fail.
+
+    Undecodable, wrong type, missing claims, unknown jti, already rotated — the
+    client can only do one thing about any of them, which is sign in again, so
+    splitting them apart would only tell an attacker which guess got closer.
+    """
+
+
 @dataclass
 class TokenBundle:
     access_token: str
@@ -151,6 +160,11 @@ def _get_or_create_church(session: Session, *, name: str, address: str) -> Churc
     except IntegrityError:
         # churches.name is unique and somebody else got there first, so the
         # row the caller wanted now exists — join it rather than fail.
+        # Under READ COMMITTED, which is what we run, this re-read always finds
+        # it: the conflicting transaction must have committed for the INSERT to
+        # have been rejected at all. The re-raise is only reachable if someone
+        # raises the isolation level, and staying loud there beats returning a
+        # church that is not in the caller's snapshot.
         raced = session.query(Church).filter(Church.name == name).first()
         if raced is None:
             raise
@@ -249,6 +263,71 @@ def issue_token_bundle(session: Session, *, user: User) -> TokenBundle:
         refresh_token=refresh,
         expires_in=ACCESS_TOKEN_EXPIRES_IN_SECONDS,
     )
+
+
+def _refresh_claims(refresh_token: str) -> dict:
+    try:
+        claims = decode_token(refresh_token)
+    except JWTError as exc:
+        raise InvalidRefreshTokenError from exc
+    if claims.get("type") != "refresh":
+        raise InvalidRefreshTokenError
+    if not (claims.get("sub") and claims.get("church_id") and claims.get("jti")):
+        raise InvalidRefreshTokenError
+    return claims
+
+
+def _consume_refresh_token(session: Session, *, jti: str, user_id: str) -> int:
+    """Deletes the stored token and reports how many rows that actually hit.
+
+    One statement checks and spends the token, so there is no gap for a second
+    request to slip into. Reading the row and then deleting the loaded object
+    is what leaves that gap: both requests see the row, both issue a DELETE,
+    and the loser's matches nothing. SQLAlchemy only *warns* about a DELETE
+    that matched no rows (StaleDataError is for versioned UPDATEs), so the
+    loser used to sail on and commit a second valid token family — the exact
+    replay that rotating refresh tokens exists to catch.
+    """
+    return (
+        session.query(RefreshToken)
+        .filter(RefreshToken.id == jti, RefreshToken.user_id == user_id)
+        .delete(synchronize_session=False)
+    )
+
+
+def rotate_refresh_token(session: Session, refresh_token: str) -> TokenBundle:
+    """Spends one refresh token and issues the next pair, or raises."""
+    claims = _refresh_claims(refresh_token)
+
+    user = session.get(User, claims["sub"])
+    if user is None or user.church_id != claims["church_id"]:
+        raise InvalidRefreshTokenError
+
+    if _consume_refresh_token(session, jti=claims["jti"], user_id=claims["sub"]) != 1:
+        # Already spent — by a replay, or by whichever concurrent request got
+        # here first. Under READ COMMITTED the loser's DELETE waits for the
+        # winner to commit and then matches nothing, so exactly one of them
+        # can ever pass this line.
+        session.rollback()
+        raise InvalidRefreshTokenError
+
+    tokens = issue_token_bundle(session, user=user)
+    session.commit()
+    return tokens
+
+
+def revoke_refresh_token(session: Session, refresh_token: str | None) -> None:
+    """Best-effort logout. Revocation is idempotent, so nothing here raises."""
+    if not refresh_token:
+        return
+    try:
+        claims = _refresh_claims(refresh_token)
+    except InvalidRefreshTokenError:
+        return
+
+    # No row count check: already revoked is the outcome logout wanted anyway.
+    _consume_refresh_token(session, jti=claims["jti"], user_id=claims["sub"])
+    session.commit()
 
 
 def issued_at_utc() -> datetime:

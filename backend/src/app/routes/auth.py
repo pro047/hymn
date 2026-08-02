@@ -5,7 +5,7 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.models import Church, RefreshToken, User
+from app.models import Church, User
 from app.rate_limit import (
     CHECK_EMAIL_LIMIT,
     LOGIN_LIMIT,
@@ -35,12 +35,14 @@ from app.services.auth import (
     ChurchMissingError,
     EmailAlreadyRegisteredError,
     InvalidCredentialsError,
+    InvalidRefreshTokenError,
     authenticate,
     decode_token,
     infer_church_code,
-    issue_token_bundle,
     parse_bearer_token,
     register_user,
+    revoke_refresh_token,
+    rotate_refresh_token,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -109,25 +111,9 @@ def signup(request: Request, payload: SignupRequest, session: Session = Depends(
 @limiter.limit(REFRESH_LIMIT)
 def refresh(request: Request, payload: RefreshRequest, session: Session = Depends(get_session)):
     try:
-        claims = decode_token(payload.refresh_token)
-    except JWTError:
+        tokens = rotate_refresh_token(session, payload.refresh_token)
+    except InvalidRefreshTokenError:
         raise HTTPException(status_code=401, detail="Invalid refresh token") from None
-    if claims.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid refresh token type")
-    user_id = claims.get("sub")
-    church_id = claims.get("church_id")
-    jti = claims.get("jti")
-    if not user_id or not church_id or not jti:
-        raise HTTPException(status_code=401, detail="Invalid refresh token claims")
-    stored = session.get(RefreshToken, jti)
-    if stored is None or stored.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Refresh token revoked")
-    user = session.get(User, user_id)
-    if user is None or user.church_id != church_id:
-        raise HTTPException(status_code=401, detail="Invalid refresh token subject")
-    session.delete(stored)
-    tokens = issue_token_bundle(session, user=user)
-    session.commit()
     return RefreshResponse(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,
@@ -138,21 +124,7 @@ def refresh(request: Request, payload: RefreshRequest, session: Session = Depend
 @router.post("/logout", status_code=204)
 @limiter.limit(LOGOUT_LIMIT)
 def logout(request: Request, payload: LogoutRequest, session: Session = Depends(get_session)):
-    if not payload.refresh_token:
-        return
-    try:
-        claims = decode_token(payload.refresh_token)
-    except JWTError:
-        # Revocation is idempotent; an invalid/expired token has nothing to revoke.
-        return
-    jti = claims.get("jti")
-    if claims.get("type") != "refresh" or not jti:
-        return
-    stored = session.get(RefreshToken, jti)
-    if stored is not None:
-        session.delete(stored)
-        session.commit()
-    return
+    revoke_refresh_token(session, payload.refresh_token)
 
 
 @router.get("/me", response_model=SessionResponse)
