@@ -1,5 +1,3 @@
-from app.routes.auth import SESSION_EXPIRED_MESSAGE
-
 SIGNUP_PAYLOAD = {
     "name": "tester",
     "email": "tester@example.com",
@@ -19,11 +17,17 @@ def _signup(client) -> dict:
 
 def test_refresh_with_a_garbage_token_should_answer_in_korean(client):
     """The client renders `detail` verbatim for a non-422 body, so an English
-    string here is an English string on the user's screen."""
+    string here is an English string on the user's screen.
+
+    The literal is spelled out rather than imported from routes.auth. Comparing
+    the response against the very constant that produced it passes whatever the
+    constant says, including an English rewrite — which is the one thing this
+    test exists to catch.
+    """
     response = client.post("/auth/refresh", json={"refresh_token": "x" * 40})
 
     assert response.status_code == 401
-    assert response.json()["detail"] == SESSION_EXPIRED_MESSAGE
+    assert response.json()["detail"] == "로그인이 만료되었습니다. 다시 로그인해 주세요."
 
 
 def test_refresh_returns_rotated_token_pair(client):

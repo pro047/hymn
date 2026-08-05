@@ -180,7 +180,18 @@ def _get_or_create_church(session: Session, *, name: str, address: str) -> Churc
         if not church.address:
             church.address = address
         return church
+    return create_or_join_church(session, name=name, address=address)
 
+
+def create_or_join_church(session: Session, *, name: str, address: str) -> Church:
+    """Inserts the church, or joins the one a concurrent signup just created.
+
+    Split out of _get_or_create_church so the race branch below can be reached
+    on purpose. In place, it only runs when another transaction commits between
+    that function's read and this INSERT, which no single-session test can
+    arrange: a frozen snapshot blinds the re-read too, and READ COMMITTED makes
+    the read find the row and never get here at all.
+    """
     created = Church(name=name, address=address)
     try:
         # A savepoint, so losing this race costs the INSERT and nothing else.

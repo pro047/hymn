@@ -107,14 +107,52 @@ def test_login_password_longer_than_16_should_reach_the_hash_check(client, db_se
     assert response.status_code == 200, response.text
 
 
-def test_login_with_a_newline_in_the_password_should_not_be_rejected_by_validation(client):
+def test_a_legacy_account_whose_password_holds_a_newline_should_still_sign_in(client, db_session):
     """Signup blocks control characters; login must not.
 
-    Accounts registered through the API before that rule existed still hold such
-    a password, and a 422 here would turn "wrong password" into "malformed
-    request" for them. The gate belongs on the way in only.
+    Accounts registered through the API before that rule existed still hold
+    such a password, and rejecting it here would turn "wrong password" into
+    "malformed request" and lock them out for good — there is no reset flow.
+    The account has to be built directly: signup now refuses this password.
     """
-    response = _login(client, password="Passwo\nrd1")
+    legacy_password = "Passwo\nrd1"
+    church = Church(name="Legacy Church", address="Seoul")
+    db_session.add(church)
+    db_session.flush()
+    db_session.add(
+        User(
+            church_id=church.id,
+            email="legacy@example.com",
+            name="legacy",
+            password_hash=hash_password(legacy_password),
+            role="member",
+        )
+    )
+    db_session.commit()
+
+    response = _login(client, email="legacy@example.com", password=legacy_password)
+
+    assert response.status_code == 200, response.text
+
+
+def test_a_legacy_newline_password_typed_without_the_newline_should_not_sign_in(client, db_session):
+    """The flip side, and the reason such an account is stranded on the web:
+    <input type="password"> strips CR/LF, so the form can only ever send this."""
+    church = Church(name="Legacy Church", address="Seoul")
+    db_session.add(church)
+    db_session.flush()
+    db_session.add(
+        User(
+            church_id=church.id,
+            email="legacy@example.com",
+            name="legacy",
+            password_hash=hash_password("Passwo\nrd1"),
+            role="member",
+        )
+    )
+    db_session.commit()
+
+    response = _login(client, email="legacy@example.com", password="Password1")
 
     assert response.status_code == 401, response.text
 

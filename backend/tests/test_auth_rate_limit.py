@@ -85,13 +85,23 @@ def test_check_email_and_login_should_not_share_a_bucket(client):
 
 
 def test_login_burst_past_the_limit_should_return_429(client):
-    payload = {"email": "nobody@example.com", "password": "Password1"}
-    for _ in range(LOGIN_PER_MINUTE):
-        client.post("/auth/login", json=payload, headers=CALLER)
+    """Every attempt uses a different address, and that is load-bearing.
 
-    blocked = client.post("/auth/login", json=payload, headers=CALLER)
+    login_guard locks an account after MAX_FAILURES failures and that happens
+    to be the same number as LOGIN_LIMIT. Aim the burst at one address and the
+    429 comes from the lockout whether or not @limiter.limit(LOGIN_LIMIT) is
+    still on the route — deleting the decorator left this file entirely green.
+    Spreading the attempts across addresses keeps the per-IP limit the only
+    thing that can answer, and the message assertion says which one did.
+    """
+    password = {"password": "Password1"}
+    for index in range(LOGIN_PER_MINUTE):
+        client.post("/auth/login", json={"email": f"burst{index}@example.com", **password}, headers=CALLER)
+
+    blocked = client.post("/auth/login", json={"email": "burst-last@example.com", **password}, headers=CALLER)
 
     assert blocked.status_code == 429
+    assert blocked.json() == {"detail": RATE_LIMIT_MESSAGE}, "429 came from the lockout, not the IP limit"
 
 
 def test_signup_burst_past_the_limit_should_return_429(client):

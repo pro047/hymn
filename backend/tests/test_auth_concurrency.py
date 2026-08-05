@@ -27,6 +27,7 @@ from app.schemas.auth import SignupRequest
 from app.services.auth import (
     EmailAlreadyRegisteredError,
     InvalidRefreshTokenError,
+    create_or_join_church,
     decode_token,
     register_user,
     rotate_refresh_token,
@@ -102,6 +103,33 @@ def test_signup_losing_the_race_should_not_leave_a_half_written_account(
         # The loser had already created its church when the INSERT failed; the
         # transaction has to take that with it.
         assert check.query(Church).filter(Church.name == "Loser Church").count() == 0
+
+
+def test_creating_a_church_that_already_exists_should_join_it_instead_of_failing(
+    engine, committed_church
+):
+    """The other side of the signup race: two people register the first accounts
+    of one new church at the same moment. The loser's INSERT hits churches.name,
+    and it has to join the winner's row rather than surface a 500.
+
+    Called directly rather than through register_user, because reaching this
+    branch from there needs a committer to land between the read and the INSERT
+    — see the function's own docstring.
+    """
+    with Session(bind=engine) as winner:
+        winner.add(Church(name=CHURCH_NAME, address="Seoul"))
+        winner.commit()
+        winner_id = winner.query(Church.id).filter(Church.name == CHURCH_NAME).scalar()
+
+    with Session(bind=engine) as loser:
+        joined = create_or_join_church(loser, name=CHURCH_NAME, address="Busan")
+
+        assert joined.id == winner_id
+        # The loser's address must not overwrite the winner's; it lost.
+        assert joined.address == "Seoul"
+
+    with Session(bind=engine) as check:
+        assert check.query(Church).filter(Church.name == CHURCH_NAME).count() == 1
 
 
 def test_rotating_a_refresh_token_twice_at_once_should_revoke_rather_than_crash(
