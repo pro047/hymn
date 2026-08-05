@@ -20,6 +20,7 @@ riding the rollback the `db_session` fixture gives every other test.
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Church, RefreshToken, User
@@ -29,6 +30,7 @@ from app.services.auth import (
     InvalidRefreshTokenError,
     create_or_join_church,
     decode_token,
+    insert_new_user,
     register_user,
     rotate_refresh_token,
 )
@@ -103,6 +105,56 @@ def test_signup_losing_the_race_should_not_leave_a_half_written_account(
         # The loser had already created its church when the INSERT failed; the
         # transaction has to take that with it.
         assert check.query(Church).filter(Church.name == "Loser Church").count() == 0
+
+
+def test_inserting_a_user_whose_address_is_taken_should_raise_the_duplicate_error(
+    engine, committed_church
+):
+    """Also pins the constraint names against the live schema.
+
+    insert_new_user answers 409 only for the constraints it lists, and those
+    names are strings the code cannot derive — uq_users_email comes from an
+    alembic migration rather than models.py. Rename one and this fails here,
+    instead of turning every raced signup into a 500 in production.
+    """
+    with Session(bind=engine) as setup:
+        register_user(setup, _payload())
+
+    with Session(bind=engine) as session:
+        church_id = session.query(Church.id).filter(Church.name == CHURCH_NAME).scalar()
+
+        with pytest.raises(EmailAlreadyRegisteredError):
+            insert_new_user(
+                session,
+                User(church_id=church_id, email=EMAIL, name="dup", password_hash="x", role="member"),
+            )
+
+
+def test_inserting_a_user_that_breaks_another_constraint_should_not_claim_the_address(
+    engine, committed_church
+):
+    """409 means "that address is taken", and nothing else may borrow it.
+
+    Mapping every IntegrityError to it sent the caller off to change an address
+    that was never the problem — they would change it, retry, and get the same
+    409 forever — while a genuine fault was logged as an expected outcome.
+    """
+    with Session(bind=engine) as session:
+        session.add(Church(name=CHURCH_NAME, address="Seoul"))
+        session.commit()
+
+        # A church id that does not exist, so the foreign key gives way rather
+        # than the unique index on the address.
+        orphan = User(
+            church_id="00000000-0000-0000-0000-000000000000",
+            email="fk@example.com",
+            name="fk",
+            password_hash="x",
+            role="member",
+        )
+
+        with pytest.raises(IntegrityError):
+            insert_new_user(session, orphan)
 
 
 def test_creating_a_church_that_already_exists_should_join_it_instead_of_failing(

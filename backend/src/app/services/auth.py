@@ -214,8 +214,53 @@ def create_or_join_church(session: Session, *, name: str, address: str) -> Churc
     return created
 
 
+# The two ways users.email can collide, measured against the live schema rather
+# than guessed: uq_users_email is the global one an alembic migration added, and
+# uq_user_church_email is the composite in models.py, which fires first when the
+# duplicate lands in the same church. Anything else — a foreign key, a check —
+# is not an address that is already taken and must not be reported as one.
+# Renaming either constraint breaks the two signup-race tests in
+# test_auth_concurrency.py, which are the only things that reach this branch.
+EMAIL_UNIQUE_CONSTRAINTS = frozenset({"uq_users_email", "uq_user_church_email"})
+
+
+def _violated_constraint(error: IntegrityError) -> str | None:
+    """The constraint psycopg2 names in its diagnostics, if it named one."""
+    diagnostics = getattr(error.orig, "diag", None)
+    return getattr(diagnostics, "constraint_name", None)
+
+
+def insert_new_user(session: Session, user: User) -> None:
+    """Inserts the account, turning only an address clash into a 409.
+
+    The savepoint keeps a lost race from poisoning the whole transaction, and
+    the constraint check keeps 409 meaning what it says. Split out of
+    register_user so both outcomes can be reached deliberately: driving a
+    foreign-key failure through the full signup needs a committer to land
+    between the church read and this INSERT, which a frozen snapshot cannot
+    fake — it reports a serialization failure instead.
+    """
+    try:
+        with session.begin_nested():
+            session.add(user)
+    except IntegrityError as exc:
+        if _violated_constraint(exc) not in EMAIL_UNIQUE_CONSTRAINTS:
+            # Some other constraint gave way. Answering "이미 사용 중인
+            # 이메일입니다" would send the caller off to change an address that
+            # was never the problem, and would bury a real fault as an expected
+            # outcome. Let it surface.
+            raise
+        raise EmailAlreadyRegisteredError from exc
+
+
 def register_user(session: Session, payload: SignupRequest) -> AuthResult:
     """Creates the account and its first token pair in one transaction."""
+    # Hashed before anything is read or written. bcrypt costs ~200ms, and once
+    # the church INSERT below has flushed it holds an uncommitted entry in the
+    # unique index on churches.name — every other signup for that same new
+    # church would then queue behind this hash, holding a pooled connection.
+    password_hash = hash_password(payload.password)
+
     if session.query(User.id).filter(User.email == payload.email).first() is not None:
         raise EmailAlreadyRegisteredError
 
@@ -227,19 +272,11 @@ def register_user(session: Session, payload: SignupRequest) -> AuthResult:
         email=payload.email,
         name=payload.name,
         phone=payload.phone,
-        password_hash=hash_password(payload.password),
+        password_hash=password_hash,
         role="member",
     )
 
-    try:
-        # The check above is a courtesy, not a guarantee: another request can
-        # commit the same address in the gap. users.email is unique, so the
-        # INSERT is what actually decides, and the savepoint turns losing that
-        # race into a 409 instead of the 500 an unhandled IntegrityError gives.
-        with session.begin_nested():
-            session.add(user)
-    except IntegrityError as exc:
-        raise EmailAlreadyRegisteredError from exc
+    insert_new_user(session, user)
 
     tokens = issue_token_bundle(session, user=user)
     result = _snapshot(user, church, tokens)
