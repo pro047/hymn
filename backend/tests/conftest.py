@@ -29,6 +29,52 @@ from app import login_guard
 from app.db import get_session
 from app.main import app
 from app.rate_limit import limiter
+from app.services.auth import _decoy_password_hash, pwd_context
+
+# Captured before anything lowers it, so a test can put the real cost back.
+# to_dict() does not spell the rounds out — they are the scheme default — which
+# is exactly why the original config is kept rather than a number.
+PRODUCTION_CRYPT_CONFIG = pwd_context.to_dict()
+TEST_BCRYPT_ROUNDS = 4
+
+
+def _set_bcrypt_cost(rounds: int | None) -> None:
+    """Lowers the bcrypt cost factor, or restores the production one."""
+    if rounds is None:
+        pwd_context.load(PRODUCTION_CRYPT_CONFIG)
+    else:
+        pwd_context.update(bcrypt__rounds=rounds)
+    # A bcrypt hash carries its own cost factor, and the decoy is lru_cached:
+    # without this the cached one keeps whatever rounds it was built at and
+    # verifying against it costs that, not whatever was just set here.
+    _decoy_password_hash.cache_clear()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cheap_bcrypt():
+    """bcrypt is deliberately slow and the auth tests live in it — one round per
+    login, ten per lockout test, which was most of the suite's wall clock.
+
+    Only the cost factor changes: the hash format, the verify path and every
+    result stay identical. Tests that measure durations opt back out with the
+    production_bcrypt_cost fixture below.
+    """
+    _set_bcrypt_cost(TEST_BCRYPT_ROUNDS)
+    yield
+    _set_bcrypt_cost(None)
+
+
+@pytest.fixture()
+def production_bcrypt_cost():
+    """Restores the real cost for tests that compare how long two paths take.
+
+    At four rounds a hash is under a millisecond, which the HTTP round trip and
+    the queries around it would swamp — the ratio being asserted would stop
+    measuring bcrypt and start measuring noise.
+    """
+    _set_bcrypt_cost(None)
+    yield
+    _set_bcrypt_cost(TEST_BCRYPT_ROUNDS)
 
 
 @pytest.fixture(autouse=True)

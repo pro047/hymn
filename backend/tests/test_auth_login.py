@@ -189,12 +189,19 @@ def test_login_with_malformed_email_should_return_422(client):
     assert response.status_code == 422
 
 
-def test_login_for_unknown_email_should_cost_about_as_much_as_a_wrong_password(client):
+def test_login_for_unknown_email_should_cost_about_as_much_as_a_wrong_password(
+    client, production_bcrypt_cost
+):
     """Closes the user-enumeration oracle M0 pinned in its opposite form.
 
     A missing account used to skip bcrypt, so the miss path answered in about no
     time and response time alone told a caller whether an address was
     registered. authenticate() now verifies against a decoy hash instead.
+
+    The rest of the suite runs bcrypt at four rounds; this one puts the real
+    cost back, because what it asserts is a ratio between two durations and at
+    four rounds both sides are under a millisecond of hashing wrapped in far
+    more than that of HTTP and SQL.
     """
     signup = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
     assert signup.status_code == 201, signup.text
