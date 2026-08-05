@@ -32,15 +32,14 @@ import threading
 import time
 from collections import OrderedDict, deque
 
-# Ten failures inside fifteen minutes locks the address, and it stays locked
-# until the oldest of those ten ages out — so at most fifteen more minutes.
+# Ten failures inside fifteen minutes locks the address for fifteen minutes.
 MAX_FAILURES = 10
 WINDOW_SECONDS = 15 * 60
+LOCKOUT_SECONDS = 15 * 60
 
 # Bounded, because the key is attacker-controlled: spraying distinct addresses
-# would otherwise grow this map without limit. The least recently seen entry is
-# evicted, which costs that address its counter and leaves the per-address rate
-# limit as the remaining defence.
+# would otherwise grow the tally map without limit. The least recently seen
+# entry is evicted, which costs that address its partial count.
 MAX_TRACKED_ACCOUNTS = 10_000
 
 ACCOUNT_LOCKED_MESSAGE = "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."
@@ -48,7 +47,18 @@ ACCOUNT_LOCKED_MESSAGE = "로그인 시도가 너무 많습니다. 잠시 후 �
 # Sync endpoints run in a threadpool, so two requests really can be in here at
 # once. Each entry's read-modify-write has to be one step.
 _lock = threading.Lock()
+
+# Two maps, and the split is the point. Tallies are cheap to create — one
+# failed request each — so they are attacker-controlled and get an LRU cap.
+# Locks cost MAX_FAILURES failed requests each, every one of them a bcrypt
+# round on this machine, and they are the only thing here with any defensive
+# value. So a lock is never evicted, only expired: capping them meant a spray
+# of MAX_TRACKED_ACCOUNTS junk addresses could push a locked account out of
+# the map and silently unlock it, which is the attack the module exists to
+# stop. Growth is bounded instead by what locks cost to create and by the
+# fact that every one of them expires.
 _failures: "OrderedDict[str, deque[float]]" = OrderedDict()
+_locks: "OrderedDict[str, float]" = OrderedDict()
 
 
 def _recent_failures(email: str, now: float) -> "deque[float] | None":
@@ -64,28 +74,53 @@ def _recent_failures(email: str, now: float) -> "deque[float] | None":
     return attempts
 
 
+def _prune_locks(now: float) -> None:
+    """Drops expired locks. Caller must hold `_lock`.
+
+    LOCKOUT_SECONDS is a constant, so insertion order is unlock order and the
+    expired ones are always at the front: this stays amortised O(1) rather
+    than walking the whole map on every call.
+    """
+    while _locks:
+        email, unlock_at = next(iter(_locks.items()))
+        if unlock_at > now:
+            return
+        del _locks[email]
+
+
 def seconds_until_unlocked(email: str, *, now: float | None = None) -> int:
     """How long the address has to wait. 0 means it is not locked."""
     now = time.monotonic() if now is None else now
     with _lock:
-        attempts = _recent_failures(email, now)
-        if attempts is None or len(attempts) < MAX_FAILURES:
+        _prune_locks(now)
+        unlock_at = _locks.get(email)
+        if unlock_at is None:
             return 0
-        # Unlocks the moment the oldest still-counted failure leaves the
-        # window, which drops the tally back below the threshold.
-        return max(1, math.ceil(attempts[0] + WINDOW_SECONDS - now))
+        return max(1, math.ceil(unlock_at - now))
 
 
 def record_failure(email: str, *, now: float | None = None) -> None:
-    """Counts one rejected attempt. Never called while the address is locked,
-    so a persistent attacker cannot hold the lock open indefinitely."""
+    """Counts one rejected attempt, and applies the lock on the last one."""
     now = time.monotonic() if now is None else now
     with _lock:
+        _prune_locks(now)
+        if email in _locks:
+            # Already locked; callers check first, so this only guards against
+            # an attacker being able to extend their own lock indefinitely.
+            return
+
         attempts = _recent_failures(email, now)
         if attempts is None:
             attempts = deque()
             _failures[email] = attempts
         attempts.append(now)
+
+        if len(attempts) >= MAX_FAILURES:
+            del _failures[email]
+            _locks[email] = now + LOCKOUT_SECONDS
+            _locks.move_to_end(email)  # keeps insertion order == unlock order
+            return
+
         _failures.move_to_end(email)
         while len(_failures) > MAX_TRACKED_ACCOUNTS:
             _failures.popitem(last=False)
@@ -95,15 +130,23 @@ def clear(email: str) -> None:
     """Forgets an address after it signs in successfully."""
     with _lock:
         _failures.pop(email, None)
+        _locks.pop(email, None)
 
 
 def tracked_count() -> int:
-    """How many addresses currently hold a tally. Bounded by design."""
+    """How many addresses hold a partial tally. LRU-capped."""
     with _lock:
         return len(_failures)
+
+
+def locked_count() -> int:
+    """How many addresses are currently locked. Expiry-bounded, never evicted."""
+    with _lock:
+        return len(_locks)
 
 
 def reset() -> None:
     """Empties every counter. For tests."""
     with _lock:
         _failures.clear()
+        _locks.clear()

@@ -3,6 +3,7 @@ assertions that were pinning bugs on purpose (see the timing test at the end).""
 
 import time
 
+from app import login_guard
 from app.models import Church, User
 from app.routes.auth import INVALID_CREDENTIALS_MESSAGE
 from app.services.auth import hash_password
@@ -116,6 +117,32 @@ def test_login_with_a_newline_in_the_password_should_not_be_rejected_by_validati
     response = _login(client, password="Passwo\nrd1")
 
     assert response.status_code == 401, response.text
+
+
+def test_login_with_a_nul_byte_in_the_password_should_return_401(client):
+    """bcrypt refuses NUL bytes and passlib raises rather than answering False.
+
+    Verifying against the decoy hash made every login reach that call, so an
+    unauthenticated caller could turn /auth/login into a 500 at will. hash()
+    refuses NUL too, so no account can hold such a password and 401 is the
+    honest answer.
+    """
+    signup = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
+    assert signup.status_code == 201, signup.text
+
+    on_the_account = _login(client, password="Passw\x00rd1")
+    on_an_unknown_address = _login(client, email="nobody@example.com", password="Passw\x00rd1")
+
+    assert on_the_account.status_code == 401, on_the_account.text
+    assert on_an_unknown_address.status_code == 401, on_an_unknown_address.text
+
+
+def test_login_with_a_nul_byte_in_the_password_should_still_count_toward_the_lockout(client):
+    """The escaping exception skipped the tally, so these attempts were free."""
+    _login(client, email="nul@example.com", password="Passw\x00rd1")
+
+    assert login_guard.seconds_until_unlocked("nul@example.com") == 0
+    assert login_guard.tracked_count() == 1
 
 
 def test_login_with_malformed_email_should_return_422(client):

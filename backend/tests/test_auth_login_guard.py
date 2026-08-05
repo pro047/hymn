@@ -6,7 +6,7 @@ bcrypt rounds and is the slow one; there is one of it on purpose.
 """
 
 from app import login_guard
-from app.login_guard import MAX_FAILURES, WINDOW_SECONDS
+from app.login_guard import LOCKOUT_SECONDS, MAX_FAILURES, WINDOW_SECONDS
 
 EMAIL = "target@example.com"
 
@@ -35,13 +35,43 @@ def test_reaching_the_threshold_should_lock():
     assert login_guard.seconds_until_unlocked(EMAIL, now=float(MAX_FAILURES)) > 0
 
 
-def test_the_lock_should_lift_once_the_oldest_failure_leaves_the_window():
+def test_the_lock_should_lift_a_fixed_interval_after_it_was_applied():
+    """The clock starts at the failure that tripped it, not at the first one."""
     for i in range(MAX_FAILURES):
         login_guard.record_failure(EMAIL, now=float(i))
 
-    # One second before the first failure ages out, and one second after.
-    assert login_guard.seconds_until_unlocked(EMAIL, now=WINDOW_SECONDS - 1) > 0
-    assert login_guard.seconds_until_unlocked(EMAIL, now=WINDOW_SECONDS + 1) == 0
+    applied_at = float(MAX_FAILURES - 1)
+    assert login_guard.seconds_until_unlocked(EMAIL, now=applied_at + LOCKOUT_SECONDS - 1) > 0
+    assert login_guard.seconds_until_unlocked(EMAIL, now=applied_at + LOCKOUT_SECONDS + 1) == 0
+
+
+def test_failures_older_than_the_window_should_not_count_toward_the_lock():
+    """The tally slides: nine failures now and one a fortnight later is not ten."""
+    for i in range(MAX_FAILURES - 1):
+        login_guard.record_failure(EMAIL, now=float(i))
+
+    login_guard.record_failure(EMAIL, now=float(WINDOW_SECONDS + 1))
+
+    assert login_guard.seconds_until_unlocked(EMAIL, now=float(WINDOW_SECONDS + 1)) == 0
+
+
+def test_a_spray_of_new_addresses_should_not_evict_an_active_lock():
+    """The LRU cap must not become a way to unlock an account.
+
+    Tallies are one request each and get evicted; a lock costs MAX_FAILURES
+    failed requests and must not. Held in the same LRU map, a locked entry was
+    in fact the *first* thing evicted — nothing refreshes its recency, because
+    the lock check does not touch it and record_failure is skipped while
+    locked — so MAX_TRACKED_ACCOUNTS junk addresses silently lifted the lock.
+    """
+    for i in range(MAX_FAILURES):
+        login_guard.record_failure(EMAIL, now=float(i))
+    assert login_guard.seconds_until_unlocked(EMAIL, now=float(MAX_FAILURES)) > 0
+
+    for i in range(login_guard.MAX_TRACKED_ACCOUNTS + 50):
+        login_guard.record_failure(f"spray{i}@example.com", now=float(MAX_FAILURES))
+
+    assert login_guard.seconds_until_unlocked(EMAIL, now=float(MAX_FAILURES)) > 0
 
 
 def test_a_successful_sign_in_should_clear_the_tally():

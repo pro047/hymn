@@ -7,6 +7,7 @@ from functools import lru_cache
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from passlib.exc import PasswordValueError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -145,7 +146,17 @@ def authenticate(session: Session, *, email: str, password: str) -> AuthResult:
     # "no such account" and the "account has no password" paths must cost the
     # same bcrypt round as a genuine mismatch.
     stored_hash = user.password_hash if user is not None else None
-    password_matches = pwd_context.verify(password, stored_hash or _decoy_password_hash())
+    try:
+        password_matches = pwd_context.verify(password, stored_hash or _decoy_password_hash())
+    except PasswordValueError:
+        # bcrypt refuses NUL bytes and passlib raises instead of answering
+        # False. hash() refuses them too, so no stored hash can ever have come
+        # from such a password — it is nobody's real credential and a mismatch
+        # is the honest answer. Letting it escape made /login answer 500 to any
+        # unauthenticated caller and skipped the lockout tally on the way out.
+        # Raised identically with and without an account, so it stays silent
+        # about whether the address is registered.
+        password_matches = False
     if user is None or not stored_hash or not password_matches:
         # Counted on the typed address whether or not it exists, so the
         # lockout cannot be used to tell registered addresses apart.
