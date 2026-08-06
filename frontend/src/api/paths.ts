@@ -1,0 +1,19 @@
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
+
+export const API_PATHS = {
+  scores: `${API_BASE}/scores`,
+  score: (scoreId: string) => `${API_BASE}/scores/${scoreId}`,
+  savedScores: `${API_BASE}/me/saved-scores`,
+  savedScoreUpload: `${API_BASE}/me/saved-scores/upload`,
+  savedScore: (scoreId: string) => `${API_BASE}/me/saved-scores/${scoreId}`,
+  applySavedScore: (scoreId: string) => `${API_BASE}/me/saved-scores/${scoreId}/apply`,
+  // The address goes in the query string, so it must be escaped: `+` and `&` are
+  // legal in a local part and would otherwise be read as syntax.
+  authCheckEmail: (email: string) =>
+    `${API_BASE}/auth/check-email?email=${encodeURIComponent(email)}`,
+  authLogin: `${API_BASE}/auth/login`,
+  authSignup: `${API_BASE}/auth/signup`,
+  authMe: `${API_BASE}/auth/me`,
+  authRefresh: `${API_BASE}/auth/refresh`,
+  authLogout: `${API_BASE}/auth/logout`,
+};

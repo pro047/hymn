@@ -5,6 +5,7 @@ import DatePicker from "../../../components/DatePicker";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Label } from "../../../components/ui/label";
+import { startOfToday } from "../../../lib/dates";
 import { SAVED_SCORES_ENABLED } from "../feature-flags";
 
 function getInitialMode(initialMode) {
@@ -38,7 +39,6 @@ export default function ScoreUploadDialog({
 }) {
   const [mode, setMode] = useState(getInitialMode(initialMode));
   const [title, setTitle] = useState(() => getInitialTitle(initialFile));
-  const [churchName, setChurchName] = useState("");
   const [weekOf, setWeekOf] = useState(null);
   const [file, setFile] = useState(initialFile ?? null);
   const [selectedSavedScoreId, setSelectedSavedScoreId] = useState(
@@ -80,11 +80,9 @@ export default function ScoreUploadDialog({
         weekOf: weekLabel,
       });
     } else {
-      const normalizedChurchName = churchName.replace(/\s+/g, "");
-      if (!title || !file || (!isLibraryUpload && (!normalizedChurchName || !weekOf))) return;
+      if (!title || !file || (!isLibraryUpload && !weekOf)) return;
       result = await onUploadSubmit({
         title,
-        churchName: normalizedChurchName,
         weekOf: weekLabel,
         file,
         saveToLibrary,
@@ -94,7 +92,6 @@ export default function ScoreUploadDialog({
     if (result?.ok) {
       onClose();
       setTitle("");
-      setChurchName("");
       setWeekOf(null);
       setFile(null);
       setSelectedSavedScoreId("");
@@ -199,23 +196,23 @@ export default function ScoreUploadDialog({
               </div>
 
               {!isLibraryUpload ? (
-                <>
-                  <div className="space-y-2">
-                    <Label htmlFor="church-name">교회 이름</Label>
-                    <Input
-                      id="church-name"
-                      value={churchName}
-                      onChange={(event) => setChurchName(event.target.value)}
-                      placeholder="예: 작은샘골 사랑의 교회"
-                      required
-                    />
-                  </div>
+                <div className="space-y-2">
+                  <Label>주차 선택</Label>
+                  {/* Past dates are always a mis-click here: in 140 production
+                      uploads every score was filed 1-3 days before its Sunday
+                      and none was ever backdated.
 
-                  <div className="space-y-2">
-                    <Label>주차 선택</Label>
-                    <DatePicker value={weekOf} onChange={setWeekOf} />
-                  </div>
-                </>
+                      This week stays reachable — the server files a score under
+                      the Sunday opening the week of whatever day is picked, so
+                      choosing today lands in the current week. The server's own
+                      floor is that Sunday rather than today, because sending
+                      week_of=<this Sunday> straight to the API is legitimate. */}
+                  <DatePicker
+                    value={weekOf}
+                    onChange={setWeekOf}
+                    disabled={{ before: startOfToday() }}
+                  />
+                </div>
               ) : null}
 
               <div className="space-y-2">
@@ -257,7 +254,7 @@ export default function ScoreUploadDialog({
                 isSubmitting ||
                 (mode === "library"
                   ? !selectedSavedScoreId || !weekLabel
-                  : !title || !file || (!isLibraryUpload && (!churchName.trim() || !weekLabel)))
+                  : !title || !file || (!isLibraryUpload && !weekLabel))
               }
             >
               {mode === "library"

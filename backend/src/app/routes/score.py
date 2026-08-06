@@ -6,7 +6,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.models import Church, Score, SetItem, Week
+from app.deps import get_current_user
+from app.models import Score, SetItem, User, Week
 from app.schemas.score import ScoreCreate, ScoreCreateResponse, ScoreResponse, ScoreUpdate
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_get, presign_put
@@ -33,24 +34,30 @@ def _download_url(file_uri: str | None) -> str | None:
         return presign_get(file_uri)
     return None
 
+
+def _own_score_or_404(session: Session, score_id: str, user: User) -> Score:
+    """A score of the caller's own church, or 404.
+
+    404 rather than 403 for a score that exists in another church: 403 would
+    confirm the id is real, which is one bit more than a caller outside that
+    congregation should get. Same choice the saved-scores routes make.
+    """
+    score = session.get(Score, score_id)
+    if score is None or score.church_id != user.church_id:
+        raise HTTPException(404, "악보를 찾을 수 없습니다.")
+    return score
+
 @router.post('/scores', response_model=ScoreCreateResponse)
-def create_score(payload: ScoreCreate, session: Session = Depends(get_session)):
+def create_score(
+    payload: ScoreCreate,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     normalized_week_of = _normalize_week_date(payload.week_of)
-    church_id = payload.church_id
-    if not church_id and payload.church_name:
-        church = session.query(Church).filter(Church.name == payload.church_name).first()
-        if not church:
-            church = Church(name=payload.church_name)
-            session.add(church)
-            session.commit()
-            session.refresh(church)
-        church_id = church.id
-    if not church_id:
-        raise HTTPException(400, 'church_id or church_name required')
-    if payload.church_id:
-        exists = session.query(Church.id).filter(Church.id == payload.church_id).first()
-        if not exists:
-            raise HTTPException(400, 'church_id not found')
+    # From the token, never the body. The old route took church_id or a free
+    # text church_name and created the church if the name was unknown, with no
+    # authentication at all: anyone could file scores under any congregation.
+    church_id = user.church_id
     week = _ensure_week(session, normalized_week_of)
     if payload.storage_type == 's3':
         if not payload.filename:
@@ -153,10 +160,13 @@ def get_score(score_id: str, session: Session = Depends(get_session)):
     )
 
 @router.patch("/scores/{score_id}", response_model=ScoreResponse)
-def update_score(score_id: str, payload: ScoreUpdate, session: Session = Depends(get_session)):
-    score = session.get(Score, score_id)
-    if not score:
-        raise HTTPException(404, "Score not found")
+def update_score(
+    score_id: str,
+    payload: ScoreUpdate,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    score = _own_score_or_404(session, score_id, user)
 
     if payload.title is not None:
         score.title = payload.title
@@ -195,10 +205,12 @@ def update_score(score_id: str, payload: ScoreUpdate, session: Session = Depends
     )
 
 @router.delete('/scores/{score_id}', status_code=204)
-def delete_score(score_id: str, session: Session = Depends(get_session)):
-    score = session.get(Score, score_id)
-    if not score:
-        raise HTTPException(404, "Score not found")
+def delete_score(
+    score_id: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    score = _own_score_or_404(session, score_id, user)
     session.delete(score)
     session.commit()
     return

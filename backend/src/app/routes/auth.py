@@ -1,12 +1,21 @@
-import re
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.models import Church, RefreshToken, User
+from app.login_guard import ACCOUNT_LOCKED_MESSAGE
+from app.models import Church, User
+from app.rate_limit import (
+    CHECK_EMAIL_LIMIT,
+    LOGIN_LIMIT,
+    LOGOUT_LIMIT,
+    ME_LIMIT,
+    REFRESH_LIMIT,
+    SIGNUP_LIMIT,
+    limiter,
+)
 from app.schemas.auth import (
     AuthChurch,
     AuthUser,
@@ -14,6 +23,7 @@ from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
     LogoutRequest,
+    NormalizedEmail,
     RefreshRequest,
     RefreshResponse,
     SessionResponse,
@@ -22,143 +32,105 @@ from app.schemas.auth import (
     TokenPair,
 )
 from app.services.auth import (
+    AccountLockedError,
+    AuthResult,
+    ChurchMissingError,
+    EmailAlreadyRegisteredError,
+    InvalidCredentialsError,
+    InvalidRefreshTokenError,
+    authenticate,
     decode_token,
-    hash_password,
     infer_church_code,
-    issue_token_bundle,
     parse_bearer_token,
-    verify_password_for_user,
+    register_user,
+    revoke_refresh_token,
+    rotate_refresh_token,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-PASSWORD_RULE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z]).{8,16}$")
+
+# Every `detail` here is rendered straight to the user: api-error.ts shows the
+# string as-is for a non-422 body, so an English one reaches the screen in
+# English. Wording is uniform on purpose — the credentials message must not
+# say which half was wrong, and the session ones must not say which check
+# rejected the token.
+EMAIL_TAKEN_MESSAGE = "이미 사용 중인 이메일입니다."
+INVALID_CREDENTIALS_MESSAGE = "이메일 또는 비밀번호가 올바르지 않습니다."
+SESSION_EXPIRED_MESSAGE = "로그인이 만료되었습니다. 다시 로그인해 주세요."
+CHURCH_MISSING_MESSAGE = "계정에 연결된 교회를 찾을 수 없습니다. 관리자에게 문의해 주세요."
+USER_MISSING_MESSAGE = "계정을 찾을 수 없습니다. 다시 로그인해 주세요."
+
+
+def _auth_response(model: type[LoginResponse], result: AuthResult) -> LoginResponse:
+    """Shapes the one payload /login and /signup both answer with."""
+    return model(
+        tokens=TokenPair(
+            access_token=result.tokens.access_token,
+            refresh_token=result.tokens.refresh_token,
+            expires_in=result.tokens.expires_in,
+        ),
+        user=AuthUser(
+            id=result.user_id,
+            church_id=result.church_id,
+            email=result.email,
+            name=result.name,
+            role=result.role,
+        ),
+        church=AuthChurch(
+            id=result.church_id, name=result.church_name, code=result.church_code
+        ),
+    )
 
 
 @router.get("/check-email", response_model=EmailCheckResponse)
-def check_email(email: str, session: Session = Depends(get_session)):
-    normalized = email.strip().lower()
-    exists = session.query(User.id).filter(User.email == normalized).first() is not None
+@limiter.limit(CHECK_EMAIL_LIMIT)
+def check_email(request: Request, email: NormalizedEmail, session: Session = Depends(get_session)):
+    """Reports whether an address is free. Unauthenticated, hence the limit.
+
+    `request` is unused by the body but required on every @limiter.limit route:
+    slowapi inspects the signature while applying the decorator, so omitting it
+    raises at import and the whole app — /health and the score routes included —
+    fails to start.
+    """
+    exists = session.query(User.id).filter(User.email == email).first() is not None
     return EmailCheckResponse(available=not exists)
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, session: Session = Depends(get_session)):
-    user = (
-        session.query(User)
-        .filter(User.email == payload.email.strip().lower())
-        .first()
-    )
-    if user is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    if not verify_password_for_user(user, payload.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    church = session.get(Church, user.church_id)
-    if church is None:
-        raise HTTPException(status_code=404, detail="Church not found for user")
-
-    tokens = issue_token_bundle(session, user=user)
-    session.commit()
-    return LoginResponse(
-        tokens=TokenPair(
-            access_token=tokens.access_token,
-            refresh_token=tokens.refresh_token,
-            expires_in=tokens.expires_in,
-        ),
-        user=AuthUser(
-            id=user.id,
-            church_id=user.church_id,
-            email=user.email,
-            name=user.name,
-            role=user.role,
-        ),
-        church=AuthChurch(id=church.id, name=church.name, code=infer_church_code(church)),
-    )
+@limiter.limit(LOGIN_LIMIT)
+def login(request: Request, payload: LoginRequest, session: Session = Depends(get_session)):
+    try:
+        result = authenticate(session, email=payload.email, password=payload.password)
+    except AccountLockedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=ACCOUNT_LOCKED_MESSAGE,
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from None
+    except InvalidCredentialsError:
+        raise HTTPException(status_code=401, detail=INVALID_CREDENTIALS_MESSAGE) from None
+    except ChurchMissingError:
+        raise HTTPException(status_code=404, detail=CHURCH_MISSING_MESSAGE) from None
+    return _auth_response(LoginResponse, result)
 
 
 @router.post("/signup", response_model=SignupResponse, status_code=201)
-def signup(payload: SignupRequest, session: Session = Depends(get_session)):
-    if not payload.agreed_terms:
-        raise HTTPException(status_code=400, detail="약관 동의가 필요합니다.")
-
-    if not PASSWORD_RULE.fullmatch(payload.password):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "비밀번호는 8~16자이며 영문 대문자와 소문자를 모두 포함해야 합니다. "
-                "숫자와 특수문자는 사용할 수 있습니다."
-            ),
-        )
-
-    normalized_email = payload.email.strip().lower()
-    user_exists = session.query(User.id).filter(User.email == normalized_email).first()
-    if user_exists:
-        raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
-
-    church_name = payload.church.strip()
-    church = session.query(Church).filter(Church.name == church_name).first()
-    if church is None:
-        church = Church(name=church_name, address=payload.church_address.strip())
-        session.add(church)
-        session.flush()
-    elif not church.address:
-        church.address = payload.church_address.strip()
-
-    user = User(
-        church_id=church.id,
-        email=normalized_email,
-        name=payload.name.strip(),
-        phone=payload.phone.strip(),
-        password_hash=hash_password(payload.password),
-        role="member",
-    )
-    session.add(user)
-    session.commit()
-    session.refresh(user)
-    session.refresh(church)
-
-    tokens = issue_token_bundle(session, user=user)
-    session.commit()
-    return SignupResponse(
-        tokens=TokenPair(
-            access_token=tokens.access_token,
-            refresh_token=tokens.refresh_token,
-            expires_in=tokens.expires_in,
-        ),
-        user=AuthUser(
-            id=user.id,
-            church_id=user.church_id,
-            email=user.email,
-            name=user.name,
-            role=user.role,
-        ),
-        church=AuthChurch(id=church.id, name=church.name, code=infer_church_code(church)),
-    )
+@limiter.limit(SIGNUP_LIMIT)
+def signup(request: Request, payload: SignupRequest, session: Session = Depends(get_session)):
+    try:
+        result = register_user(session, payload)
+    except EmailAlreadyRegisteredError:
+        raise HTTPException(status_code=409, detail=EMAIL_TAKEN_MESSAGE) from None
+    return _auth_response(SignupResponse, result)
 
 
 @router.post("/refresh", response_model=RefreshResponse)
-def refresh(payload: RefreshRequest, session: Session = Depends(get_session)):
+@limiter.limit(REFRESH_LIMIT)
+def refresh(request: Request, payload: RefreshRequest, session: Session = Depends(get_session)):
     try:
-        claims = decode_token(payload.refresh_token)
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token") from None
-    if claims.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid refresh token type")
-    user_id = claims.get("sub")
-    church_id = claims.get("church_id")
-    jti = claims.get("jti")
-    if not user_id or not church_id or not jti:
-        raise HTTPException(status_code=401, detail="Invalid refresh token claims")
-    stored = session.get(RefreshToken, jti)
-    if stored is None or stored.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Refresh token revoked")
-    user = session.get(User, user_id)
-    if user is None or user.church_id != church_id:
-        raise HTTPException(status_code=401, detail="Invalid refresh token subject")
-    session.delete(stored)
-    tokens = issue_token_bundle(session, user=user)
-    session.commit()
+        tokens = rotate_refresh_token(session, payload.refresh_token)
+    except InvalidRefreshTokenError:
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE) from None
     return RefreshResponse(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,
@@ -167,26 +139,15 @@ def refresh(payload: RefreshRequest, session: Session = Depends(get_session)):
 
 
 @router.post("/logout", status_code=204)
-def logout(payload: LogoutRequest, session: Session = Depends(get_session)):
-    if not payload.refresh_token:
-        return
-    try:
-        claims = decode_token(payload.refresh_token)
-    except JWTError:
-        # Revocation is idempotent; an invalid/expired token has nothing to revoke.
-        return
-    jti = claims.get("jti")
-    if claims.get("type") != "refresh" or not jti:
-        return
-    stored = session.get(RefreshToken, jti)
-    if stored is not None:
-        session.delete(stored)
-        session.commit()
-    return
+@limiter.limit(LOGOUT_LIMIT)
+def logout(request: Request, payload: LogoutRequest, session: Session = Depends(get_session)):
+    revoke_refresh_token(session, payload.refresh_token)
 
 
 @router.get("/me", response_model=SessionResponse)
+@limiter.limit(ME_LIMIT)
 def me(
+    request: Request,
     authorization: str | None = Header(default=None, alias="Authorization"),
     session: Session = Depends(get_session),
 ):
@@ -194,23 +155,23 @@ def me(
         token = parse_bearer_token(authorization)
         claims = decode_token(token)
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE) from None
 
     if claims.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Invalid token type")
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
     user_id = claims.get("sub")
     church_id = claims.get("church_id")
     if not user_id or not church_id:
-        raise HTTPException(status_code=401, detail="Invalid token claims")
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
     user = session.get(User, user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=USER_MISSING_MESSAGE)
 
     church = session.get(Church, church_id)
     if church is None:
-        raise HTTPException(status_code=404, detail="Church not found")
+        raise HTTPException(status_code=404, detail=CHURCH_MISSING_MESSAGE)
 
     return SessionResponse(
         user=AuthUser(

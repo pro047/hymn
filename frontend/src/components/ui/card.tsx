@@ -1,6 +1,8 @@
+import type { ComponentProps } from "react";
+
 import { cn } from "../../lib/utils";
 
-function Card({ className, ...props }) {
+function Card({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
@@ -12,11 +14,11 @@ function Card({ className, ...props }) {
   );
 }
 
-function CardHeader({ className, ...props }) {
+function CardHeader({ className, ...props }: ComponentProps<"div">) {
   return <div className={cn("flex flex-col space-y-1.5 p-6", className)} {...props} />;
 }
 
-function CardTitle({ className, ...props }) {
+function CardTitle({ className, ...props }: ComponentProps<"h3">) {
   return (
     <h3
       className={cn("text-base font-semibold leading-none tracking-tight", className)}
@@ -25,15 +27,15 @@ function CardTitle({ className, ...props }) {
   );
 }
 
-function CardDescription({ className, ...props }) {
+function CardDescription({ className, ...props }: ComponentProps<"p">) {
   return <p className={cn("text-sm text-stone-500", className)} {...props} />;
 }
 
-function CardContent({ className, ...props }) {
+function CardContent({ className, ...props }: ComponentProps<"div">) {
   return <div className={cn("p-6 pt-0", className)} {...props} />;
 }
 
-function CardFooter({ className, ...props }) {
+function CardFooter({ className, ...props }: ComponentProps<"div">) {
   return <div className={cn("flex items-center p-6 pt-0", className)} {...props} />;
 }
 

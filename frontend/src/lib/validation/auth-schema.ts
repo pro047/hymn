@@ -1,0 +1,144 @@
+/**
+ * SOURCE OF TRUTH: backend/src/app/schemas/auth.py
+ *
+ * This is a deliberate copy, not a derivation — the server re-validates everything
+ * and its answer wins. The copy exists so a user learns what is wrong without a
+ * round trip. Loosening a rule here therefore only produces a 422; tightening one
+ * locks out input the server would have accepted. Change both files together.
+ *
+ * Parity cases are pinned in ./auth-schema.test.ts and mirrored by
+ * backend/tests/test_auth_signup.py.
+ */
+import { z } from "zod";
+
+import type { ApiError } from "../api-error";
+
+// Mirrors the module-level constants in backend/src/app/schemas/auth.py.
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 16;
+const LOGIN_PASSWORD_MAX_LENGTH = 128;
+const NAME_MAX_LENGTH = 255;
+const PHONE_MIN_LENGTH = 8;
+const PHONE_MAX_LENGTH = 32;
+
+// Worded to match what api-error.ts renders for the equivalent server rejection,
+// so the same mistake reads the same whether it was caught here or at the server.
+const REQUIRED_MESSAGE = "필수 입력 항목입니다.";
+const PASSWORD_CASE_MESSAGE = "영문 대문자와 소문자를 모두 포함해야 합니다.";
+const AGREED_TERMS_MESSAGE = "약관 동의가 필요합니다.";
+const PASSWORD_MISMATCH_MESSAGE = "비밀번호가 일치하지 않습니다.";
+
+const tooShortMessage = (min: number) => `최소 ${min}자 이상 입력해 주세요.`;
+const tooLongMessage = (max: number) => `최대 ${max}자까지 입력할 수 있습니다.`;
+
+// `.trim()` runs before the length checks, so a field of nothing but spaces is
+// rejected here rather than passing min_length and reaching the server as "".
+// The parsed output is what gets sent, which keeps "what was validated" and
+// "what was submitted" from drifting apart.
+const requiredText = (max: number) =>
+  z.string().trim().min(1, REQUIRED_MESSAGE).max(max, tooLongMessage(max));
+
+// Both forms check only that something was typed. Any format rule here risks
+// being stricter than EmailStr somewhere: on login that costs an account (the
+// request is never sent and there is no password reset to recover through), on
+// signup it costs a registration the server would have accepted. A malformed
+// address is the server's 422 to answer.
+//
+// zod's own email pattern is not gone, it is demoted — lib/email-check.ts reuses
+// it to decide when an address is worth a duplicate lookup, where being strict
+// only skips a convenience.
+const emailField = z.string().trim().toLowerCase().pipe(z.string().min(1, REQUIRED_MESSAGE));
+
+/** The exact body POST /auth/signup accepts. Keep 1:1 with SignupRequest. */
+export const signupSchema = z.object({
+  name: requiredText(NAME_MAX_LENGTH),
+  email: emailField,
+  password: z
+    .string()
+    .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
+    .max(PASSWORD_MAX_LENGTH, tooLongMessage(PASSWORD_MAX_LENGTH))
+    .regex(/[a-z]/, PASSWORD_CASE_MESSAGE)
+    .regex(/[A-Z]/, PASSWORD_CASE_MESSAGE),
+  church: requiredText(NAME_MAX_LENGTH),
+  church_address: requiredText(NAME_MAX_LENGTH),
+  phone: z
+    .string()
+    .trim()
+    .min(PHONE_MIN_LENGTH, tooShortMessage(PHONE_MIN_LENGTH))
+    .max(PHONE_MAX_LENGTH, tooLongMessage(PHONE_MAX_LENGTH)),
+  agreed_terms: z.literal(true, AGREED_TERMS_MESSAGE),
+});
+
+/**
+ * What the signup form gates on. `password_confirm` has no server counterpart —
+ * it lives here rather than as a separate boolean so the form has exactly one
+ * gate and every field reports through the same channel.
+ */
+export const signupFormSchema = signupSchema
+  .extend({ password_confirm: z.string() })
+  .refine((values) => values.password === values.password_confirm, {
+    message: PASSWORD_MISMATCH_MESSAGE,
+    path: ["password_confirm"],
+  });
+
+/**
+ * Fields whose error the key field also settles.
+ *
+ * `refine` files its message under a single `path`, so the mismatch above lands
+ * on `password_confirm` alone even though `password` is half of the comparison.
+ * Without this map, fixing the mismatch from the `password` side leaves the
+ * message — and `aria-invalid` — on a field that is now correct.
+ *
+ * Declared beside the rule that creates the pairing rather than in the page, so
+ * that changing the `path` above and forgetting this stays a one-file mistake.
+ */
+export const FIELDS_SETTLED_TOGETHER: Readonly<Record<string, readonly string[]>> = {
+  password: ["password_confirm"],
+  password_confirm: ["password"],
+};
+
+/** Shown under the password input at all times, so the rules do not have to be
+ *  discovered one rejected submit at a time. Built from the constants above so
+ *  it cannot drift from what the schema actually enforces. */
+export const PASSWORD_RULE_HINT =
+  `${PASSWORD_MIN_LENGTH}~${PASSWORD_MAX_LENGTH}자, ` + PASSWORD_CASE_MESSAGE;
+
+/**
+ * Still looser than signup in one field: the 128-char password cap exists so
+ * that accounts created before the 16-char signup rule can sign in.
+ */
+export const loginSchema = z.object({
+  email: emailField,
+  password: z
+    .string()
+    .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
+    .max(LOGIN_PASSWORD_MAX_LENGTH, tooLongMessage(LOGIN_PASSWORD_MAX_LENGTH)),
+});
+
+export type SignupBody = z.infer<typeof signupSchema>;
+export type LoginBody = z.infer<typeof loginSchema>;
+
+/**
+ * Reshapes zod issues into the same {@link ApiError} the server path produces, so
+ * the pages render one error model instead of two.
+ *
+ * `status: 0` marks "never reached the server", matching `toFormError`.
+ */
+export function toValidationError(error: z.ZodError): ApiError {
+  const fieldErrors: Record<string, string> = {};
+  const formLines: string[] = [];
+
+  for (const issue of error.issues) {
+    const field = issue.path[0];
+    // A schema-level issue (no path) has no field to sit under.
+    if (typeof field !== "string") {
+      formLines.push(issue.message);
+      continue;
+    }
+    // First issue per field wins; a second one would only overwrite the message
+    // the user is already reading. Mirrors fromValidationItems() in api-error.ts.
+    if (!(field in fieldErrors)) fieldErrors[field] = issue.message;
+  }
+
+  return { status: 0, formError: formLines.join(" "), fieldErrors };
+}
