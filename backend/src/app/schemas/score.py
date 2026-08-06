@@ -5,9 +5,10 @@ from pydantic import BaseModel, Field
 
 
 class ScoreCreate(BaseModel):
+    # No church field, deliberately. The church comes from the caller's token,
+    # so it cannot be chosen by the request — naming it here was what let an
+    # unauthenticated caller write into any church, or invent a new one.
     title: str = Field(..., max_length=255)
-    church_id: str | None = None
-    church_name: str | None = None
     week_of: date
     storage_type: Literal['s3', 'local']
     # s3

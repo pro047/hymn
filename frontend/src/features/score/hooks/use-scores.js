@@ -64,14 +64,9 @@ export function useScores() {
     fetchSavedScores();
   }, [fetchSavedScores, fetchScores]);
 
-  const createScoreWithUpload = async ({
-    title,
-    churchName,
-    weekOf,
-    file,
-    saveToLibrary = false,
-  }) => {
-    if (saveToLibrary && !isAuthenticated()) {
+  const createScoreWithUpload = async ({ title, weekOf, file, saveToLibrary = false }) => {
+    // Both branches write now, so the check no longer depends on saveToLibrary.
+    if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return { ok: false };
     }
@@ -86,11 +81,12 @@ export function useScores() {
             payload: { title, filename: file.name, content_type: file.type },
           }
         : {
-            request: fetch,
+            // apiFetch, not fetch: /scores writes require a token now, and the
+            // church comes from it rather than from a field in this payload.
+            request: apiFetch,
             url: API_PATHS.scores,
             payload: {
               title,
-              church_name: churchName,
               week_of: weekOf,
               storage_type: "s3",
               filename: file.name,
@@ -134,7 +130,7 @@ export function useScores() {
     const title = window.prompt("새 제목을 입력하세요.");
     if (!title) return;
     try {
-      const response = await fetch(API_PATHS.score(scoreId), {
+      const response = await apiFetch(API_PATHS.score(scoreId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -152,7 +148,7 @@ export function useScores() {
     const confirmed = window.confirm("정말 삭제할까요?");
     if (!confirmed) return;
     try {
-      const response = await fetch(API_PATHS.score(scoreId), {
+      const response = await apiFetch(API_PATHS.score(scoreId), {
         method: "DELETE",
       });
       if (!response.ok) {

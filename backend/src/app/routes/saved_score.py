@@ -3,12 +3,12 @@ from datetime import timedelta
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from jose import JWTError
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.db import get_session
+from app.deps import get_current_user
 from app.models import SavedScore, Score, SetItem, User, Week
 from app.schemas.saved_score import (
     SavedScoreApplyRequest,
@@ -17,7 +17,6 @@ from app.schemas.saved_score import (
     SavedScoreUploadResponse,
     SavedScoreUseResponse,
 )
-from app.services.auth import decode_token, parse_bearer_token
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_get, presign_put
 
@@ -53,29 +52,6 @@ def _get_saved_score(session: Session, user_id: str, score_id: str) -> SavedScor
         .filter(SavedScore.user_id == user_id, SavedScore.score_id == score_id)
         .first()
     )
-
-
-def get_current_user(
-    authorization: str | None = Header(default=None, alias="Authorization"),
-    session: Session = Depends(get_session),
-) -> User:
-    try:
-        token = parse_bearer_token(authorization)
-        claims = decode_token(token)
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
-
-    if claims.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-
-    user_id = claims.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token claims")
-
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
 
 
 @router.get("", response_model=list[SavedScoreItem])
