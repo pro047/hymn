@@ -5,6 +5,7 @@ import DatePicker from "../../../components/DatePicker";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Label } from "../../../components/ui/label";
+import { currentWeekStart } from "../../../lib/week";
 import { SAVED_SCORES_ENABLED } from "../feature-flags";
 
 function getInitialMode(initialMode) {
@@ -197,7 +198,14 @@ export default function ScoreUploadDialog({
               {!isLibraryUpload ? (
                 <div className="space-y-2">
                   <Label>주차 선택</Label>
-                  <DatePicker value={weekOf} onChange={setWeekOf} />
+                  {/* Past weeks are always a mis-click here: in 140 production
+                      uploads every score was filed 1-3 days before its Sunday
+                      and none was ever backdated. The server enforces it too. */}
+                  <DatePicker
+                    value={weekOf}
+                    onChange={setWeekOf}
+                    disabled={{ before: currentWeekStart() }}
+                  />
                 </div>
               ) : null}
 

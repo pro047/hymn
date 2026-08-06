@@ -1,4 +1,8 @@
 import re
+from datetime import date, timedelta
+
+_today = date.today()
+THIS_WEEK = _today - timedelta(days=(_today.weekday() + 1) % 7)
 
 SIGNUP_PAYLOAD = {
     "name": "uploader",
@@ -25,7 +29,7 @@ def test_s3_key_contains_church_scope_not_placeholder(client):
         "/scores",
         json={
             "title": "Amazing Grace",
-            "week_of": "2026-07-19",
+            "week_of": THIS_WEEK.isoformat(),
             "storage_type": "s3",
             "filename": "score.pdf",
             "content_type": "application/pdf",

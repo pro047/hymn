@@ -11,6 +11,26 @@ them until every device is reinstalled. Writes are safe to close today precisely
 because the app never makes one.
 """
 
+from datetime import date, timedelta
+
+from app.schemas.score import current_week_start
+
+
+def _this_week_sunday() -> date:
+    """Worked out here rather than imported from the code under test.
+
+    Asking current_week_start() what this week is makes the expectation move
+    with the implementation: break the formula and this constant breaks the
+    same way, so the assertions still agree. Relative to today rather than
+    hardcoded, though — a fixed week silently ages into the past and the whole
+    file would start failing on a date nobody chose.
+    """
+    today = date.today()
+    return today - timedelta(days=(today.weekday() + 1) % 7)
+
+
+THIS_WEEK = _this_week_sunday()
+
 SIGNUP_PAYLOAD = {
     "name": "member",
     "email": "member@example.com",
@@ -30,7 +50,7 @@ OTHER_CHURCH_PAYLOAD = {
 
 NEW_SCORE = {
     "title": "Amazing Grace",
-    "week_of": "2026-07-19",
+    "week_of": THIS_WEEK.isoformat(),
     "storage_type": "s3",
     "filename": "score.pdf",
     "content_type": "application/pdf",
@@ -140,3 +160,52 @@ def test_reading_one_score_should_stay_open_to_anonymous_callers(client):
     response = client.get(f"/scores/{score_id}")
 
     assert response.status_code == 200, response.text
+
+
+def test_creating_a_score_for_a_past_week_should_return_422(client):
+    """A week that has already gone by is a mis-click, not a filing."""
+    headers = _register(client, SIGNUP_PAYLOAD)
+    last_week = (THIS_WEEK - timedelta(days=7)).isoformat()
+
+    response = client.post("/scores", json={**NEW_SCORE, "week_of": last_week}, headers=headers)
+
+    assert response.status_code == 422, response.text
+    assert "지난 주차" in response.text
+
+
+def test_creating_a_score_for_the_current_week_should_be_accepted(client):
+    """The floor is this week's Sunday, not today.
+
+    A week is named by its Sunday, so mid-week that Sunday is already past by
+    date — rejecting it would block the week the user is working on.
+    """
+    headers = _register(client, SIGNUP_PAYLOAD)
+
+    response = client.post(
+        "/scores", json={**NEW_SCORE, "week_of": THIS_WEEK.isoformat()}, headers=headers
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_moving_a_score_into_a_past_week_should_return_422(client):
+    """Otherwise the rule is trivially sidestepped by creating then editing."""
+    headers = _register(client, SIGNUP_PAYLOAD)
+    score_id = _create_score(client, headers)
+    last_week = (THIS_WEEK - timedelta(days=7)).isoformat()
+
+    response = client.patch(f"/scores/{score_id}", json={"week_of": last_week}, headers=headers)
+
+    assert response.status_code == 422, response.text
+
+
+def test_current_week_start_should_snap_back_to_sunday():
+    """Fixed dates, so the formula itself is pinned rather than restated.
+
+    A week is named by its Sunday; getting this off by a day would reject the
+    week the user is working on, and no relative-date test can see that.
+    """
+    assert current_week_start(date(2026, 8, 2)) == date(2026, 8, 2)  # Sunday
+    assert current_week_start(date(2026, 8, 6)) == date(2026, 8, 2)  # Thursday
+    assert current_week_start(date(2026, 8, 8)) == date(2026, 8, 2)  # Saturday
+    assert current_week_start(date(2026, 9, 1)) == date(2026, 8, 30)  # across a month

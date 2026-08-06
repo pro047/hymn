@@ -6,7 +6,7 @@ import { Button } from "./ui/button";
 import { Calendar } from "./ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
-export default function DatePicker({ value, onChange }) {
+export default function DatePicker({ value, onChange, disabled }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -19,7 +19,13 @@ export default function DatePicker({ value, onChange }) {
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0" align="start">
-        <Calendar mode="single" selected={value} onSelect={onChange} initialFocus />
+        <Calendar
+          mode="single"
+          selected={value}
+          onSelect={onChange}
+          disabled={disabled}
+          initialFocus
+        />
       </PopoverContent>
     </Popover>
   );
