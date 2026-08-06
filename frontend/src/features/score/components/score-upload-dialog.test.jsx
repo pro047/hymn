@@ -16,11 +16,20 @@ import ScoreUploadDialog from "./score-upload-dialog";
 // The real DatePicker is a Radix popover wrapped around react-day-picker.
 // Driving that in jsdom exercises those libraries rather than this dialog, so
 // it is replaced with the smallest thing that can hand a date back.
+// The stub also renders whatever `disabled` it was handed, so a test can check
+// the restriction actually reaches the calendar. The original bug was that no
+// restriction was passed at all, and a mock that swallowed the prop would hide
+// a return to exactly that.
 vi.mock("../../../components/DatePicker", () => ({
-  default: ({ onChange }) => (
-    <button type="button" onClick={() => onChange(new Date(2026, 7, 2))}>
-      주차 고르기
-    </button>
+  default: ({ onChange, disabled }) => (
+    <>
+      <button type="button" onClick={() => onChange(new Date(2026, 7, 2))}>
+        주차 고르기
+      </button>
+      <span data-testid="week-disabled">
+        {disabled?.before ? disabled.before.toISOString() : "제한없음"}
+      </span>
+    </>
   ),
 }));
 
@@ -137,5 +146,16 @@ describe("추가 방식 선택", () => {
     // the button looks unresponsive because there is nothing to switch to.
     expect(screen.queryByRole("button", { name: "보관함" })).toBeNull();
     expect(screen.getByRole("button", { name: "PC 업로드" })).toBeTruthy();
+  });
+});
+
+describe("주차 달력 제한", () => {
+  it("오늘 이전 날짜를 비활성화하도록 전달해야 한다", () => {
+    renderDialog();
+
+    const passed = screen.getByTestId("week-disabled").textContent;
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    expect(passed).toBe(midnight.toISOString());
   });
 });
