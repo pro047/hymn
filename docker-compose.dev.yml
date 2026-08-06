@@ -9,6 +9,12 @@ services:
       - ./backend/src:/app/src
     env_file:
       - .env.dev
+    # A presigned URL is signed over the Host header, so the name the backend
+    # signs for has to be the name the browser then connects to. Mapping
+    # `localhost` to the host gateway lets both sides say localhost:9000.
+    # Rewriting the host afterwards instead would invalidate the signature.
+    extra_hosts:
+      - "localhost:host-gateway"
     healthcheck:
       test:
         [
@@ -35,6 +41,38 @@ services:
     environment:
       - VITE_API_BASE_URL=http://localhost:8000
 
+  # Local stand-in for S3, so development needs no AWS credentials and uploads
+  # can be exercised end to end. app/utils/s3.py already supported this via
+  # S3_ENDPOINT_URL / S3_FORCE_PATH_STYLE; only the wiring was missing.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API — the browser PUTs here
+      - "9001:9001" # web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      # The browser uploads cross-origin from the Vite dev server.
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    volumes:
+      - dev-minio-data:/data
+
+  # Creates the bucket once MinIO answers, then exits. Retries rather than
+  # using a healthcheck: the minio image does not ship a shell-friendly probe.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minioadmin minioadmin; do
+          echo "waiting for minio..."; sleep 1;
+        done
+        mc mb --ignore-existing local/hymn-images-dev
+
   db:
     image: postgres:16-alpine
     environment:
@@ -48,3 +86,4 @@ services:
 
 volumes:
   dev-postgres-data:
+  dev-minio-data:
