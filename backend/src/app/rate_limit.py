@@ -53,6 +53,14 @@ logger = logging.getLogger(__name__)
 # LOGIN is the loosest of the credential paths because a church shares one public
 # address behind NAT and a tight limit there would lock out everyone at once.
 CHECK_EMAIL_LIMIT = "10/minute"
+# CHECK_CHURCH is the same shape of unauthenticated oracle as CHECK_EMAIL — it
+# answers whether a name is registered — so it gets the same budget. It reveals
+# less: a church name is public where an address is not, and the answer no
+# longer carries the invite code that would make knowing the name worth
+# anything. ROTATE is authenticated and once-in-a-while, and is limited only so
+# a stolen token cannot churn a church's code faster than its members can be told.
+CHECK_CHURCH_LIMIT = "10/minute"
+ROTATE_JOIN_CODE_LIMIT = "10/minute"
 LOGIN_LIMIT = "10/minute"
 SIGNUP_LIMIT = "5/minute"
 REFRESH_LIMIT = "20/minute"

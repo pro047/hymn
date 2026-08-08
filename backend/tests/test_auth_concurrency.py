@@ -19,7 +19,7 @@ riding the rollback the `db_session` fixture gives every other test.
 """
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ from app.models import Church, RefreshToken, User
 from app.schemas.auth import SignupRequest
 from app.services.auth import (
     EmailAlreadyRegisteredError,
+    InvalidJoinCodeError,
     InvalidRefreshTokenError,
     create_or_join_church,
     decode_token,
@@ -73,21 +74,25 @@ def test_signup_losing_the_race_on_an_email_should_raise_rather_than_crash(
     # the loser would collide on churches.name first and never reach the INSERT
     # this test is about.
     with Session(bind=engine) as seed:
-        register_user(seed, _payload(email=SEED_EMAIL))
+        seeded = register_user(seed, _payload(email=SEED_EMAIL))
+    # Founding it made the seed its leader, so the code comes back on that
+    # result. Both racers join rather than found, and a join costs the code —
+    # without it they would be refused 403 long before the address collides.
+    joining = {"join_code": seeded.church_code}
 
     frozen = engine.execution_options(isolation_level="REPEATABLE READ")
     with Session(bind=engine) as winner, Session(bind=frozen) as loser:
         # Arrange: opening a statement fixes the loser's snapshot. Anything the
         # winner commits from here on is invisible to it.
         loser.execute(text("SELECT 1"))
-        register_user(winner, _payload())
+        register_user(winner, _payload(**joining))
 
         # Assert the setup itself: the loser's duplicate check still passes, so
         # the test really does reach the INSERT rather than stopping earlier.
         assert loser.query(User.id).filter(User.email == EMAIL).first() is None
 
         with pytest.raises(EmailAlreadyRegisteredError):
-            register_user(loser, _payload())
+            register_user(loser, _payload(**joining))
 
 
 def test_signup_losing_the_race_should_not_leave_a_half_written_account(
@@ -174,14 +179,62 @@ def test_creating_a_church_that_already_exists_should_join_it_instead_of_failing
         winner_id = winner.query(Church.id).filter(Church.name == CHURCH_NAME).scalar()
 
     with Session(bind=engine) as loser:
-        joined = create_or_join_church(loser, name=CHURCH_NAME, address="Busan")
+        joined, joined_existing = create_or_join_church(loser, name=CHURCH_NAME, address="Busan")
 
         assert joined.id == winner_id
+        # The flag is what tells register_user this was a join rather than a
+        # founding, so the loser is refused for want of an invite code instead
+        # of being made a leader of somebody else's church.
+        assert joined_existing is True
         # The loser's address must not overwrite the winner's; it lost.
         assert joined.address == "Seoul"
 
     with Session(bind=engine) as check:
         assert check.query(Church).filter(Church.name == CHURCH_NAME).count() == 1
+
+
+def test_signup_losing_the_race_on_a_new_church_should_demand_its_invite_code(
+    engine, committed_church
+):
+    """Somebody else founds the church between this signup's lookup and its INSERT.
+
+    The caller looked, found nothing, and believes it is founding the church —
+    so it offers no invite code. By the time the INSERT lands the church exists
+    and belongs to a stranger. Admitting the caller anyway would hand out a
+    membership on an accident of timing, which is the one hole this milestone
+    is closing.
+
+    The REPEATABLE READ snapshot used by the email races above cannot stage
+    this one: it would blind create_or_join_church's own re-read as well, and
+    an IntegrityError would surface instead of the join. The conflicting commit
+    is fired from a flush hook instead, which lands it exactly where production
+    lands it — after the read, immediately before the INSERT.
+    """
+    with Session(bind=engine) as loser:
+        conflict_landed = False
+
+        @event.listens_for(loser, "before_flush")
+        def commit_the_conflict(session, flush_context, instances):
+            # Once only: the church INSERT is the first flush this session
+            # attempts, and re-entering here would deadlock on churches.name.
+            nonlocal conflict_landed
+            if conflict_landed:
+                return
+            conflict_landed = True
+            with Session(bind=engine) as winner:
+                winner.add(Church(name=CHURCH_NAME, address="Seoul"))
+                winner.commit()
+
+        with pytest.raises(InvalidJoinCodeError):
+            register_user(loser, _payload())
+
+        # Without this the test would also pass if the hook never fired and the
+        # refusal came from some earlier check.
+        assert conflict_landed
+
+    with Session(bind=engine) as check:
+        # The refused signup must leave nothing behind — not even the account.
+        assert check.query(User).filter(User.email == EMAIL).count() == 0
 
 
 def test_rotating_a_refresh_token_twice_at_once_should_revoke_rather_than_crash(

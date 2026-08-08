@@ -5,21 +5,27 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.db import get_session
+from app.deps import get_current_user
 from app.login_guard import ACCOUNT_LOCKED_MESSAGE
 from app.models import Church, User
 from app.rate_limit import (
+    CHECK_CHURCH_LIMIT,
     CHECK_EMAIL_LIMIT,
     LOGIN_LIMIT,
     LOGOUT_LIMIT,
     ME_LIMIT,
     REFRESH_LIMIT,
+    ROTATE_JOIN_CODE_LIMIT,
     SIGNUP_LIMIT,
     limiter,
 )
 from app.schemas.auth import (
     AuthChurch,
     AuthUser,
+    CheckChurchResponse,
+    ChurchNameQuery,
     EmailCheckResponse,
+    JoinCodeResponse,
     LoginRequest,
     LoginResponse,
     LogoutRequest,
@@ -37,14 +43,17 @@ from app.services.auth import (
     ChurchMissingError,
     EmailAlreadyRegisteredError,
     InvalidCredentialsError,
+    InvalidJoinCodeError,
     InvalidRefreshTokenError,
+    NotChurchLeaderError,
     authenticate,
     decode_token,
-    infer_church_code,
     parse_bearer_token,
     register_user,
     revoke_refresh_token,
+    rotate_join_code,
     rotate_refresh_token,
+    visible_join_code,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -59,6 +68,11 @@ INVALID_CREDENTIALS_MESSAGE = "이메일 또는 비밀번호가 올바르지 않
 SESSION_EXPIRED_MESSAGE = "로그인이 만료되었습니다. 다시 로그인해 주세요."
 CHURCH_MISSING_MESSAGE = "계정에 연결된 교회를 찾을 수 없습니다. 관리자에게 문의해 주세요."
 USER_MISSING_MESSAGE = "계정을 찾을 수 없습니다. 다시 로그인해 주세요."
+# One wording for a missing code and a wrong one. Splitting them would tell a
+# caller whether their guess was the right shape, and neither answer changes
+# what they have to do about it.
+INVALID_JOIN_CODE_MESSAGE = "초대 코드가 올바르지 않습니다. 교회 리더에게 확인해 주세요."
+NOT_CHURCH_LEADER_MESSAGE = "교회 리더만 초대 코드를 관리할 수 있습니다."
 
 
 def _auth_response(model: type[LoginResponse], result: AuthResult) -> LoginResponse:
@@ -96,6 +110,21 @@ def check_email(request: Request, email: NormalizedEmail, session: Session = Dep
     return EmailCheckResponse(available=not exists)
 
 
+@router.get("/check-church", response_model=CheckChurchResponse)
+@limiter.limit(CHECK_CHURCH_LIMIT)
+def check_church(request: Request, name: ChurchNameQuery, session: Session = Depends(get_session)):
+    """Reports whether a church name is already registered, and nothing more.
+
+    The signup form asks this to decide which fields to show — an invite code
+    box, or a note that the caller is about to found a church. It must never
+    answer with the code itself: this route is unauthenticated, and doing so
+    would leave the church open to anyone who could guess its name, which is
+    precisely the hole the invite code closes.
+    """
+    exists = session.query(Church.id).filter(Church.name == name).first() is not None
+    return CheckChurchResponse(exists=exists)
+
+
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit(LOGIN_LIMIT)
 def login(request: Request, payload: LoginRequest, session: Session = Depends(get_session)):
@@ -121,7 +150,31 @@ def signup(request: Request, payload: SignupRequest, session: Session = Depends(
         result = register_user(session, payload)
     except EmailAlreadyRegisteredError:
         raise HTTPException(status_code=409, detail=EMAIL_TAKEN_MESSAGE) from None
+    except InvalidJoinCodeError:
+        raise HTTPException(status_code=403, detail=INVALID_JOIN_CODE_MESSAGE) from None
     return _auth_response(SignupResponse, result)
+
+
+@router.post("/church/join-code", response_model=JoinCodeResponse)
+@limiter.limit(ROTATE_JOIN_CODE_LIMIT)
+def rotate_church_join_code(
+    request: Request,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Replaces the caller's church invite code. Leader only.
+
+    The old code stops working the moment this returns, so the caller is told
+    what the new one is — they are the only account that can read it back
+    later, and losing it here would mean rotating again to find out.
+    """
+    try:
+        code = rotate_join_code(session, user=user)
+    except NotChurchLeaderError:
+        raise HTTPException(status_code=403, detail=NOT_CHURCH_LEADER_MESSAGE) from None
+    except ChurchMissingError:
+        raise HTTPException(status_code=404, detail=CHURCH_MISSING_MESSAGE) from None
+    return JoinCodeResponse(code=code)
 
 
 @router.post("/refresh", response_model=RefreshResponse)
@@ -181,6 +234,6 @@ def me(
             name=user.name,
             role=user.role,
         ),
-        church=AuthChurch(id=church.id, name=church.name, code=infer_church_code(church)),
+        church=AuthChurch(id=church.id, name=church.name, code=visible_join_code(user, church)),
         issued_at=datetime.fromtimestamp(int(claims.get("iat", 0)), tz=UTC),
     )

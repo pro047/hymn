@@ -122,8 +122,15 @@ def test_signup_burst_past_the_limit_should_return_429(client):
     }
     for index in range(SIGNUP_PER_MINUTE):
         # Each call needs a fresh address, otherwise the second one 409s and the
-        # test would pass for the wrong reason.
-        client.post("/auth/signup", json={**payload, "email": f"t{index}@example.com"}, headers=CALLER)
+        # test would pass for the wrong reason. A fresh church name for the same
+        # reason: reusing one makes every call after the first a 403 for want of
+        # that church's invite code, and the cap would then be measured against
+        # requests that never reached the expensive part of the route.
+        client.post(
+            "/auth/signup",
+            json={**payload, "email": f"t{index}@example.com", "church": f"Test Church {index}"},
+            headers=CALLER,
+        )
 
     blocked = client.post("/auth/signup", json={**payload, "email": "last@example.com"}, headers=CALLER)
 
