@@ -11,6 +11,12 @@ export const API_PATHS = {
   // legal in a local part and would otherwise be read as syntax.
   authCheckEmail: (email: string) =>
     `${API_BASE}/auth/check-email?email=${encodeURIComponent(email)}`,
+  // Church names are Korean and contain spaces, so escaping is not optional
+  // here either — an unescaped one would be a malformed URL, not just an odd
+  // query string.
+  authCheckChurch: (name: string) =>
+    `${API_BASE}/auth/check-church?name=${encodeURIComponent(name)}`,
+  authChurchJoinCode: `${API_BASE}/auth/church/join-code`,
   authLogin: `${API_BASE}/auth/login`,
   authSignup: `${API_BASE}/auth/signup`,
   authMe: `${API_BASE}/auth/me`,

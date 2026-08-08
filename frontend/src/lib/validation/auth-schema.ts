@@ -20,6 +20,7 @@ const LOGIN_PASSWORD_MAX_LENGTH = 128;
 const NAME_MAX_LENGTH = 255;
 const PHONE_MIN_LENGTH = 8;
 const PHONE_MAX_LENGTH = 32;
+const JOIN_CODE_MAX_LENGTH = 16;
 
 // Worded to match what api-error.ts renders for the equivalent server rejection,
 // so the same mistake reads the same whether it was caught here or at the server.
@@ -27,6 +28,10 @@ const REQUIRED_MESSAGE = "필수 입력 항목입니다.";
 const PASSWORD_CASE_MESSAGE = "영문 대문자와 소문자를 모두 포함해야 합니다.";
 const AGREED_TERMS_MESSAGE = "약관 동의가 필요합니다.";
 const PASSWORD_MISMATCH_MESSAGE = "비밀번호가 일치하지 않습니다.";
+// Shorter than the hint under the church field, which explains *why* a code is
+// being asked for. Repeating that whole sentence under the input would put the
+// same words on screen twice with no way to tell which one is the error.
+export const JOIN_CODE_REQUIRED_MESSAGE = "초대 코드를 입력해 주세요.";
 
 const tooShortMessage = (min: number) => `최소 ${min}자 이상 입력해 주세요.`;
 const tooLongMessage = (max: number) => `최대 ${max}자까지 입력할 수 있습니다.`;
@@ -60,6 +65,18 @@ export const signupSchema = z.object({
     .regex(/[a-z]/, PASSWORD_CASE_MESSAGE)
     .regex(/[A-Z]/, PASSWORD_CASE_MESSAGE),
   church: requiredText(NAME_MAX_LENGTH),
+  // Optional here because founding a church is issued a code rather than asked
+  // for one. Whether it is required for *this* signup depends on whether the
+  // church already exists, which only the server knows — the refine below reads
+  // that answer off the form, and a 403 is the last word either way.
+  // Lowercased to match the generated alphabet, so a phone keyboard's automatic
+  // capital is not a wrong code.
+  join_code: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .max(JOIN_CODE_MAX_LENGTH, tooLongMessage(JOIN_CODE_MAX_LENGTH))
+    .optional(),
   church_address: requiredText(NAME_MAX_LENGTH),
   phone: z
     .string()
@@ -70,15 +87,25 @@ export const signupSchema = z.object({
 });
 
 /**
- * What the signup form gates on. `password_confirm` has no server counterpart —
- * it lives here rather than as a separate boolean so the form has exactly one
- * gate and every field reports through the same channel.
+ * What the signup form gates on. `password_confirm` and `church_is_registered`
+ * have no server counterpart — they live here rather than as separate booleans
+ * in the page so the form has exactly one gate and every field reports through
+ * the same channel.
+ *
+ * `church_is_registered` is what the church lookup answered. It is an input to
+ * the gate rather than a rule of its own because the requirement it creates is
+ * conditional: the same empty code is fine when founding a church and wrong
+ * when joining one, and only the lookup can tell those apart.
  */
 export const signupFormSchema = signupSchema
-  .extend({ password_confirm: z.string() })
+  .extend({ password_confirm: z.string(), church_is_registered: z.boolean() })
   .refine((values) => values.password === values.password_confirm, {
     message: PASSWORD_MISMATCH_MESSAGE,
     path: ["password_confirm"],
+  })
+  .refine((values) => !values.church_is_registered || Boolean(values.join_code), {
+    message: JOIN_CODE_REQUIRED_MESSAGE,
+    path: ["join_code"],
   });
 
 /**
@@ -95,6 +122,12 @@ export const signupFormSchema = signupSchema
 export const FIELDS_SETTLED_TOGETHER: Readonly<Record<string, readonly string[]>> = {
   password: ["password_confirm"],
   password_confirm: ["password"],
+  // Same shape: the missing-code message is filed under `join_code`, but
+  // retyping the church name is the other way to settle it — a name that is not
+  // registered needs no code at all, so leaving the message up would demand
+  // something the form is no longer asking for.
+  church: ["join_code"],
+  join_code: ["church"],
 };
 
 /** Shown under the password input at all times, so the rules do not have to be
