@@ -22,14 +22,22 @@ type JoinCodeDisplayProps = {
  * leave the code readable rather than replace it with an error.
  */
 export default function JoinCodeDisplay({ code, labelledBy }: JoinCodeDisplayProps) {
-  const [copyLabel, setCopyLabel] = useState(COPY_IDLE_LABEL);
+  // The code it was copied from is kept alongside the label, so the label can
+  // only ever describe the string on screen. Rotation replaces the code while
+  // this component stays mounted, and a "복사됨" left over from the previous one
+  // reads as "the new code is on your clipboard" when what is actually there is
+  // the code the rotation just killed — handed on, it fails at the other end.
+  const [attempt, setAttempt] = useState<{ code: string; label: string } | null>(null);
+  // Derived rather than reset from an effect: an effect would show the new code
+  // under the stale label for one frame, and this needs no frame at all.
+  const copyLabel = attempt?.code === code ? attempt.label : COPY_IDLE_LABEL;
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      setCopyLabel(COPY_DONE_LABEL);
+      setAttempt({ code, label: COPY_DONE_LABEL });
     } catch {
-      setCopyLabel(COPY_FAILED_LABEL);
+      setAttempt({ code, label: COPY_FAILED_LABEL });
     }
   };
 

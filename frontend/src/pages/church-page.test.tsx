@@ -53,11 +53,24 @@ const renderChurchPage = () =>
   );
 
 const rotateButton = () => screen.getByRole("button", { name: "초대 코드 재발급" });
+const copyButton = (name: string) => screen.getByRole("button", { name });
+
+/**
+ * jsdom implements no Clipboard API, so the copy button has nothing to call
+ * without this. Defined as configurable so afterEach can take it back off and
+ * the next test starts from jsdom's real, empty navigator.
+ */
+function stubClipboard() {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  return writeText;
+}
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  Reflect.deleteProperty(navigator, "clipboard");
 });
 
 describe("교회 초대 코드 화면", () => {
@@ -103,6 +116,72 @@ describe("교회 초대 코드 화면", () => {
 
     expect(await screen.findByText("wxyz6789")).toBeTruthy();
     expect(screen.queryByText("abcd2345")).toBeNull();
+  });
+
+  it("코드를 복사하면 복사됐다고 알려야 한다", async () => {
+    const writeText = stubClipboard();
+    mockApi({ session: LEADER_SESSION });
+    renderChurchPage();
+    await screen.findByText("abcd2345");
+
+    fireEvent.click(copyButton("복사"));
+
+    expect(await screen.findByRole("button", { name: "복사됨" })).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith("abcd2345");
+  });
+
+  it("복사가 막히면 실패했다고 알리고 코드는 그대로 둬야 한다", async () => {
+    // The Clipboard API needs a secure context and a permission, so this is a
+    // real outcome, not a defensive branch. Saying "복사됨" when nothing was
+    // copied is worse than saying nothing: the code stays selectable either way,
+    // but only one of the two answers tells the leader to select it by hand.
+    const writeText = stubClipboard();
+    writeText.mockRejectedValue(new Error("blocked"));
+    mockApi({ session: LEADER_SESSION });
+    renderChurchPage();
+    await screen.findByText("abcd2345");
+
+    fireEvent.click(copyButton("복사"));
+
+    expect(await screen.findByRole("button", { name: "복사 실패" })).toBeTruthy();
+    expect(screen.getByText("abcd2345")).toBeTruthy();
+  });
+
+  it("재발급하면 복사됨 표시가 사라져야 한다", async () => {
+    // Rotation kills the old code the instant the server answers, but the
+    // clipboard still holds it. A "복사됨" left standing next to the new code
+    // says the new one is ready to paste; pasting it hands out a dead string
+    // and the person on the other end gets a 403 they cannot explain.
+    stubClipboard();
+    mockApi({ session: LEADER_SESSION, rotate: { body: { code: "wxyz6789" } } });
+    renderChurchPage();
+    await screen.findByText("abcd2345");
+    fireEvent.click(copyButton("복사"));
+    await screen.findByRole("button", { name: "복사됨" });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    fireEvent.click(rotateButton());
+
+    await screen.findByText("wxyz6789");
+    expect(copyButton("복사")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "복사됨" })).toBeNull();
+  });
+
+  it("재발급하지 않는 한 복사됨 표시는 유지돼야 한다", async () => {
+    // Without this the test above is satisfied by never showing "복사됨" at all,
+    // which is not a fix — it is the feature removed.
+    stubClipboard();
+    mockApi({ session: LEADER_SESSION, rotate: { body: { code: "wxyz6789" } } });
+    renderChurchPage();
+    await screen.findByText("abcd2345");
+    fireEvent.click(copyButton("복사"));
+    await screen.findByRole("button", { name: "복사됨" });
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    fireEvent.click(rotateButton());
+
+    await waitFor(() => expect(screen.getByText("abcd2345")).toBeTruthy());
+    expect(copyButton("복사됨")).toBeTruthy();
   });
 
   it("재발급이 거부되면 이유를 보여주고 옛 코드를 그대로 둬야 한다", async () => {
