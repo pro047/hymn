@@ -99,7 +99,18 @@ def visible_join_code(user: User, church: Church) -> str | None:
     return church.join_code if user.role == "leader" else None
 
 
-def _snapshot(user: User, church: Church, tokens: TokenBundle) -> AuthResult:
+def _snapshot(
+    user: User, church: Church, tokens: TokenBundle, *, reveal_code: bool
+) -> AuthResult:
+    """The payload /signup and /login share. `reveal_code` is what splits them.
+
+    Only a founding signup has a reader for the code: it is the one unprompted
+    sight of it, and the page shows it before navigating away. Login has none —
+    the management page reads /auth/me instead — so sending it there put a live
+    credential into every response a leader's browser, devtools panel and proxy
+    log ever saw, for nobody. Keyword-only and without a default so a third
+    caller has to answer the question rather than inherit an answer.
+    """
     return AuthResult(
         user_id=user.id,
         church_id=user.church_id,
@@ -107,7 +118,7 @@ def _snapshot(user: User, church: Church, tokens: TokenBundle) -> AuthResult:
         name=user.name,
         role=user.role,
         church_name=church.name,
-        church_code=visible_join_code(user, church),
+        church_code=visible_join_code(user, church) if reveal_code else None,
         tokens=tokens,
     )
 
@@ -169,7 +180,7 @@ def authenticate(session: Session, *, email: str, password: str) -> AuthResult:
         raise ChurchMissingError
 
     tokens = issue_token_bundle(session, user=user)
-    result = _snapshot(user, church, tokens)
+    result = _snapshot(user, church, tokens, reveal_code=False)
     session.commit()
     return result
 
@@ -350,7 +361,7 @@ def register_user(session: Session, payload: SignupRequest) -> AuthResult:
     insert_new_user(session, user)
 
     tokens = issue_token_bundle(session, user=user)
-    result = _snapshot(user, church, tokens)
+    result = _snapshot(user, church, tokens, reveal_code=True)
     # One commit for the account, the church and the refresh token together.
     # Committing the user first and the token second could leave a registered
     # account whose signup response never arrived.

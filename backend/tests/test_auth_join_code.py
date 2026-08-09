@@ -142,6 +142,29 @@ def test_a_leader_should_be_told_the_invite_code_on_the_session_route(client):
     assert session.json()["church"]["code"] == signup.json()["church"]["code"]
 
 
+def test_login_should_not_return_the_invite_code_to_a_leader(client):
+    code = _found_church(client)
+
+    response = client.post(
+        "/auth/login",
+        json={"email": SIGNUP_PAYLOAD["email"], "password": SIGNUP_PAYLOAD["password"]},
+    )
+
+    assert response.status_code == 200, response.text
+    # Nothing reads it here — the management page asks /auth/me — so carrying it
+    # only put a live credential into a response body for no reader. Signup is
+    # the exception below: that is the founder's one unprompted sight of it.
+    assert response.json()["church"]["code"] is None
+    # The code itself is untouched; it is the login response that stops
+    # repeating it. Without this the assertion above would also pass if login
+    # had somehow destroyed the church's code.
+    session = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {response.json()['tokens']['access_token']}"},
+    )
+    assert session.json()["church"]["code"] == code
+
+
 def test_check_church_for_an_unregistered_name_should_report_it_free(client):
     response = client.get("/auth/check-church", params={"name": SIGNUP_PAYLOAD["church"]})
 
