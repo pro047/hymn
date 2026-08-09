@@ -1,9 +1,10 @@
 import { useState, type ChangeEvent, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { requestAuth } from "../api/auth";
 import { API_PATHS } from "../api/paths";
 import { alertMessageOf, clearFieldError, toFormError, type ApiError } from "../lib/api-error";
+import { PASSWORD_CHANGED_NOTICE, wasPasswordChanged } from "../lib/auth-notice";
 import { setTokens } from "../lib/auth-storage";
 import { loginSchema, toValidationError } from "../lib/validation/auth-schema";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
@@ -17,6 +18,11 @@ const RENDERED_FIELDS = ["email", "password"] as const;
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  // Set by the account page, which ends its own session when the password
+  // changes and so cannot show the confirmation itself. Read once at render:
+  // it describes how the user arrived, not anything they do from here.
+  const showPasswordChanged = wasPasswordChanged(location);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [apiError, setApiError] = useState<ApiError | null>(null);
@@ -76,6 +82,12 @@ export default function LoginPage() {
       <div className="mx-auto w-full max-w-md">
         <Card className="border-stone-200">
           <CardContent className="pt-6">
+            {showPasswordChanged ? (
+              <Alert className="mb-4">
+                <AlertTitle>변경 완료</AlertTitle>
+                <AlertDescription>{PASSWORD_CHANGED_NOTICE}</AlertDescription>
+              </Alert>
+            ) : null}
             <p className="mb-4 text-center text-lg font-normal text-stone-300">H Y M N</p>
             <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-2">

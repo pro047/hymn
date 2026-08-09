@@ -20,6 +20,7 @@ export const API_PATHS = {
   authLogin: `${API_BASE}/auth/login`,
   authSignup: `${API_BASE}/auth/signup`,
   authMe: `${API_BASE}/auth/me`,
+  authPassword: `${API_BASE}/auth/password`,
   authRefresh: `${API_BASE}/auth/refresh`,
   authLogout: `${API_BASE}/auth/logout`,
 };
