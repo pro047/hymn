@@ -50,7 +50,14 @@ export type ChurchCheckResolution =
  * folded: churches.name is compared exactly, so folding here would report a
  * church as existing that the signup would then try to create.
  */
-const normalize = (raw: string) => raw.trim();
+export const normalizeChurchName = (raw: string) => raw.trim();
+
+/**
+ * Exported so the page can write a cache entry under the same key the plan/
+ * resolve pair reads it back by. Two spellings of "the key" would let a verdict
+ * be filed where nothing ever looks for it.
+ */
+const normalize = normalizeChurchName;
 
 /** Whether a value is worth spending a rate-limited lookup on. */
 export function looksLikeChurchName(raw: string): boolean {

@@ -335,6 +335,8 @@ describe("비밀번호 확인 오류", () => {
 });
 
 const EXISTING_CHURCH = "한빛교회";
+/** What the server answers a signup that offered no code, or the wrong one. */
+const INVALID_JOIN_CODE = "초대 코드가 올바르지 않습니다. 교회 리더에게 확인해 주세요.";
 const joinCodeField = () => screen.queryByLabelText("초대 코드");
 const typeChurch = (value: string) =>
   fireEvent.change(screen.getByLabelText("교회"), { target: { value } });
@@ -510,6 +512,67 @@ describe("초대 코드 입력", () => {
     setField("이름", "김철수");
 
     expect(screen.getByText(JOIN_CODE_REQUIRED_MESSAGE)).toBeTruthy();
+  });
+
+  /**
+   * The lookup can be right when it answers and wrong by the time the form is
+   * submitted — someone else founds the church in between. The server says so
+   * with a 403, and before this the page threw that away: the cached "new"
+   * verdict kept the code box hidden, and because the cache answers from memory
+   * no amount of retyping brought it back. The signup was refused forever.
+   */
+  const submitAgainstAChurchFoundedMeanwhile = async () => {
+    await fillForm({
+      // No church override: the lookup answers "not registered", which is what
+      // makes this a stale verdict rather than a wrong one.
+      replies: { signup: { status: 403, body: { detail: INVALID_JOIN_CODE } } },
+    });
+    expect(joinCodeField()).toBeNull();
+
+    submit();
+    await settle();
+  };
+
+  it("코드 없이 제출해 403을 받으면 코드 칸이 나타나야 한다", async () => {
+    await submitAgainstAChurchFoundedMeanwhile();
+
+    expect(screen.getByText(INVALID_JOIN_CODE)).toBeTruthy();
+    expect(joinCodeField()).toBeTruthy();
+    // The hint has to flip too. Left saying "you will be the leader" it would
+    // contradict the alert directly above it.
+    expect(screen.getByText(CHURCH_EXISTING_MESSAGE)).toBeTruthy();
+  });
+
+  it("403 뒤에는 교회명을 바꿨다 되돌려도 다시 묻지 않고 코드 칸을 남겨야 한다", async () => {
+    // Flipping the status alone would not survive this: the effect re-runs on
+    // every church edit and reads the cache, so a stale `false` still in there
+    // hides the field again the moment the name is retyped.
+    await submitAgainstAChurchFoundedMeanwhile();
+
+    typeChurch("다른교회");
+    await settle();
+    expect(joinCodeField()).toBeNull();
+
+    typeChurch(EXISTING_CHURCH);
+    await settle();
+
+    expect(joinCodeField()).toBeTruthy();
+    // Answered from the 403, not from a second round trip.
+    expect(askedChurches).toEqual([EXISTING_CHURCH, "다른교회"]);
+  });
+
+  it("403이 아닌 실패는 교회 판정을 바꾸지 않아야 한다", async () => {
+    // Only 403 carries the "this church exists" claim. Treating a 409 or a 500
+    // the same way would put a code box in front of a founder who has none.
+    await fillForm({
+      replies: { signup: { status: 409, body: { detail: "이미 사용 중인 이메일입니다." } } },
+    });
+
+    submit();
+    await settle();
+
+    expect(screen.getByText(CHURCH_NEW_MESSAGE)).toBeTruthy();
+    expect(joinCodeField()).toBeNull();
   });
 });
 

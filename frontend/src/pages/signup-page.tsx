@@ -18,6 +18,7 @@ import {
   CHURCH_EXISTING_MESSAGE,
   CHURCH_NEW_MESSAGE,
   looksLikeChurchName,
+  normalizeChurchName,
   planChurchCheck,
   resolveChurchCheck,
   type ChurchCheckStatus,
@@ -245,6 +246,19 @@ export default function SignupPage() {
       });
 
       if (!outcome.ok) {
+        // 403 is the one thing signup refuses for: the church exists and the
+        // code was missing or wrong. That contradicts a "not registered" verdict
+        // the lookup may have cached — a church founded between the lookup and
+        // this submit, say — and leaving the stale entry in place is a dead end,
+        // because the cache answers every retry from memory and the code box
+        // stays hidden for good. Recorded rather than deleted: the 403 is the
+        // server's own word on the matter, so it is worth more than the answer a
+        // repeat lookup would give, and the status has to be set here regardless
+        // — the lookup effect keys off `church`, which this submit did not change.
+        if (outcome.error.status === 403) {
+          churchCacheRef.current.set(normalizeChurchName(church), true);
+          setChurchStatus("existing");
+        }
         setApiError(outcome.error);
         return;
       }
