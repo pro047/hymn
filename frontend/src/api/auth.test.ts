@@ -35,7 +35,27 @@ describe("requestAuth", () => {
     expect(outcome).toEqual({
       ok: true,
       tokens: { accessToken: "access", refreshToken: "refresh" },
+      // Absent from this body, so null rather than undefined: the signup page
+      // branches on it and one "no code" value is easier to be right about.
+      churchCode: null,
     });
+  });
+
+  it("응답에 교회 코드가 있으면 함께 넘겨야 한다", async () => {
+    // The server sends it to a leader only, and the signup page shows it to the
+    // founder before leaving the screen.
+    stubFetch(() =>
+      Promise.resolve(
+        jsonResponse(201, {
+          tokens: { access_token: "access", refresh_token: "refresh" },
+          church: { code: "abcd2345" },
+        })
+      )
+    );
+
+    const outcome = await requestAuth(REQUEST);
+
+    expect(outcome.ok && outcome.churchCode).toBe("abcd2345");
   });
 
   it("fetch 자체가 실패하면 네트워크 메시지를 보여줘야 한다", async () => {

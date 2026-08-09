@@ -1,10 +1,17 @@
 import { readApiError, toFormError, type ApiError } from "../lib/api-error";
 import type { TokenPair } from "../lib/auth-storage";
 
-export type AuthOutcome = { ok: true; tokens: TokenPair } | { ok: false; error: ApiError };
+export type AuthOutcome =
+  /**
+   * `churchCode` is present only when the response carried one, which the
+   * server does for a leader and never for a member. Signup uses it to show a
+   * founder the code they now have to hand out; login ignores it.
+   */
+  { ok: true; tokens: TokenPair; churchCode: string | null } | { ok: false; error: ApiError };
 
 type AuthResponseBody = {
   tokens?: { access_token?: string; refresh_token?: string };
+  church?: { code?: unknown };
 };
 
 export type AuthRequest = {
@@ -60,5 +67,10 @@ export async function requestAuth({
     return { ok: false, error: toFormError(unreadableMessage) };
   }
 
-  return { ok: true, tokens: { accessToken, refreshToken } };
+  const churchCode = payload?.church?.code;
+  return {
+    ok: true,
+    tokens: { accessToken, refreshToken },
+    churchCode: typeof churchCode === "string" ? churchCode : null,
+  };
 }

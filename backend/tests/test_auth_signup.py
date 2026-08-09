@@ -29,14 +29,15 @@ def _payload(**overrides) -> dict:
     return {**SIGNUP_PAYLOAD, **overrides}
 
 
-def test_signup_with_new_church_should_create_member_and_return_201(client):
+def test_signup_with_new_church_should_create_leader_and_return_201(client):
     response = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
 
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["user"]["email"] == SIGNUP_PAYLOAD["email"]
-    # Signup never elects a leader today, so a brand-new church has none.
-    assert body["user"]["role"] == "member"
+    # Founding a church elects you its leader: the invite code has to reach
+    # everyone else through somebody, and this is the only account there is.
+    assert body["user"]["role"] == "leader"
     assert body["church"]["name"] == SIGNUP_PAYLOAD["church"]
     assert body["tokens"]["access_token"]
     assert body["tokens"]["refresh_token"]
@@ -49,14 +50,18 @@ def test_signup_with_uppercase_email_should_store_it_lowercased(client):
     assert response.json()["user"]["email"] == "tester@example.com"
 
 
-def test_signup_with_existing_church_name_should_reuse_that_church(client):
+def test_signup_with_existing_church_name_and_its_code_should_reuse_that_church(client):
     first = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
     assert first.status_code == 201, first.text
+    code = first.json()["church"]["code"]
 
-    second = client.post("/auth/signup", json=_payload(email="other@example.com"))
+    second = client.post(
+        "/auth/signup", json=_payload(email="other@example.com", join_code=code)
+    )
 
     assert second.status_code == 201, second.text
-    # Exact name match is the only gate today: no invite code, no approval.
+    # The name says which church; the code is what permits joining it. The
+    # gating itself lives in test_auth_join_code.py.
     assert second.json()["church"]["id"] == first.json()["church"]["id"]
 
 

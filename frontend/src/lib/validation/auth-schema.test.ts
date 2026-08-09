@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   FIELDS_SETTLED_TOGETHER,
+  JOIN_CODE_REQUIRED_MESSAGE,
   PASSWORD_RULE_HINT,
   loginSchema,
   signupFormSchema,
@@ -111,17 +112,23 @@ describe("가입 이메일 게이트", () => {
 });
 
 describe("signupFormSchema", () => {
+  // The two form-only fields the page supplies: what was typed in the confirm
+  // box, and what the church lookup answered.
+  const formWith = (overrides: Record<string, unknown> = {}) => ({
+    ...VALID_SIGNUP,
+    password_confirm: VALID_SIGNUP.password,
+    church_is_registered: false,
+    ...overrides,
+  });
+
   it("비밀번호 확인이 일치하면 통과해야 한다", () => {
-    const result = signupFormSchema.safeParse({
-      ...VALID_SIGNUP,
-      password_confirm: VALID_SIGNUP.password,
-    });
+    const result = signupFormSchema.safeParse(formWith());
 
     expect(result.success).toBe(true);
   });
 
   it("비밀번호 확인이 다르면 확인 필드에 오류를 달아야 한다", () => {
-    const result = signupFormSchema.safeParse({ ...VALID_SIGNUP, password_confirm: "Password2" });
+    const result = signupFormSchema.safeParse(formWith({ password_confirm: "Password2" }));
 
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.path).toEqual(["password_confirm"]);
@@ -130,11 +137,56 @@ describe("signupFormSchema", () => {
   it("불일치 오류가 붙는 필드는 짝 선언에 들어 있어야 한다", () => {
     // The page clears errors through FIELDS_SETTLED_TOGETHER. If the refine's
     // path above moves and this map does not, the message survives a fix.
-    const result = signupFormSchema.safeParse({ ...VALID_SIGNUP, password_confirm: "Password2" });
+    const result = signupFormSchema.safeParse(formWith({ password_confirm: "Password2" }));
     const reportedOn = String(result.error?.issues[0]?.path[0]);
 
     expect(FIELDS_SETTLED_TOGETHER[reportedOn]).toContain("password");
     expect(FIELDS_SETTLED_TOGETHER.password).toContain(reportedOn);
+  });
+
+  it("등록된 교회인데 초대 코드가 없으면 코드 필드에 오류를 달아야 한다", () => {
+    const result = signupFormSchema.safeParse(formWith({ church_is_registered: true }));
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(["join_code"]);
+    expect(result.error?.issues[0]?.message).toBe(JOIN_CODE_REQUIRED_MESSAGE);
+  });
+
+  it("새 교회면 초대 코드가 없어도 통과해야 한다", () => {
+    // Founding a church is issued a code rather than asked for one; requiring it
+    // here would make the first signup of any church impossible.
+    expect(
+      signupFormSchema.safeParse(formWith({ church_is_registered: true, join_code: "abcd2345" }))
+        .success
+    ).toBe(true);
+    expect(signupFormSchema.safeParse(formWith()).success).toBe(true);
+  });
+
+  it("코드 요구 오류가 붙는 필드도 짝 선언에 들어 있어야 한다", () => {
+    const result = signupFormSchema.safeParse(formWith({ church_is_registered: true }));
+    const reportedOn = String(result.error?.issues[0]?.path[0]);
+
+    expect(FIELDS_SETTLED_TOGETHER[reportedOn]).toContain("church");
+    expect(FIELDS_SETTLED_TOGETHER.church).toContain(reportedOn);
+  });
+
+  it("초대 코드는 대소문자와 공백을 정리해 보내야 한다", () => {
+    // The generated alphabet is lowercase, so a phone keyboard's automatic
+    // capital must not travel to the server as a different code.
+    const result = signupFormSchema.safeParse(
+      formWith({ church_is_registered: true, join_code: "  ABCD2345  " })
+    );
+
+    expect(result.success && result.data.join_code).toBe("abcd2345");
+  });
+
+  it("초대 코드가 16자를 넘으면 거부해야 한다", () => {
+    const result = signupFormSchema.safeParse(
+      formWith({ church_is_registered: true, join_code: "a".repeat(17) })
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(["join_code"]);
   });
 });
 

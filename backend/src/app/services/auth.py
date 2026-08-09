@@ -1,5 +1,5 @@
 import os
-import re
+import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import login_guard
-from app.models import Church, RefreshToken, User
+from app.models import Church, RefreshToken, User, generate_join_code
 from app.schemas.auth import SignupRequest
 
 ACCESS_TOKEN_EXPIRES_IN_SECONDS = 60 * 60
@@ -43,6 +43,14 @@ class AccountLockedError(AuthError):
 
 class ChurchMissingError(AuthError):
     pass
+
+
+class InvalidJoinCodeError(AuthError):
+    """No code, or the wrong one, for a church that already exists."""
+
+
+class NotChurchLeaderError(AuthError):
+    """A member tried to do something only the code's owner may do."""
 
 
 class InvalidRefreshTokenError(AuthError):
@@ -77,11 +85,32 @@ class AuthResult:
     name: str
     role: str
     church_name: str
-    church_code: str
+    church_code: str | None
     tokens: TokenBundle
 
 
-def _snapshot(user: User, church: Church, tokens: TokenBundle) -> AuthResult:
+def visible_join_code(user: User, church: Church) -> str | None:
+    """The church's invite code, but only to the account that may rotate it.
+
+    Anyone holding this string can join the church and then read every score in
+    it, so it goes to the leader and stops there. A member has no use for it
+    that outweighs leaving a live credential in their browser storage.
+    """
+    return church.join_code if user.role == "leader" else None
+
+
+def _snapshot(
+    user: User, church: Church, tokens: TokenBundle, *, reveal_code: bool
+) -> AuthResult:
+    """The payload /signup and /login share. `reveal_code` is what splits them.
+
+    Only a founding signup has a reader for the code: it is the one unprompted
+    sight of it, and the page shows it before navigating away. Login has none —
+    the management page reads /auth/me instead — so sending it there put a live
+    credential into every response a leader's browser, devtools panel and proxy
+    log ever saw, for nobody. Keyword-only and without a default so a third
+    caller has to answer the question rather than inherit an answer.
+    """
     return AuthResult(
         user_id=user.id,
         church_id=user.church_id,
@@ -89,27 +118,9 @@ def _snapshot(user: User, church: Church, tokens: TokenBundle) -> AuthResult:
         name=user.name,
         role=user.role,
         church_name=church.name,
-        church_code=infer_church_code(church),
+        church_code=visible_join_code(user, church) if reveal_code else None,
         tokens=tokens,
     )
-
-
-def normalize_church_code(value: str) -> str:
-    code = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
-    return code.strip("-")
-
-
-def infer_church_code(church: Church) -> str:
-    return normalize_church_code(church.name)
-
-
-def find_church_by_code(session: Session, church_code: str) -> Church | None:
-    normalized = normalize_church_code(church_code)
-    churches = session.query(Church).all()
-    for church in churches:
-        if infer_church_code(church) == normalized:
-            return church
-    return None
 
 
 def hash_password(plain_password: str) -> str:
@@ -169,22 +180,66 @@ def authenticate(session: Session, *, email: str, password: str) -> AuthResult:
         raise ChurchMissingError
 
     tokens = issue_token_bundle(session, user=user)
-    result = _snapshot(user, church, tokens)
+    result = _snapshot(user, church, tokens, reveal_code=False)
     session.commit()
     return result
 
 
-def _get_or_create_church(session: Session, *, name: str, address: str) -> Church:
+def require_join_code(church: Church, join_code: str | None) -> None:
+    """Lets the signup into an existing church, or raises.
+
+    The name on its own used to be the whole gate: knowing what a congregation
+    calls itself made you a member of it, and a member passes the tenancy check
+    on every score that church owns. `join_code` must already be normalized —
+    SignupRequest folds case and whitespace before this sees it.
+
+    Compared as bytes through compare_digest because the code is a shared
+    secret and `==` stops at the first differing character, which is how a
+    secret gets recovered one character at a time. Bytes rather than str: the
+    str form of compare_digest raises TypeError on non-ASCII input, and a
+    caller can put anything at all in this field.
+    """
+    if not join_code or not secrets.compare_digest(
+        join_code.encode("utf-8"), church.join_code.encode("utf-8")
+    ):
+        raise InvalidJoinCodeError
+
+
+def _get_or_create_church(
+    session: Session, *, name: str, address: str, join_code: str | None
+) -> tuple[Church, str]:
+    """The church this signup joins, and the role it gets there.
+
+    Founding a church elects you its leader: somebody has to be able to hand
+    the invite code out, and the first account is the only candidate. Joining
+    one costs the code and grants nothing beyond membership.
+    """
     church = session.query(Church).filter(Church.name == name).first()
     if church is not None:
+        # Checked before the address is filled in below: an uninvited caller
+        # must not be able to edit the church they were refused.
+        require_join_code(church, join_code)
         if not church.address:
             church.address = address
-        return church
-    return create_or_join_church(session, name=name, address=address)
+        return church, "member"
+
+    created, joined_existing = create_or_join_church(session, name=name, address=address)
+    if joined_existing:
+        # Another signup founded this church between the read above and the
+        # INSERT. The caller believed they were founding it, so they have no
+        # code to offer and get the same refusal as any other uninvited join —
+        # the alternative is making a stranger a member by accident of timing.
+        require_join_code(created, join_code)
+        return created, "member"
+    return created, "leader"
 
 
-def create_or_join_church(session: Session, *, name: str, address: str) -> Church:
-    """Inserts the church, or joins the one a concurrent signup just created.
+def create_or_join_church(session: Session, *, name: str, address: str) -> tuple[Church, bool]:
+    """Inserts the church, or returns the one a concurrent signup just created.
+
+    The flag says which happened. The caller cannot tell from the row itself,
+    and the two outcomes differ: founding elects a leader, losing the race does
+    not and owes an invite code.
 
     Split out of _get_or_create_church so the race branch below can be reached
     on purpose. In place, it only runs when another transaction commits between
@@ -210,8 +265,32 @@ def create_or_join_church(session: Session, *, name: str, address: str) -> Churc
         raced = session.query(Church).filter(Church.name == name).first()
         if raced is None:
             raise
-        return raced
-    return created
+        return raced, True
+    return created, False
+
+
+def rotate_join_code(session: Session, *, user: User) -> str:
+    """Issues a fresh invite code, retiring the one already in circulation.
+
+    This is the whole answer to a leaked code — there is no revocation list and
+    no per-invite record, so the only way to stop a string that has escaped is
+    to stop honouring it.
+    """
+    if user.role != "leader":
+        raise NotChurchLeaderError
+
+    church = session.get(Church, user.church_id)
+    if church is None:
+        raise ChurchMissingError
+
+    # Returned from the local rather than read back off the ORM: commit()
+    # expires every loaded attribute, so `church.join_code` afterwards would
+    # cost another SELECT — the same reason AuthResult is taken before the
+    # commit rather than after it.
+    code = generate_join_code()
+    church.join_code = code
+    session.commit()
+    return code
 
 
 # The two ways users.email can collide, measured against the live schema rather
@@ -264,8 +343,11 @@ def register_user(session: Session, payload: SignupRequest) -> AuthResult:
     if session.query(User.id).filter(User.email == payload.email).first() is not None:
         raise EmailAlreadyRegisteredError
 
-    church = _get_or_create_church(
-        session, name=payload.church, address=payload.church_address
+    church, role = _get_or_create_church(
+        session,
+        name=payload.church,
+        address=payload.church_address,
+        join_code=payload.join_code,
     )
     user = User(
         church_id=church.id,
@@ -273,13 +355,13 @@ def register_user(session: Session, payload: SignupRequest) -> AuthResult:
         name=payload.name,
         phone=payload.phone,
         password_hash=password_hash,
-        role="member",
+        role=role,
     )
 
     insert_new_user(session, user)
 
     tokens = issue_token_bundle(session, user=user)
-    result = _snapshot(user, church, tokens)
+    result = _snapshot(user, church, tokens, reveal_code=True)
     # One commit for the account, the church and the refresh token together.
     # Committing the user first and the token second could leave a registered
     # account whose signup response never arrived.

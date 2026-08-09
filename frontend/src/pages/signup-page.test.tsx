@@ -21,11 +21,16 @@ import { MemoryRouter } from "react-router-dom";
 
 import SignupPage from "./signup-page";
 import {
+  CHURCH_CHECK_DEBOUNCE_MS,
+  CHURCH_EXISTING_MESSAGE,
+  CHURCH_NEW_MESSAGE,
+} from "../lib/church-check";
+import {
   EMAIL_AVAILABLE_MESSAGE,
   EMAIL_CHECK_DEBOUNCE_MS,
   EMAIL_TAKEN_MESSAGE,
 } from "../lib/email-check";
-import { PASSWORD_RULE_HINT } from "../lib/validation/auth-schema";
+import { JOIN_CODE_REQUIRED_MESSAGE, PASSWORD_RULE_HINT } from "../lib/validation/auth-schema";
 
 type Reply = {
   status?: number;
@@ -36,20 +41,41 @@ type Reply = {
   ignoreAbort?: boolean;
 };
 
+type Replies = {
+  email?: Record<string, Reply>;
+  church?: Record<string, Reply>;
+  signup?: Reply;
+};
+
 /** Addresses asked about, in call order. Its length is the request count. */
 let asked: string[] = [];
+/** The same, for the church lookup. Kept apart so one endpoint's traffic cannot
+ *  be mistaken for the other's when a test counts requests. */
+let askedChurches: string[] = [];
 
-function mockCheckEmail(replies: Record<string, Reply>) {
+function mockApi({ email = {}, church = {}, signup }: Replies = {}) {
   asked = [];
+  askedChurches = [];
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       // VITE_API_BASE_URL is undefined under test, so the path is relative.
       const url = new URL(String(input), "http://test.local");
-      const email = url.searchParams.get("email") ?? "";
-      asked.push(email);
 
-      const reply = replies[email] ?? { body: { available: true } };
+      let reply: Reply;
+      if (url.pathname.endsWith("/auth/check-church")) {
+        const name = url.searchParams.get("name") ?? "";
+        askedChurches.push(name);
+        // Unregistered by default, so a test that says nothing about churches
+        // takes the "founding a new one" path and is never asked for a code.
+        reply = church[name] ?? { body: { exists: false } };
+      } else if (url.pathname.endsWith("/auth/signup")) {
+        reply = signup ?? { status: 500, body: { detail: "signup reply not configured" } };
+      } else {
+        const address = url.searchParams.get("email") ?? "";
+        asked.push(address);
+        reply = email[address] ?? { body: { available: true } };
+      }
       const status = reply.status ?? 200;
 
       return new Promise((resolve, reject) => {
@@ -64,6 +90,8 @@ function mockCheckEmail(replies: Record<string, Reply>) {
     })
   );
 }
+
+const mockCheckEmail = (replies: Record<string, Reply>) => mockApi({ email: replies });
 
 const renderSignup = () =>
   render(
@@ -233,8 +261,10 @@ const setField = (label: string, value: string) =>
 const submit = () => fireEvent.click(screen.getByRole("button", { name: "회원가입" }));
 
 /** Every field valid except what the caller overrides. */
-const fillForm = async (overrides: { password?: string; password_confirm?: string } = {}) => {
-  mockCheckEmail({});
+const fillForm = async (
+  overrides: { password?: string; password_confirm?: string; replies?: Replies } = {}
+) => {
+  mockApi(overrides.replies ?? {});
   renderSignup();
 
   setField("이름", "홍길동");
@@ -301,6 +331,294 @@ describe("비밀번호 확인 오류", () => {
 
     expect(screen.queryByText(MISMATCH)).toBeNull();
     await settle();
+  });
+});
+
+const EXISTING_CHURCH = "한빛교회";
+/** What the server answers a signup that offered no code, or the wrong one. */
+const INVALID_JOIN_CODE = "초대 코드가 올바르지 않습니다. 교회 리더에게 확인해 주세요.";
+const joinCodeField = () => screen.queryByLabelText("초대 코드");
+const typeChurch = (value: string) =>
+  fireEvent.change(screen.getByLabelText("교회"), { target: { value } });
+
+/** A church lookup that answers "already registered". */
+const registered = { church: { [EXISTING_CHURCH]: { body: { exists: true } } } };
+
+describe("회원가입 교회 자동 확인", () => {
+  it("이미 등록된 교회면 초대 코드 칸을 보여줘야 한다", async () => {
+    mockApi(registered);
+    renderSignup();
+
+    typeChurch(EXISTING_CHURCH);
+    await settle();
+
+    expect(screen.getByText(CHURCH_EXISTING_MESSAGE)).toBeTruthy();
+    expect(joinCodeField()).toBeTruthy();
+  });
+
+  it("새 교회면 리더가 된다고 안내하고 코드는 묻지 않아야 한다", async () => {
+    mockApi({ church: { 새로운교회: { body: { exists: false } } } });
+    renderSignup();
+
+    typeChurch("새로운교회");
+    await settle();
+
+    expect(screen.getByText(CHURCH_NEW_MESSAGE)).toBeTruthy();
+    // Asking a founder for a code they were never given would be a dead end.
+    expect(joinCodeField()).toBeNull();
+  });
+
+  it("타이핑이 이어지는 동안에는 요청을 보내지 않아야 한다", async () => {
+    mockApi({});
+    renderSignup();
+
+    for (const partial of ["한", "한빛", "한빛교", EXISTING_CHURCH]) {
+      typeChurch(partial);
+      await advance(CHURCH_CHECK_DEBOUNCE_MS - 100);
+    }
+    expect(askedChurches).toHaveLength(0);
+
+    await settle();
+    expect(askedChurches).toEqual([EXISTING_CHURCH]);
+  });
+
+  it("한 글자만 입력한 동안에는 조회하지 않아야 한다", async () => {
+    mockApi({});
+    renderSignup();
+
+    typeChurch("한");
+    await settle();
+
+    expect(askedChurches).toHaveLength(0);
+  });
+
+  it("앞뒤 공백만 다른 이름은 다시 물어보지 않아야 한다", async () => {
+    mockApi(registered);
+    renderSignup();
+
+    typeChurch(EXISTING_CHURCH);
+    await settle();
+    typeChurch(`  ${EXISTING_CHURCH}  `);
+    await settle();
+
+    expect(askedChurches).toEqual([EXISTING_CHURCH]);
+    expect(screen.getByText(CHURCH_EXISTING_MESSAGE)).toBeTruthy();
+  });
+
+  it("늦게 도착한 옛 교회명의 응답이 새 판정을 덮지 않아야 한다", async () => {
+    // Same timeline as the email race above: the stale answer has to arrive
+    // last, or a wrong verdict would be overwritten by the right one and the
+    // guard would never be exercised.
+    mockApi({
+      church: {
+        [EXISTING_CHURCH]: { body: { exists: true }, delay: 900, ignoreAbort: true },
+        새로운교회: { body: { exists: false }, delay: 10 },
+      },
+    });
+    renderSignup();
+
+    typeChurch(EXISTING_CHURCH);
+    await advance(CHURCH_CHECK_DEBOUNCE_MS);
+    typeChurch("새로운교회");
+    await settle();
+
+    expect(screen.getByText(CHURCH_NEW_MESSAGE)).toBeTruthy();
+    expect(joinCodeField()).toBeNull();
+  });
+
+  it("답을 못 받은 교회명은 캐시하지 않아 다시 물어봐야 한다", async () => {
+    // A 429 must not pin a church to "unchecked" for the rest of the session:
+    // the next attempt decides whether the code field is even offered.
+    mockApi({
+      church: { [EXISTING_CHURCH]: { status: 429, body: { detail: "요청이 많습니다." } } },
+    });
+    renderSignup();
+
+    typeChurch(EXISTING_CHURCH);
+    await settle();
+    typeChurch("다른교회");
+    await settle();
+    typeChurch(EXISTING_CHURCH);
+    await settle();
+
+    expect(askedChurches.filter((name) => name === EXISTING_CHURCH)).toHaveLength(2);
+  });
+
+  it("429로 답을 못 받으면 코드 칸은 남기되 리더 안내는 하지 않아야 한다", async () => {
+    // Hiding the field here would leave no way to supply the code the server is
+    // about to refuse the signup for missing.
+    mockApi({
+      church: { [EXISTING_CHURCH]: { status: 429, body: { detail: "요청이 많습니다." } } },
+    });
+    renderSignup();
+
+    typeChurch(EXISTING_CHURCH);
+    await settle();
+
+    expect(screen.queryByText(CHURCH_NEW_MESSAGE)).toBeNull();
+    expect(joinCodeField()).toBeTruthy();
+  });
+});
+
+describe("초대 코드 입력", () => {
+  const fillJoiningExistingChurch = async () => {
+    await fillForm({ replies: registered });
+    submit();
+  };
+
+  it("등록된 교회에 코드 없이 제출하면 코드 칸에 오류를 달아야 한다", async () => {
+    await fillJoiningExistingChurch();
+
+    expect(screen.getByText(JOIN_CODE_REQUIRED_MESSAGE)).toBeTruthy();
+    expect(joinCodeField()?.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("코드를 입력하면 오류가 사라져야 한다", async () => {
+    await fillJoiningExistingChurch();
+
+    setField("초대 코드", "abcd2345");
+
+    expect(screen.queryByText(JOIN_CODE_REQUIRED_MESSAGE)).toBeNull();
+  });
+
+  it("다른 교회로 고치면 앞서 붙은 코드 오류가 사라져야 한다", async () => {
+    // The requirement belongs to the church, but zod files the message under
+    // join_code alone, so the pairing in FIELDS_SETTLED_TOGETHER is what clears
+    // it. The replacement has to be *another registered church*: switching to an
+    // unregistered one hides the whole field, and the message would then be
+    // absent whether or not it had been cleared — a test that passes for a
+    // reason that has nothing to do with what it claims.
+    await fillForm({
+      replies: {
+        church: {
+          [EXISTING_CHURCH]: { body: { exists: true } },
+          다른교회: { body: { exists: true } },
+        },
+      },
+    });
+    submit();
+    expect(screen.getByText(JOIN_CODE_REQUIRED_MESSAGE)).toBeTruthy();
+
+    typeChurch("다른교회");
+    await settle();
+
+    expect(joinCodeField()).toBeTruthy();
+    expect(screen.queryByText(JOIN_CODE_REQUIRED_MESSAGE)).toBeNull();
+  });
+
+  it("이름을 고치는 것으로는 코드 오류가 사라지지 않아야 한다", async () => {
+    await fillJoiningExistingChurch();
+
+    setField("이름", "김철수");
+
+    expect(screen.getByText(JOIN_CODE_REQUIRED_MESSAGE)).toBeTruthy();
+  });
+
+  /**
+   * The lookup can be right when it answers and wrong by the time the form is
+   * submitted — someone else founds the church in between. The server says so
+   * with a 403, and before this the page threw that away: the cached "new"
+   * verdict kept the code box hidden, and because the cache answers from memory
+   * no amount of retyping brought it back. The signup was refused forever.
+   */
+  const submitAgainstAChurchFoundedMeanwhile = async () => {
+    await fillForm({
+      // No church override: the lookup answers "not registered", which is what
+      // makes this a stale verdict rather than a wrong one.
+      replies: { signup: { status: 403, body: { detail: INVALID_JOIN_CODE } } },
+    });
+    expect(joinCodeField()).toBeNull();
+
+    submit();
+    await settle();
+  };
+
+  it("코드 없이 제출해 403을 받으면 코드 칸이 나타나야 한다", async () => {
+    await submitAgainstAChurchFoundedMeanwhile();
+
+    expect(screen.getByText(INVALID_JOIN_CODE)).toBeTruthy();
+    expect(joinCodeField()).toBeTruthy();
+    // The hint has to flip too. Left saying "you will be the leader" it would
+    // contradict the alert directly above it.
+    expect(screen.getByText(CHURCH_EXISTING_MESSAGE)).toBeTruthy();
+  });
+
+  it("403 뒤에는 교회명을 바꿨다 되돌려도 다시 묻지 않고 코드 칸을 남겨야 한다", async () => {
+    // Flipping the status alone would not survive this: the effect re-runs on
+    // every church edit and reads the cache, so a stale `false` still in there
+    // hides the field again the moment the name is retyped.
+    await submitAgainstAChurchFoundedMeanwhile();
+
+    typeChurch("다른교회");
+    await settle();
+    expect(joinCodeField()).toBeNull();
+
+    typeChurch(EXISTING_CHURCH);
+    await settle();
+
+    expect(joinCodeField()).toBeTruthy();
+    // Answered from the 403, not from a second round trip.
+    expect(askedChurches).toEqual([EXISTING_CHURCH, "다른교회"]);
+  });
+
+  it("403이 아닌 실패는 교회 판정을 바꾸지 않아야 한다", async () => {
+    // Only 403 carries the "this church exists" claim. Treating a 409 or a 500
+    // the same way would put a code box in front of a founder who has none.
+    await fillForm({
+      replies: { signup: { status: 409, body: { detail: "이미 사용 중인 이메일입니다." } } },
+    });
+
+    submit();
+    await settle();
+
+    expect(screen.getByText(CHURCH_NEW_MESSAGE)).toBeTruthy();
+    expect(joinCodeField()).toBeNull();
+  });
+});
+
+describe("새 교회 창설 안내", () => {
+  it("가입 응답에 코드가 있으면 이동 전에 코드를 보여줘야 한다", async () => {
+    // The founder's one unprompted sight of the code. Navigating straight to the
+    // home screen would leave them with no way to let anybody else in until
+    // they found the management page.
+    await fillForm({
+      replies: {
+        signup: {
+          status: 201,
+          body: {
+            tokens: { access_token: "access", refresh_token: "refresh" },
+            church: { code: "abcd2345" },
+          },
+        },
+      },
+    });
+
+    submit();
+    await settle();
+
+    expect(screen.getByText("abcd2345")).toBeTruthy();
+    expect(screen.getByText("가입이 완료됐습니다")).toBeTruthy();
+  });
+
+  it("코드가 없는 응답이면 코드 안내 없이 넘어가야 한다", async () => {
+    // A member's signup carries no code, and a panel with nothing in it would
+    // be worse than none.
+    await fillForm({
+      replies: {
+        signup: {
+          status: 201,
+          body: {
+            tokens: { access_token: "access", refresh_token: "refresh" },
+            church: { code: null },
+          },
+        },
+      },
+    });
+
+    submit();
+    await settle();
+
+    expect(screen.queryByText("가입이 완료됐습니다")).toBeNull();
   });
 });
 

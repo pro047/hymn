@@ -1,4 +1,5 @@
 import datetime as dt
+import secrets
 import uuid
 
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, UniqueConstraint
@@ -13,11 +14,29 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+# l/1 and o/0 are left out: the code is read off one screen and typed into
+# another by a person, and those are the pairs that get transcribed wrong.
+# 32 symbols over 8 places is ~1.1e12 codes, so guessing one is not a way in.
+JOIN_CODE_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"
+JOIN_CODE_LENGTH = 8
+
+
+def generate_join_code() -> str:
+    """A fresh church invite code. secrets, not random: this is a credential."""
+    return "".join(secrets.choice(JOIN_CODE_ALPHABET) for _ in range(JOIN_CODE_LENGTH))
+
+
 class Church(Base):
     __tablename__ = "churches"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    # Wider than the 8 the generator emits, so the format can grow without a
+    # column change. Defaulted here rather than at every call site: a church
+    # without a code cannot be joined, so there is no valid row to leave one off.
+    join_code: Mapped[str] = mapped_column(
+        String(16), unique=True, nullable=False, default=generate_join_code
+    )
     address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Seoul")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)

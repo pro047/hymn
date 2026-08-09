@@ -11,6 +11,10 @@ PASSWORD_MAX_LENGTH = 16
 NAME_MAX_LENGTH = 255
 PHONE_MIN_LENGTH = 8
 PHONE_MAX_LENGTH = 32
+# Matches the churches.join_code column, not the 8 the generator emits: the
+# column is deliberately wider so the format can grow, and a request carrying an
+# older or longer code should reach the comparison rather than be rejected here.
+JOIN_CODE_MAX_LENGTH = 16
 
 # Split out of the old single `.{8,16}` rule so length stays a Field constraint
 # (which yields a typed 422 the client can word itself) and case does not.
@@ -40,6 +44,17 @@ def normalize_email(value: object) -> object:
     return value.strip().lower() if isinstance(value, str) else value
 
 
+def normalize_join_code(value: object) -> object:
+    """Folds case and whitespace on an invite code before it is compared.
+
+    The generated alphabet is lowercase by construction, so folding can never
+    make two distinct codes collide. It is here because the code travels by
+    hand: a phone keyboard capitalising the first letter, or a space picked up
+    while copying, would otherwise read as the wrong code and cost a 403.
+    """
+    return value.strip().lower() if isinstance(value, str) else value
+
+
 # BeforeValidator runs ahead of the Field constraints (verified against pydantic
 # 2.x), so min_length sees the trimmed value: "   " is rejected as
 # string_too_short with ctx, which the client already words itself. Trimming
@@ -47,6 +62,11 @@ def normalize_email(value: object) -> object:
 # Church.name is unique — every such signup would then join one shared "" church.
 TrimmedStr = Annotated[str, BeforeValidator(_strip)]
 NormalizedEmail = Annotated[EmailStr, BeforeValidator(normalize_email)]
+JoinCode = Annotated[str, BeforeValidator(normalize_join_code)]
+# The church name arrives as a query string on /auth/check-church, where nothing
+# else bounds its length. Trimmed the same way SignupRequest.church is, so the
+# lookup asks about the row a signup with that name would actually reach.
+ChurchNameQuery = Annotated[TrimmedStr, Field(min_length=1, max_length=NAME_MAX_LENGTH)]
 
 
 class LoginRequest(BaseModel):
@@ -64,6 +84,10 @@ class SignupRequest(BaseModel):
         ..., min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH
     )
     church: TrimmedStr = Field(..., min_length=1, max_length=NAME_MAX_LENGTH)
+    # Optional in the schema, required by the service — but only for a church
+    # that already exists. Founding one issues the code instead of asking for
+    # it, and a required field would make that signup impossible to word.
+    join_code: JoinCode | None = Field(default=None, max_length=JOIN_CODE_MAX_LENGTH)
     church_address: TrimmedStr = Field(..., min_length=1, max_length=NAME_MAX_LENGTH)
     phone: TrimmedStr = Field(..., min_length=PHONE_MIN_LENGTH, max_length=PHONE_MAX_LENGTH)
     agreed_terms: bool = Field(..., description="User agreed to terms")
@@ -94,6 +118,22 @@ class EmailCheckResponse(BaseModel):
     available: bool
 
 
+class CheckChurchResponse(BaseModel):
+    """Whether that name is taken, and deliberately nothing else.
+
+    The form needs to know which of the two signup shapes to render — ask for
+    an invite code, or say you are about to found a church. Returning the code
+    alongside would hand it to any unauthenticated caller who guessed the name,
+    which is the exact gate this milestone exists to close.
+    """
+
+    exists: bool
+
+
+class JoinCodeResponse(BaseModel):
+    code: str
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(..., min_length=20, max_length=512)
 
@@ -113,7 +153,10 @@ class AuthUser(BaseModel):
 class AuthChurch(BaseModel):
     id: str
     name: str
-    code: str
+    # None for a member. The code lets anyone who holds it join the church, so
+    # only the account that can rotate it is shown it — a member's browser
+    # storage, or any log of their session response, is not a place for it.
+    code: str | None
 
 
 class TokenPair(BaseModel):
