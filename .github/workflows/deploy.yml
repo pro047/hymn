@@ -133,6 +133,15 @@ jobs:
             IMG_BACKEND="${ACCT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${GITHUB_SHA}"
             IMG_FRONTEND="${ACCT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${GITHUB_SHA}-frontend"
           fi
+          # AWS-RunShellScript runs the array below as a single script with no
+          # `set -e`, so a command that fails does not stop the ones after it and
+          # the invocation still reports Success. That was harmless until the
+          # migration grew a reason to refuse: a rejected `alembic upgrade head`
+          # was followed straight by `up -d`, which started the new image against
+          # the old schema and 500s every authenticated route. The migration step
+          # therefore ends the script itself. Left narrow on purpose — a blanket
+          # `set -e` would change the failure behaviour of fifteen other steps
+          # that have never been exercised failing.
           PARAMS=$(jq -n \
             --arg img_backend "${IMG_BACKEND}" \
             --arg img_frontend "${IMG_FRONTEND}" \
@@ -151,7 +160,7 @@ jobs:
                 "echo \"IMAGE_FRONTEND=" + $img_frontend + "\" | sudo tee -a /app/.env.prod >/dev/null",
                 "printf \"" + $env + "\\n\" | sudo tee -a /app/.env.prod >/dev/null",
                 "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml pull",
-                "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml run --rm backend alembic upgrade head",
+                "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml run --rm backend alembic upgrade head || { echo \"MIGRATION FAILED - refusing to start the new containers; the running ones are untouched\"; exit 1; }",
                 "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml up -d",
                 "sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled",
                 "cat > /tmp/score-hymn.nginx.conf <<\"NGINX\"\n" + $nginx_conf + "\nNGINX",
