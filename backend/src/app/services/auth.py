@@ -477,6 +477,67 @@ def rotate_refresh_token(session: Session, refresh_token: str) -> TokenBundle:
     return tokens
 
 
+def revoke_all_refresh_tokens(session: Session, *, user_id: str) -> int:
+    """Signs every device out. Returns how many sessions that ended.
+
+    Neither existing revoke path fits: both key on a single jti, because they
+    answer "this token is spent". Changing a password answers "everything
+    issued before now is spent", and the caller holding one of those tokens is
+    exactly who we are trying to lock out — asking them to name it is backwards.
+    """
+    return (
+        session.query(RefreshToken)
+        .filter(RefreshToken.user_id == user_id)
+        .delete(synchronize_session=False)
+    )
+
+
+def change_password(
+    session: Session, *, user: User, current_password: str, new_password: str
+) -> None:
+    """Replaces the account's password and ends every session, the caller's too.
+
+    Most password changes are prompted by somebody else knowing the old one, so
+    leaving any session alive would make the change cosmetic — the other party
+    keeps the access the password was protecting. Signing the caller out along
+    with everyone else costs them one login and removes the question of which
+    sessions were meant to survive.
+
+    Nothing is issued in return, deliberately. An earlier version handed the
+    caller a replacement pair to spare them that login; once the client decided
+    to send them to /login anyway, the pair had no reader and was only a live
+    credential sitting in a response body, a devtools panel and any proxy log
+    along the way. Same reason the invite code came out of the login response.
+
+    Not wired into login_guard, on purpose. Counting failures here would let an
+    attacker holding a stolen access token spend ten wrong guesses and lock the
+    real owner out of /login: the defence would become the attack.
+    """
+    stored_hash = user.password_hash
+    try:
+        password_matches = bool(stored_hash) and pwd_context.verify(current_password, stored_hash)
+    except PasswordValueError:
+        # bcrypt refuses NUL bytes and passlib raises rather than answering
+        # False. current_password carries no control-character rule (a rule
+        # there would lock out accounts that predate it), so this is reachable
+        # from any authenticated caller — and uncaught it answers 500.
+        password_matches = False
+    if not password_matches:
+        raise InvalidCredentialsError
+
+    # Both bcrypt rounds are spent before the first write, so the ~200ms hash
+    # is not held across an open transaction (2-D #9's rule).
+    new_hash = hash_password(new_password)
+
+    user.password_hash = new_hash
+    revoke_all_refresh_tokens(session, user_id=user.id)
+    # One commit for the hash and the revocations together. Committing the hash
+    # first would leave a window where the new password is live and every old
+    # session still is too; committing the revocations first would sign
+    # everyone out over a change that then failed to land.
+    session.commit()
+
+
 def revoke_refresh_token(session: Session, refresh_token: str | None) -> None:
     """Best-effort logout. Revocation is idempotent, so nothing here raises."""
     if not refresh_token:

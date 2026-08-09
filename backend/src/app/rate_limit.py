@@ -62,6 +62,11 @@ CHECK_EMAIL_LIMIT = "10/minute"
 CHECK_CHURCH_LIMIT = "10/minute"
 ROTATE_JOIN_CODE_LIMIT = "10/minute"
 LOGIN_LIMIT = "10/minute"
+# Authenticated and once-in-a-while, like ROTATE. It is capped anyway because a
+# wrong current password is refused without touching login_guard — on purpose,
+# so a stolen access token cannot lock the real owner out of /login — which
+# leaves this the one credential path with no per-account counter behind it.
+PASSWORD_CHANGE_LIMIT = "10/minute"
 SIGNUP_LIMIT = "5/minute"
 REFRESH_LIMIT = "20/minute"
 LOGOUT_LIMIT = "20/minute"
