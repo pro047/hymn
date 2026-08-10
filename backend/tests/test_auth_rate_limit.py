@@ -28,6 +28,14 @@ REFRESH_PER_MINUTE = int(REFRESH_LIMIT.split("/")[0])
 CALLER = {"X-Real-IP": "203.0.113.10"}
 OTHER_CALLER = {"X-Real-IP": "203.0.113.99"}
 
+# What the app actually sees in production. nginx runs on the host under systemd
+# and the app in a container, so a request proxied to 127.0.0.1:8000 arrives from
+# the docker bridge gateway. The `client` fixture pins the peer to 127.0.0.1,
+# which is the one address that hides this — every test using it passed while the
+# deployed limiter was keying every visitor to a single bucket.
+BRIDGE_GATEWAY_PEER = ("172.17.0.1", 51000)
+DIRECT_PUBLIC_PEER = ("203.0.113.77", 40000)
+
 
 def _check_email(client, headers: dict, email: str = "someone@example.com"):
     return client.get("/auth/check-email", params={"email": email}, headers=headers)
@@ -148,6 +156,49 @@ def test_refresh_burst_past_the_limit_should_return_429(client):
     blocked = client.post("/auth/refresh", json=payload, headers=CALLER)
 
     assert blocked.status_code == 429
+
+
+def test_two_client_ips_behind_the_docker_bridge_should_not_share_a_limit(client):
+    """The regression test for the deployed configuration, not the intended one.
+
+    test_two_client_ips_should_not_share_a_check_email_limit above asserts the
+    same property, but through the `client` fixture, whose peer is 127.0.0.1.
+    That address passes an is_loopback check, so the assertion held while
+    production — where the peer is the bridge gateway — failed it on every
+    request. A limiter keyed on the gateway makes each per-IP budget a global
+    one: one caller spending the signup limit blocks signup for everybody.
+
+    This test must keep using a peer that is private but NOT loopback. Point it
+    at 127.0.0.1 and it stops testing anything the test above does not.
+    """
+    with TestClient(app, client=BRIDGE_GATEWAY_PEER) as proxied:
+        for _ in range(CHECK_EMAIL_PER_MINUTE + 1):
+            _check_email(proxied, CALLER)
+
+        response = _check_email(proxied, OTHER_CALLER)
+
+    assert response.status_code == 200, response.text
+
+
+def test_an_ignored_x_real_ip_should_warn_once(client, caplog):
+    """A proxy we do not trust is the shape the outage took, and it is silent.
+
+    The request still succeeds — it is merely counted against the wrong key — so
+    nothing surfaces until callers start refusing each other. The other warning
+    below cannot cover this: it only fires on the trusted branch, which is
+    exactly the branch a misconfigured topology never reaches.
+    """
+    import app.rate_limit as rate_limit_module
+
+    rate_limit_module._warned_ignored_real_ip = False
+
+    with caplog.at_level("WARNING", logger="app.rate_limit"):
+        with TestClient(app, client=DIRECT_PUBLIC_PEER) as direct:
+            _check_email(direct, CALLER, "a@example.com")
+            _check_email(direct, OTHER_CALLER, "b@example.com")
+
+    warnings = [record for record in caplog.records if "untrusted peer" in record.message]
+    assert len(warnings) == 1
 
 
 def test_x_real_ip_from_a_non_loopback_peer_should_be_ignored(client):

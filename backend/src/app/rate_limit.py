@@ -20,13 +20,24 @@ bucket and let one burst lock out everyone.
 spoofed entry sits in front of the real one and a reader that takes the first
 element hands the caller a free key of their choosing.
 
-The header is only honoured when the socket peer is a loopback address, i.e. the
-request really did arrive through the local proxy. A caller that reaches the port
-directly — another process on the host, or the internet if the security group is
-ever widened — is keyed on its own address and cannot pick its own bucket by
-setting a header. This is defence in depth: today the EC2 security group opens
-22/80/443 only (`infra/modules/ec2/main.tf`), so nothing but nginx should be able
-to connect at all.
+The header is only honoured when the socket peer is our own infrastructure. A
+caller that reaches the port directly is keyed on its own address and cannot pick
+its own bucket by setting a header.
+
+"Our own infrastructure" means loopback *or private*, and the second half is not
+optional. nginx runs on the host under systemd while the app runs in a container
+(`docker-compose.prod.yml`), so a request nginx proxies to 127.0.0.1:8000 reaches
+the container from the docker bridge gateway — a private address, never a
+loopback one. An is_loopback-only test therefore rejected the header on every
+production request and dropped every visitor into one shared bucket, which turned
+each per-IP limit into a global one: six signups a minute from anybody blocked
+signup for everybody. It failed silently, so both warnings below matter as much
+as the check itself.
+
+Widening the trusted set is paired with narrowing what can reach the port:
+`docker-compose.prod.yml` binds the backend to 127.0.0.1 rather than 0.0.0.0, so
+"private address" cannot mean an unrelated host on the VPC. Today the EC2
+security group also opens 22/80/443 only (`infra/modules/ec2/main.tf`).
 
 Known gap: the limits below are keyed on address alone. slowapi's key function is
 synchronous and receives only the Request, so it cannot read the JSON body, which
@@ -74,29 +85,73 @@ ME_LIMIT = "60/minute"
 
 RATE_LIMIT_MESSAGE = "요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요."
 
-# Logged at most once per process: a proxied deployment that stops sending the
-# header would otherwise collapse every visitor into one bucket in silence.
+# Each logged at most once per process. Both describe a deployment in which every
+# visitor silently shares one bucket, which is invisible from the outside — the
+# requests simply start refusing each other.
 _warned_missing_real_ip = False
+_warned_ignored_real_ip = False
 
 
-def _is_local_proxy(address: str) -> bool:
-    """True when the socket peer is this host, i.e. our own reverse proxy."""
+# Spelled out rather than delegated to ipaddress.is_private, which answers "not
+# globally reachable" and so includes the RFC 5737 documentation blocks —
+# 203.0.113.0/24 among them, the range the tests below use to stand in for a
+# public caller. Trusting those would have let this file's own tests pass while
+# the predicate said yes to addresses it must refuse. A trust boundary should be
+# readable in one place anyway, not inherited from a stdlib membership list that
+# can grow between Python versions.
+_TRUSTED_PROXY_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "127.0.0.0/8",  # a proxy on this host
+        "::1/128",
+        "10.0.0.0/8",  # RFC1918: the ranges docker allocates bridge networks from
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",  # IPv6 unique-local, for a v6-enabled bridge
+    )
+)
+
+
+def _is_trusted_proxy(address: str) -> bool:
+    """True when the socket peer is our own infrastructure, not a caller.
+
+    Private as well as loopback: see the module docstring. nginx is on the host
+    and the app is in a container, so the peer is the docker bridge gateway.
+    """
     try:
-        return ipaddress.ip_address(address).is_loopback
+        ip = ipaddress.ip_address(address)
     except ValueError:
         return False
+    return any(ip in network for network in _TRUSTED_PROXY_NETWORKS)
 
 
 def client_ip(request: Request) -> str:
     """The caller's address: from nginx when proxied, from the socket otherwise."""
     peer = get_remote_address(request) or ""
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
 
     # Reached the port directly, so there is no proxy whose header we could trust.
     # Local development and any bypass of nginx land here.
-    if not _is_local_proxy(peer):
+    if not _is_trusted_proxy(peer):
+        if real_ip:
+            # Something is proxying us from an address we do not trust, so its
+            # header is being discarded and every caller behind it shares this
+            # peer's bucket. This is the exact signature of the bug that made
+            # the whole fleet share one limit for months, and nothing else
+            # reports it: the request still succeeds, just on the wrong key.
+            global _warned_ignored_real_ip
+            if not _warned_ignored_real_ip:
+                _warned_ignored_real_ip = True
+                logger.warning(
+                    "Request from untrusted peer %s carried X-Real-IP; it is being "
+                    "ignored and every caller behind that proxy now shares one rate "
+                    "limit. If %s really is our proxy, add its range to "
+                    "_is_trusted_proxy.",
+                    peer,
+                    peer,
+                )
         return peer or "anonymous"
 
-    real_ip = (request.headers.get("x-real-ip") or "").strip()
     if real_ip:
         return real_ip
 
