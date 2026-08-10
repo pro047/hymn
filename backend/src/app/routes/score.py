@@ -35,6 +35,26 @@ def _download_url(file_uri: str | None) -> str | None:
     return None
 
 
+def _reject_foreign_object_key(file_uri: str, church_id: str) -> None:
+    """Refuses a storage key that is not this church's, or returns.
+
+    file_uri is written straight through from the request body on the `local`
+    branch, and _download_url signs anything under the scores/ prefix. Together
+    those made the route a signing oracle: file a score whose file_uri is
+    another church's key and the server hands back a presigned GET for it. That
+    survives scoping the read routes, because the URL is minted on demand from
+    a key rather than read off a row the caller may see — so it is closed here,
+    on the way in.
+
+    Checked only when a key is supplied, and only on write. Rows already stored
+    are left alone: the keys predating the s3 branch ("a.pdf", "local/x.pdf")
+    do not match the prefix and already resolve to download_url=None, and
+    rejecting them here would make a title-only edit fail on an old score.
+    """
+    if not file_uri.startswith(f"scores/{church_id}/"):
+        raise HTTPException(400, "잘못된 파일 경로입니다.")
+
+
 def _own_score_or_404(session: Session, score_id: str, user: User) -> Score:
     """A score of the caller's own church, or 404.
 
@@ -95,6 +115,7 @@ def create_score(
 
     if not payload.file_uri:
         raise HTTPException(400, 'file_uri required for local')
+    _reject_foreign_object_key(payload.file_uri, church_id)
     score = Score(
         church_id=church_id,
         title=payload.title,
@@ -144,10 +165,25 @@ def list_scores(session: Session = Depends(get_session)):
     ]
 
 @router.get("/scores/{score_id}", response_model=ScoreResponse)
-def get_score(score_id: str, session: Session = Depends(get_session)):
-    score = session.get(Score, score_id)
-    if not score:
-        raise HTTPException(404, "Score not found")
+def get_score(
+    score_id: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """One score of the caller's own church.
+
+    Authenticated even though the list above is not, and the difference is not
+    an oversight. list_scores filters on week_of IS NOT NULL, which keeps the
+    saved-score uploads — the ones the UI calls a personal library — out of the
+    public answer. This route had no filter and no dependency, so it handed
+    those to anyone who could name the id.
+
+    No client ever called it: the Flutter app makes exactly one request, GET
+    /scores (hymn_app/lib/data/scores_api.dart:12), and the web uses this path
+    for PATCH and DELETE only. Closing it therefore breaks nothing. It is kept
+    rather than deleted so the next reader copies a protected route.
+    """
+    score = _own_score_or_404(session, score_id, user)
     return ScoreResponse(
         id=score.id,
         church_id=score.church_id,
@@ -187,6 +223,9 @@ def update_score(
                     item.week_date = week.date
                     item.order_no = order_no
     if payload.file_uri is not None:
+        # Both ways in get the same gate. Checking only on create would let the
+        # caller file a harmless score and then point it at a foreign key.
+        _reject_foreign_object_key(payload.file_uri, score.church_id)
         score.file_uri = payload.file_uri
         score.file_url = payload.file_uri
 
