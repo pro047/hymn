@@ -1,7 +1,6 @@
 import { readApiError, toFormError, type ApiError } from "../lib/api-error";
-import { clearTokens } from "../lib/auth-storage";
 import type { PasswordChangeBody } from "../lib/validation/auth-schema";
-import { apiFetch } from "./client";
+import { apiFetch, endSession } from "./client";
 import { API_PATHS } from "./paths";
 
 export type PasswordChangeOutcome = { ok: true } | { ok: false; error: ApiError };
@@ -47,6 +46,8 @@ export async function changePassword(body: PasswordChangeBody): Promise<Password
 
   // No body to read: 204. The tokens are already revoked server-side, so
   // leaving them in storage would only mean the next request discovers that.
-  clearTokens();
+  // endSession rather than clearTokens, so an unrelated in-flight refresh
+  // cannot resolve after this and write a fresh pair back over the teardown.
+  endSession();
   return { ok: true };
 }
