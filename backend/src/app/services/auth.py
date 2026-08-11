@@ -18,7 +18,20 @@ from app.schemas.auth import SignupRequest
 ACCESS_TOKEN_EXPIRES_IN_SECONDS = 60 * 60
 REFRESH_TOKEN_EXPIRES_IN_SECONDS = 60 * 60 * 24 * 30
 JWT_ALGORITHM = "HS256"
+# How long after a token is rotated its re-presentation is forgiven as a race
+# rather than treated as a replay. Two tabs that both read the same stored token
+# and refresh at once resolve in milliseconds; a stolen token is presented
+# minutes to hours after the real client last rotated it. Ten seconds sits well
+# clear of the first and costs the second almost nothing — the replay is caught
+# on the next presentation regardless. The stamp and the comparison both use the
+# server clock, so there is no skew to widen this.
+REFRESH_REUSE_GRACE_SECONDS = 10
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _naive_utc_now() -> datetime:
+    """UTC now, tz-naive — the shape every DateTime column in this app stores."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class AuthError(Exception):
@@ -399,6 +412,11 @@ def issue_token_bundle(session: Session, *, user: User) -> TokenBundle:
             "church_id": user.church_id,
             "role": user.role,
             "type": "access",
+            # The version this token is valid under. A password change or a
+            # replay revocation bumps user.token_version, and get_current_user
+            # refuses any access token whose tv no longer matches — the only
+            # thing that can retire a stateless JWT before its exp.
+            "tv": user.token_version,
         },
         expires_in=ACCESS_TOKEN_EXPIRES_IN_SECONDS,
     )
@@ -438,17 +456,32 @@ def _refresh_claims(refresh_token: str) -> dict:
     return claims
 
 
-def _consume_refresh_token(session: Session, *, jti: str, user_id: str) -> int:
-    """Deletes the stored token and reports how many rows that actually hit.
+def _claim_refresh_token(session: Session, *, jti: str, user_id: str) -> int:
+    """Atomically marks a live token rotated. 1 if we claimed it, 0 otherwise.
 
     One statement checks and spends the token, so there is no gap for a second
-    request to slip into. Reading the row and then deleting the loaded object
-    is what leaves that gap: both requests see the row, both issue a DELETE,
-    and the loser's matches nothing. SQLAlchemy only *warns* about a DELETE
-    that matched no rows (StaleDataError is for versioned UPDATEs), so the
-    loser used to sail on and commit a second valid token family — the exact
-    replay that rotating refresh tokens exists to catch.
+    request to slip into. The WHERE names rotated_at IS NULL, so under READ
+    COMMITTED a concurrent loser blocks on the winner's row lock, re-reads after
+    the commit, finds rotated_at now set, and matches nothing. Exactly one of
+    two racers gets the 1.
+
+    A stamp rather than a delete: the row has to survive so that presenting the
+    same jti again is a replay we can see, not a missing row we would mistake
+    for garbage.
     """
+    return (
+        session.query(RefreshToken)
+        .filter(
+            RefreshToken.id == jti,
+            RefreshToken.user_id == user_id,
+            RefreshToken.rotated_at.is_(None),
+        )
+        .update({RefreshToken.rotated_at: _naive_utc_now()}, synchronize_session=False)
+    )
+
+
+def _delete_refresh_token(session: Session, *, jti: str, user_id: str) -> int:
+    """Hard-deletes one token. For logout, where there is no replay to detect."""
     return (
         session.query(RefreshToken)
         .filter(RefreshToken.id == jti, RefreshToken.user_id == user_id)
@@ -464,32 +497,72 @@ def rotate_refresh_token(session: Session, refresh_token: str) -> TokenBundle:
     if user is None or user.church_id != claims["church_id"]:
         raise InvalidRefreshTokenError
 
-    if _consume_refresh_token(session, jti=claims["jti"], user_id=claims["sub"]) != 1:
-        # Already spent — by a replay, or by whichever concurrent request got
-        # here first. Under READ COMMITTED the loser's DELETE waits for the
-        # winner to commit and then matches nothing, so exactly one of them
-        # can ever pass this line.
-        session.rollback()
-        raise InvalidRefreshTokenError
+    if _claim_refresh_token(session, jti=claims["jti"], user_id=claims["sub"]) != 1:
+        _reject_or_revoke_reuse(session, jti=claims["jti"], user=user)
 
     tokens = issue_token_bundle(session, user=user)
     session.commit()
     return tokens
 
 
+def _reject_or_revoke_reuse(session: Session, *, jti: str, user: User) -> None:
+    """A rotation lost the claim. Decide whether it was a race or a replay, then raise.
+
+    The claim failed for one of three reasons: the row is gone (a logout, or a
+    token that was never issued), it was rotated a moment ago (two tabs racing),
+    or it was rotated long ago (a replay of a spent token). rotated_at is read
+    as a column scalar, not off an ORM instance: the bulk UPDATE above leaves
+    the identity map untouched, so a loaded row would answer with its stale
+    pre-rotation value. The scalar always reflects the database.
+
+    Absent or freshly rotated -> just refuse; the client recovers by adopting
+    whatever token won the race. Rotated past the grace window -> the token was
+    already spent, so this is a replay: end every session, access tokens
+    included, and make everyone sign in again. The real client sees one 401 and
+    logs back in; a thief is evicted along with it.
+    """
+    rotated_at = (
+        session.query(RefreshToken.rotated_at)
+        .filter(RefreshToken.id == jti, RefreshToken.user_id == user.id)
+        .scalar()
+    )
+    if rotated_at is not None and (_naive_utc_now() - rotated_at).total_seconds() > REFRESH_REUSE_GRACE_SECONDS:
+        revoke_all_sessions(session, user=user)
+        session.commit()
+    else:
+        session.rollback()
+    raise InvalidRefreshTokenError
+
+
 def revoke_all_refresh_tokens(session: Session, *, user_id: str) -> int:
     """Signs every device out. Returns how many sessions that ended.
 
-    Neither existing revoke path fits: both key on a single jti, because they
-    answer "this token is spent". Changing a password answers "everything
-    issued before now is spent", and the caller holding one of those tokens is
-    exactly who we are trying to lock out — asking them to name it is backwards.
+    Neither single-token path fits: both key on a jti, because they answer
+    "this token is spent". This answers "everything issued before now is spent",
+    and the caller holding one of those tokens is exactly who we are locking
+    out — asking them to name it is backwards.
+
+    Refresh tokens only. It leaves outstanding *access* tokens alive for their
+    remaining hour; revoke_all_sessions is what closes that gap.
     """
     return (
         session.query(RefreshToken)
         .filter(RefreshToken.user_id == user_id)
         .delete(synchronize_session=False)
     )
+
+
+def revoke_all_sessions(session: Session, *, user: User) -> None:
+    """Ends every session the user has, refresh and access alike.
+
+    Deleting the refresh tokens stops new access tokens from being minted, but
+    the ones already handed out are stateless JWTs good for up to an hour.
+    Bumping token_version retires those too: each carries the version it was
+    minted under, and get_current_user refuses any that no longer match. Does
+    not commit — the caller owns the transaction boundary.
+    """
+    revoke_all_refresh_tokens(session, user_id=user.id)
+    user.token_version += 1
 
 
 def change_password(
@@ -530,11 +603,15 @@ def change_password(
     new_hash = hash_password(new_password)
 
     user.password_hash = new_hash
-    revoke_all_refresh_tokens(session, user_id=user.id)
-    # One commit for the hash and the revocations together. Committing the hash
-    # first would leave a window where the new password is live and every old
-    # session still is too; committing the revocations first would sign
-    # everyone out over a change that then failed to land.
+    # revoke_all_sessions, not just the refresh tokens: bumping token_version
+    # here is what retires the access tokens the other party may be holding.
+    # Deleting the refresh rows alone would leave a stolen access token good for
+    # up to an hour after the very change meant to lock it out.
+    revoke_all_sessions(session, user=user)
+    # One commit for the hash, the revocations and the version bump together.
+    # Committing the hash first would leave a window where the new password is
+    # live and every old session still is too; committing the revocations first
+    # would sign everyone out over a change that then failed to land.
     session.commit()
 
 
@@ -547,8 +624,10 @@ def revoke_refresh_token(session: Session, refresh_token: str | None) -> None:
     except InvalidRefreshTokenError:
         return
 
-    # No row count check: already revoked is the outcome logout wanted anyway.
-    _consume_refresh_token(session, jti=claims["jti"], user_id=claims["sub"])
+    # Hard delete, and no row-count check: already gone is the outcome logout
+    # wanted. Rotation stamps rather than deletes so a replay stays visible, but
+    # a deliberate logout has no replay to catch — the row can just go.
+    _delete_refresh_token(session, jti=claims["jti"], user_id=claims["sub"])
     session.commit()
 
 

@@ -55,6 +55,11 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Bumped whenever every session must end at once — a password change, or a
+    # detected refresh-token replay. Access tokens carry the value they were
+    # minted under; get_current_user rejects any that no longer match, which is
+    # what lets a stateless 1-hour JWT be killed before it expires.
+    token_version: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
     role: Mapped[str] = mapped_column(Enum("leader", "member", name="user_role"), nullable=False, default="member")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
@@ -72,6 +77,13 @@ class RefreshToken(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    # NULL while the token is live; stamped when it is rotated. A rotated token
+    # is kept rather than deleted so that presenting it again is distinguishable
+    # from presenting one that was never issued: the first is a replay to catch,
+    # the second is garbage to ignore. The timestamp is what separates a genuine
+    # replay (stamped long ago) from two tabs racing the same rotation (stamped
+    # a moment ago).
+    rotated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
 

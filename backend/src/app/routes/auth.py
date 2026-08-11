@@ -262,6 +262,11 @@ def me(
     if user is None:
         raise HTTPException(status_code=404, detail=USER_MISSING_MESSAGE)
 
+    # Same version gate as get_current_user: a token minted before the last
+    # password change or replay revocation is spent, whatever its exp still says.
+    if claims.get("tv", 0) != user.token_version:
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
+
     church = session.get(Church, church_id)
     if church is None:
         raise HTTPException(status_code=404, detail=CHURCH_MISSING_MESSAGE)

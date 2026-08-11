@@ -5,13 +5,8 @@ the database over SSM, which is how the one production account got its current
 one. The rules a new password has to clear are signup's, shared rather than
 copied, so test_auth_signup.py still owns the cases for the rules themselves —
 what is here is the change route, and the session decision it makes: everything
-out, the caller included, with nothing issued in return.
-
-Known gap, deliberately not asserted either way: revocation reaches refresh
-tokens only. An access token is a stateless JWT with an hour of life, so one
-issued before the change keeps working until it expires. Closing that needs a
-`password_changed_at` check in get_current_user — out of scope here, and pinning
-the gap with a test would make fixing it look like a regression.
+out, the caller included, with nothing issued in return — refresh tokens *and*
+the access tokens already handed out, retired through the user's token_version.
 """
 
 from app.rate_limit import PASSWORD_CHANGE_LIMIT
@@ -51,6 +46,10 @@ def _change(client, access_token: str, **overrides):
     return client.post(
         "/auth/password", json=body, headers={"Authorization": f"Bearer {access_token}"}
     )
+
+
+def _bearer(access_token: str) -> dict:
+    return {"Authorization": f"Bearer {access_token}"}
 
 
 def _detail_for(response, field: str) -> dict:
@@ -169,6 +168,58 @@ def test_changing_the_password_should_replace_the_old_one(client):
     assert response.status_code == 204, response.text
     assert _login(client, CURRENT_PASSWORD).status_code == 401
     assert _login(client, NEW_PASSWORD).status_code == 200
+
+
+def test_changing_the_password_should_kill_the_callers_access_token(client):
+    tokens = _signup(client)
+    access = tokens["access_token"]
+
+    # The access token still opens the account right up until the change.
+    before = client.get("/auth/me", headers={"Authorization": f"Bearer {access}"})
+    assert before.status_code == 200, before.text
+
+    changed = _change(client, access)
+    assert changed.status_code == 204, changed.text
+
+    # And is dead the instant it lands, not an hour later when it expires. The
+    # change bumped token_version, so this stateless JWT no longer matches — the
+    # gap that let a stolen access token outlive the password meant to lock it
+    # out. A 404 here (user missing) would be the wrong reason; it must be 401.
+    after = client.get("/auth/me", headers={"Authorization": f"Bearer {access}"})
+    assert after.status_code == 401, after.text
+
+
+def test_the_dead_access_token_should_be_rejected_on_get_current_user_routes_too(client):
+    """/me decodes for itself; the version gate must also hold on the shared
+    get_current_user dependency, which every other protected route uses."""
+    tokens = _signup(client)
+    access = tokens["access_token"]
+    # A get_current_user route, open to the founding leader before the change.
+    assert client.post("/auth/church/join-code", headers=_bearer(access)).status_code == 200
+
+    _change(client, access)
+
+    # Same token, now one version behind, on a get_current_user route: 401. If
+    # the check lived only on /me, this would rotate the church's code with a
+    # token the password change was supposed to have killed.
+    assert client.post("/auth/church/join-code", headers=_bearer(access)).status_code == 401
+
+
+def test_signing_back_in_after_a_change_should_yield_a_working_token(client):
+    """The bump must not lock the user out of the account they just re-secured.
+
+    A new login mints a token at the current version, so it has to match. If
+    access tokens stopped carrying their version, the fresh token would read as
+    version 0 against a bumped user and 401 the moment it was issued.
+    """
+    tokens = _signup(client)
+    _change(client, tokens["access_token"])
+
+    login = _login(client, NEW_PASSWORD)
+    assert login.status_code == 200, login.text
+    fresh = login.json()["tokens"]["access_token"]
+
+    assert client.get("/auth/me", headers=_bearer(fresh)).status_code == 200
 
 
 def test_changing_the_password_should_revoke_the_other_sessions(client):
