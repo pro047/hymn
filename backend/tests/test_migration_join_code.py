@@ -122,8 +122,13 @@ def _upgrade() -> None:
     command.upgrade(_alembic_config(), "head")
 
 
-def _downgrade_one() -> None:
-    command.downgrade(_alembic_config(), "-1")
+def _downgrade_before_join_code() -> None:
+    # To PREVIOUS_REVISION by name, not "-1". "-1" meant "undo the join code"
+    # only while it was head; a revision added on top of it makes "-1" undo that
+    # instead and leaves join_code — NOT NULL — in place, so the next raw seed
+    # insert (which omits it) fails. Naming the target keeps this test about the
+    # join code no matter what lands after it.
+    command.downgrade(_alembic_config(), PREVIOUS_REVISION)
 
 
 def test_upgrade_should_give_every_church_its_own_join_code(migration_db):
@@ -174,7 +179,7 @@ def test_downgrade_then_upgrade_should_hand_back_the_same_join_codes(migration_d
     _upgrade()
     before = _codes(migration_db)
 
-    _downgrade_one()
+    _downgrade_before_join_code()
     _upgrade()
 
     assert _codes(migration_db) == before
@@ -195,7 +200,7 @@ def test_upgrade_should_not_hand_a_parked_code_to_a_church_founded_meanwhile(
     _seed_church(migration_db, "church-z", "가교회")
     _upgrade()
     before = _codes(migration_db)
-    _downgrade_one()
+    _downgrade_before_join_code()
     _seed_church(migration_db, "church-a", "새교회")
     # The first draw is the collision. Waiting for a real one is not an option
     # at 1 in 32**8 — the guard would never be reached and this test would pass

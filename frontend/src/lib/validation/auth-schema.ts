@@ -28,6 +28,10 @@ const REQUIRED_MESSAGE = "필수 입력 항목입니다.";
 const PASSWORD_CASE_MESSAGE = "영문 대문자와 소문자를 모두 포함해야 합니다.";
 const AGREED_TERMS_MESSAGE = "약관 동의가 필요합니다.";
 const PASSWORD_MISMATCH_MESSAGE = "비밀번호가 일치하지 않습니다.";
+// Mirrors PASSWORD_UNCHANGED_MESSAGE in schemas/auth.py. The server files this
+// one against the model rather than a field, because it is cross-field there
+// too; checking it here is what puts it under the input the user has to change.
+const PASSWORD_UNCHANGED_MESSAGE = "새 비밀번호가 현재 비밀번호와 같습니다.";
 // Shorter than the hint under the church field, which explains *why* a code is
 // being asked for. Repeating that whole sentence under the input would put the
 // same words on screen twice with no way to tell which one is the error.
@@ -54,16 +58,22 @@ const requiredText = (max: number) =>
 // only skips a convenience.
 const emailField = z.string().trim().toLowerCase().pipe(z.string().min(1, REQUIRED_MESSAGE));
 
+// A password being set. Mirrors the NewPassword type in schemas/auth.py, and is
+// shared by signup and the change form for the reason the server shares
+// validate_password_strength: two gates on the same thing drift, and the drift
+// would let one screen set a password the other would have refused.
+const newPasswordField = z
+  .string()
+  .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
+  .max(PASSWORD_MAX_LENGTH, tooLongMessage(PASSWORD_MAX_LENGTH))
+  .regex(/[a-z]/, PASSWORD_CASE_MESSAGE)
+  .regex(/[A-Z]/, PASSWORD_CASE_MESSAGE);
+
 /** The exact body POST /auth/signup accepts. Keep 1:1 with SignupRequest. */
 export const signupSchema = z.object({
   name: requiredText(NAME_MAX_LENGTH),
   email: emailField,
-  password: z
-    .string()
-    .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
-    .max(PASSWORD_MAX_LENGTH, tooLongMessage(PASSWORD_MAX_LENGTH))
-    .regex(/[a-z]/, PASSWORD_CASE_MESSAGE)
-    .regex(/[A-Z]/, PASSWORD_CASE_MESSAGE),
+  password: newPasswordField,
   church: requiredText(NAME_MAX_LENGTH),
   // Optional here because founding a church is issued a code rather than asked
   // for one. Whether it is required for *this* signup depends on whether the
@@ -128,6 +138,12 @@ export const FIELDS_SETTLED_TOGETHER: Readonly<Record<string, readonly string[]>
   // something the form is no longer asking for.
   church: ["join_code"],
   join_code: ["church"],
+  // The password change form's two refines, same shape again. "Must differ" is
+  // filed under `new_password`, but editing `current_password` settles it just
+  // as well — that is the other half of the comparison.
+  new_password: ["new_password_confirm", "current_password"],
+  new_password_confirm: ["new_password"],
+  current_password: ["new_password"],
 };
 
 /** Shown under the password input at all times, so the rules do not have to be
@@ -136,20 +152,54 @@ export const FIELDS_SETTLED_TOGETHER: Readonly<Record<string, readonly string[]>
 export const PASSWORD_RULE_HINT =
   `${PASSWORD_MIN_LENGTH}~${PASSWORD_MAX_LENGTH}자, ` + PASSWORD_CASE_MESSAGE;
 
+// A password being offered as proof, not being set. The 128-char cap and the
+// absence of strength rules are deliberate and mirror CurrentPassword on the
+// server: a rule on this side locks out accounts that predate it.
+const currentPasswordField = z
+  .string()
+  .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
+  .max(LOGIN_PASSWORD_MAX_LENGTH, tooLongMessage(LOGIN_PASSWORD_MAX_LENGTH));
+
 /**
  * Still looser than signup in one field: the 128-char password cap exists so
  * that accounts created before the 16-char signup rule can sign in.
  */
 export const loginSchema = z.object({
   email: emailField,
-  password: z
-    .string()
-    .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
-    .max(LOGIN_PASSWORD_MAX_LENGTH, tooLongMessage(LOGIN_PASSWORD_MAX_LENGTH)),
+  password: currentPasswordField,
 });
+
+/** The exact body POST /auth/password accepts. Keep 1:1 with PasswordChangeRequest. */
+export const passwordChangeSchema = z.object({
+  current_password: currentPasswordField,
+  new_password: newPasswordField,
+});
+
+/**
+ * What the change form gates on. `new_password_confirm` has no server
+ * counterpart and follows the `password_confirm` precedent — one gate, every
+ * field reporting through the same channel.
+ *
+ * The "must differ" rule is checked here as well as on the server, and the
+ * duplication buys placement rather than safety: the server's copy is a
+ * model_validator, so its message arrives with no field attached and renders as
+ * an alert. Filed under `new_password` here, it sits under the box the user has
+ * to retype.
+ */
+export const passwordChangeFormSchema = passwordChangeSchema
+  .extend({ new_password_confirm: z.string() })
+  .refine((values) => values.new_password === values.new_password_confirm, {
+    message: PASSWORD_MISMATCH_MESSAGE,
+    path: ["new_password_confirm"],
+  })
+  .refine((values) => values.new_password !== values.current_password, {
+    message: PASSWORD_UNCHANGED_MESSAGE,
+    path: ["new_password"],
+  });
 
 export type SignupBody = z.infer<typeof signupSchema>;
 export type LoginBody = z.infer<typeof loginSchema>;
+export type PasswordChangeBody = z.infer<typeof passwordChangeSchema>;
 
 /**
  * Reshapes zod issues into the same {@link ApiError} the server path produces, so

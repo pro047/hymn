@@ -246,27 +246,37 @@ def test_rotating_a_refresh_token_twice_at_once_should_revoke_rather_than_crash(
     jti = decode_token(token)["jti"]
 
     with Session(bind=engine) as winner, Session(bind=engine) as loser:
-        # Arrange: the loser holds the row before the winner spends it, which
-        # is where a concurrent request would be. Read the row and delete the
-        # loaded object and this is where the replay slipped through — the
-        # loser's DELETE matched nothing and SQLAlchemy only warned about it,
-        # so it went on to commit a second live token family.
+        # Arrange: the loser holds the row before the winner spends it, which is
+        # where a concurrent request would be. This priming is also the trap the
+        # reuse check has to survive — the loser's identity map now holds the
+        # row with rotated_at=None, and reading rotated_at off that instance
+        # instead of off the database would report it unrotated and miss the
+        # race entirely.
         #
         # `primed` must stay bound. The identity map holds weak references, so
-        # letting the row fall out of scope collects it, the next get() goes
-        # back to the database, misses, and the test starts passing for the
-        # same trivial reason the sequential reuse test does.
+        # letting the row fall out of scope collects it and the next read goes
+        # back to the database, hiding whether the code got the answer from the
+        # stale instance or the row.
         primed = loser.get(RefreshToken, jti)
         assert primed is not None
+        assert primed.rotated_at is None
 
         rotate_refresh_token(winner, token)
 
+        # The loser lost the claim. rotated_at was stamped a moment ago, inside
+        # the grace window, so this is read as a race and refused — not as a
+        # replay that would revoke the winner's fresh token too.
         with pytest.raises(InvalidRefreshTokenError):
             rotate_refresh_token(loser, token)
 
         assert primed in loser  # the reference has to survive the assertions
 
     with Session(bind=engine) as check:
-        # Exactly one replacement token survived: the winner's.
-        assert check.query(RefreshToken).count() == 1
-        assert check.get(RefreshToken, jti) is None
+        # The winner's session is intact: its replacement token is live, and the
+        # race did NOT trigger a family revocation. The original is kept but
+        # stamped rotated, not deleted.
+        live = check.query(RefreshToken).filter(RefreshToken.rotated_at.is_(None)).all()
+        assert len(live) == 1
+        assert live[0].id != jti
+        rotated = check.get(RefreshToken, jti)
+        assert rotated is not None and rotated.rotated_at is not None

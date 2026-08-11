@@ -14,6 +14,7 @@ from app.rate_limit import (
     LOGIN_LIMIT,
     LOGOUT_LIMIT,
     ME_LIMIT,
+    PASSWORD_CHANGE_LIMIT,
     REFRESH_LIMIT,
     ROTATE_JOIN_CODE_LIMIT,
     SIGNUP_LIMIT,
@@ -30,6 +31,7 @@ from app.schemas.auth import (
     LoginResponse,
     LogoutRequest,
     NormalizedEmail,
+    PasswordChangeRequest,
     RefreshRequest,
     RefreshResponse,
     SessionResponse,
@@ -47,6 +49,7 @@ from app.services.auth import (
     InvalidRefreshTokenError,
     NotChurchLeaderError,
     authenticate,
+    change_password,
     decode_token,
     parse_bearer_token,
     register_user,
@@ -72,6 +75,11 @@ USER_MISSING_MESSAGE = "계정을 찾을 수 없습니다. 다시 로그인해 �
 # caller whether their guess was the right shape, and neither answer changes
 # what they have to do about it.
 INVALID_JOIN_CODE_MESSAGE = "초대 코드가 올바르지 않습니다. 교회 리더에게 확인해 주세요."
+# Not INVALID_CREDENTIALS_MESSAGE: on this screen the caller is already signed
+# in and is being asked about one field, so "이메일 또는" names something the
+# form never showed them. Nothing leaks by being specific here — the account is
+# already known — which is why /login cannot word itself this way.
+INVALID_CURRENT_PASSWORD_MESSAGE = "현재 비밀번호가 올바르지 않습니다."
 NOT_CHURCH_LEADER_MESSAGE = "교회 리더만 초대 코드를 관리할 수 있습니다."
 
 
@@ -177,6 +185,38 @@ def rotate_church_join_code(
     return JoinCodeResponse(code=code)
 
 
+@router.post("/password", status_code=204)
+@limiter.limit(PASSWORD_CHANGE_LIMIT)
+def change_own_password(
+    request: Request,
+    payload: PasswordChangeRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Changes the caller's password. Every session ends, this one included.
+
+    204 with no body: the caller's own tokens were revoked on the way through
+    and the client sends them to /login, so there is nothing left to say. An
+    earlier version answered with a replacement token pair; once the client
+    stopped keeping it, it was only a live credential in a response body.
+    """
+    try:
+        change_password(
+            session,
+            user=user,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+        )
+    except InvalidCredentialsError:
+        # 403, not 401, and the difference is load-bearing on the client: the
+        # web client reads a 401 as "this session is over" and answers it by
+        # refreshing the token and retrying, then signs the user out when the
+        # retry fails the same way. A typo in one field would log them out.
+        # 403 is also the truer word — the caller is authenticated, and it is
+        # this one request that is refused.
+        raise HTTPException(status_code=403, detail=INVALID_CURRENT_PASSWORD_MESSAGE) from None
+
+
 @router.post("/refresh", response_model=RefreshResponse)
 @limiter.limit(REFRESH_LIMIT)
 def refresh(request: Request, payload: RefreshRequest, session: Session = Depends(get_session)):
@@ -221,6 +261,11 @@ def me(
     user = session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail=USER_MISSING_MESSAGE)
+
+    # Same version gate as get_current_user: a token minted before the last
+    # password change or replay revocation is spent, whatever its exp still says.
+    if claims.get("tv", 0) != user.token_version:
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
     church = session.get(Church, church_id)
     if church is None:

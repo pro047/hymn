@@ -2,7 +2,15 @@ import re
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, EmailStr, Field, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 # SOURCE OF TRUTH for signup input rules.
 # frontend/src/lib/validation/auth-schema.ts mirrors these; change both together.
@@ -31,12 +39,28 @@ _HAS_CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f]")
 # The client strips that prefix and shows the rest, so these must be Korean.
 PASSWORD_CASE_MESSAGE = "영문 대문자와 소문자를 모두 포함해야 합니다."
 PASSWORD_CONTROL_MESSAGE = "비밀번호에 줄바꿈이나 탭 같은 제어 문자를 넣을 수 없습니다."
+PASSWORD_UNCHANGED_MESSAGE = "새 비밀번호가 현재 비밀번호와 같습니다."
 AGREED_TERMS_MESSAGE = "약관 동의가 필요합니다."
 
 
 def _strip(value: object) -> object:
     """Trims a str, passes anything else through for pydantic to reject."""
     return value.strip() if isinstance(value, str) else value
+
+
+def validate_password_strength(value: str) -> str:
+    """Every rule a password has to clear on its way in, in one place.
+
+    Signup and a password change share it deliberately. Two gates for the same
+    thing drift — password_confirm and church_is_registered both did — and the
+    drift here would be silent: an account could set a password its own signup
+    form would have refused.
+    """
+    if not _HAS_LOWER.search(value) or not _HAS_UPPER.search(value):
+        raise ValueError(PASSWORD_CASE_MESSAGE)
+    if _HAS_CONTROL_CHAR.search(value):
+        raise ValueError(PASSWORD_CONTROL_MESSAGE)
+    return value
 
 
 def normalize_email(value: object) -> object:
@@ -63,6 +87,22 @@ def normalize_join_code(value: object) -> object:
 TrimmedStr = Annotated[str, BeforeValidator(_strip)]
 NormalizedEmail = Annotated[EmailStr, BeforeValidator(normalize_email)]
 JoinCode = Annotated[str, BeforeValidator(normalize_join_code)]
+# A password being *set*, as opposed to one being offered as proof of identity.
+# Length stays a Field constraint and only the rest moves into the validator:
+# pydantic reports a constraint as string_too_short/string_too_long with ctx,
+# which the client reads to word its own message, while anything raised inside
+# AfterValidator arrives as value_error carrying only the sentence above. Core
+# validation runs first and skips the AfterValidator when it fails, so a short
+# password is reported as short rather than as a case violation.
+NewPassword = Annotated[
+    str,
+    Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH),
+    AfterValidator(validate_password_strength),
+]
+# A password being *checked*. Deliberately NOT PASSWORD_MAX_LENGTH and
+# deliberately not strength-checked: rules on this side lock out accounts that
+# predate the rule. The gate belongs on the way in, not on the way back.
+CurrentPassword = Annotated[str, Field(min_length=PASSWORD_MIN_LENGTH, max_length=128)]
 # The church name arrives as a query string on /auth/check-church, where nothing
 # else bounds its length. Trimmed the same way SignupRequest.church is, so the
 # lookup asks about the row a signup with that name would actually reach.
@@ -71,18 +111,13 @@ ChurchNameQuery = Annotated[TrimmedStr, Field(min_length=1, max_length=NAME_MAX_
 
 class LoginRequest(BaseModel):
     email: NormalizedEmail
-    # Deliberately NOT PASSWORD_MAX_LENGTH, and deliberately not control-char
-    # checked either. Both would lock out accounts that predate the rule; the
-    # gate belongs on the way in, not on the way back.
-    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH, max_length=128)
+    password: CurrentPassword
 
 
 class SignupRequest(BaseModel):
     name: TrimmedStr = Field(..., min_length=1, max_length=NAME_MAX_LENGTH)
     email: NormalizedEmail
-    password: str = Field(
-        ..., min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH
-    )
+    password: NewPassword
     church: TrimmedStr = Field(..., min_length=1, max_length=NAME_MAX_LENGTH)
     # Optional in the schema, required by the service — but only for a church
     # that already exists. Founding one issues the code instead of asking for
@@ -92,26 +127,31 @@ class SignupRequest(BaseModel):
     phone: TrimmedStr = Field(..., min_length=PHONE_MIN_LENGTH, max_length=PHONE_MAX_LENGTH)
     agreed_terms: bool = Field(..., description="User agreed to terms")
 
-    @field_validator("password")
-    @classmethod
-    def password_must_mix_case(cls, value: str) -> str:
-        if not _HAS_LOWER.search(value) or not _HAS_UPPER.search(value):
-            raise ValueError(PASSWORD_CASE_MESSAGE)
-        return value
-
-    @field_validator("password")
-    @classmethod
-    def password_must_be_typeable(cls, value: str) -> str:
-        if _HAS_CONTROL_CHAR.search(value):
-            raise ValueError(PASSWORD_CONTROL_MESSAGE)
-        return value
-
     @field_validator("agreed_terms")
     @classmethod
     def terms_must_be_agreed(cls, value: bool) -> bool:
         if not value:
             raise ValueError(AGREED_TERMS_MESSAGE)
         return value
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: CurrentPassword
+    new_password: NewPassword
+
+    @model_validator(mode="after")
+    def new_password_must_differ(self) -> "PasswordChangeRequest":
+        """Refuses a change that changes nothing.
+
+        Cross-field, so it cannot be a field_validator. The cost is where the
+        message lands: pydantic reports it against the model rather than a
+        field, so the client shows it as a form-level alert instead of under
+        the new-password box. The zod schema repeats the rule on the field so
+        the usual case never reaches here.
+        """
+        if self.new_password == self.current_password:
+            raise ValueError(PASSWORD_UNCHANGED_MESSAGE)
+        return self
 
 
 class EmailCheckResponse(BaseModel):

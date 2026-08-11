@@ -40,4 +40,13 @@ def get_current_user(
     user = session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
+
+    # The token is only good for the version it was minted under. A password
+    # change or a detected replay bumps user.token_version, which retires every
+    # access token issued before it — the one thing that can end a stateless JWT
+    # ahead of its exp. Missing tv reads as 0, so tokens predating the column
+    # keep working until they expire on their own rather than all 401-ing at
+    # deploy.
+    if claims.get("tv", 0) != user.token_version:
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
     return user

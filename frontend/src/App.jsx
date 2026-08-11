@@ -5,6 +5,7 @@ import { logout } from "./api/client";
 import { fetchSession } from "./api/session";
 import { Button } from "./components/ui/button";
 import { isAuthenticated } from "./lib/auth-storage";
+import AccountPage from "./pages/account-page";
 import ChurchPage from "./pages/church-page";
 import HomePage from "./pages/home-page";
 import LoginPage from "./pages/login-page";
@@ -44,6 +45,11 @@ function ProtectedHomePage() {
             <Link to="/church">교회 관리</Link>
           </Button>
         ) : null}
+        {/* No role condition, unlike the link above: a member has a password
+            too, which is why the change form is not on the church page. */}
+        <Button type="button" variant="outline" size="sm" asChild>
+          <Link to="/account">계정</Link>
+        </Button>
         <Button type="button" variant="outline" size="sm" onClick={logout}>
           로그아웃
         </Button>
@@ -58,6 +64,13 @@ function ProtectedChurchPage() {
     return <Navigate to="/login" replace />;
   }
   return <ChurchPage />;
+}
+
+function ProtectedAccountPage() {
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" replace />;
+  }
+  return <AccountPage />;
 }
 
 function LoginRoute() {
@@ -80,6 +93,7 @@ function App() {
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/signup" element={<SignupRoute />} />
       <Route path="/church" element={<ProtectedChurchPage />} />
+      <Route path="/account" element={<ProtectedAccountPage />} />
       <Route path="/" element={<ProtectedHomePage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
