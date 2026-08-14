@@ -18,7 +18,10 @@ concurrency:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    # arm64 네이티브 러너: 배포 대상(EC2 Graviton)과 같은 아키텍처라 QEMU 에뮬레이션이
+    # 필요 없다. x64 러너 + QEMU 조합은 frontend(esbuild) 빌드가 행에 가깝게 멈추는
+    # 사고가 반복됐다(2026-08-07, 2026-08-11).
+    runs-on: ubuntu-24.04-arm
     outputs:
       backend_image_uri: ${{ steps.image-uri.outputs.backend_image }}
       frontend_image_uri: ${{ steps.image-uri.outputs.frontend_image }}
@@ -38,9 +41,6 @@ jobs:
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
