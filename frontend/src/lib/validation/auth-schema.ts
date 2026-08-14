@@ -59,16 +59,31 @@ const requiredText = (max: number) =>
 // only skips a convenience.
 const emailField = z.string().trim().toLowerCase().pipe(z.string().min(1, REQUIRED_MESSAGE));
 
+// Counts code points the way Python len() does. pydantic's min/max_length count
+// code points while JS .length counts UTF-16 code units, so an astral character
+// (an emoji) weighs 2 here and 1 on the server. Counting units made this side
+// up to twice as strict: a password the server accepted at signup could be
+// refused here and never even sent — and on login there is no reset to recover
+// through.
+const codePointLength = (value: string) => [...value].length;
+
+const passwordLengthChecks = (max: number) =>
+  z
+    .string()
+    .refine((value) => codePointLength(value) >= PASSWORD_MIN_LENGTH, {
+      message: tooShortMessage(PASSWORD_MIN_LENGTH),
+    })
+    .refine((value) => codePointLength(value) <= max, { message: tooLongMessage(max) });
+
 // A password being set. Mirrors the NewPassword type in schemas/auth.py, and is
 // shared by signup and the change form for the reason the server shares
 // validate_password_strength: two gates on the same thing drift, and the drift
 // would let one screen set a password the other would have refused.
 const newPasswordField = z
   .string()
-  .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
-  .max(PASSWORD_MAX_LENGTH, tooLongMessage(PASSWORD_MAX_LENGTH))
   .regex(/[a-z]/, PASSWORD_CASE_MESSAGE)
-  .regex(/[A-Z]/, PASSWORD_CASE_MESSAGE);
+  .regex(/[A-Z]/, PASSWORD_CASE_MESSAGE)
+  .pipe(passwordLengthChecks(PASSWORD_MAX_LENGTH));
 
 /** The exact body POST /auth/signup accepts. Keep 1:1 with SignupRequest. */
 export const signupSchema = z.object({
@@ -158,11 +173,9 @@ export const PASSWORD_RULE_HINT =
 
 // A password being offered as proof, not being set. The 128-char cap and the
 // absence of strength rules are deliberate and mirror CurrentPassword on the
-// server: a rule on this side locks out accounts that predate it.
-const currentPasswordField = z
-  .string()
-  .min(PASSWORD_MIN_LENGTH, tooShortMessage(PASSWORD_MIN_LENGTH))
-  .max(LOGIN_PASSWORD_MAX_LENGTH, tooLongMessage(LOGIN_PASSWORD_MAX_LENGTH));
+// server: a rule on this side locks out accounts that predate it — which is
+// also why the cap counts code points like the server does, not UTF-16 units.
+const currentPasswordField = passwordLengthChecks(LOGIN_PASSWORD_MAX_LENGTH);
 
 /**
  * Still looser than signup in one field: the 128-char password cap exists so
