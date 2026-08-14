@@ -46,11 +46,17 @@ export type ChurchCheckResolution =
 
 /**
  * Matches what signupSchema sends and what the server stores, so one name
- * cannot occupy two cache entries or two rate-limit slots. Case is *not*
- * folded: churches.name is compared exactly, so folding here would report a
- * church as existing that the signup would then try to create.
+ * cannot occupy two cache entries or two rate-limit slots. NFC plus stripping
+ * the BOM/zero-width set mirrors normalize_church_name in schemas/auth.py —
+ * macOS pastes Korean out of filenames in NFD, and an invisible mismatch used
+ * to found a lookalike church with no invite code asked. Case is still *not*
+ * folded: churches.name is compared exactly, and the server does not fold it
+ * either.
  */
-export const normalizeChurchName = (raw: string) => raw.trim();
+const INVISIBLE_CHARS = /[\uFEFF\u200B-\u200D\u2060]/g;
+
+export const normalizeChurchName = (raw: string) =>
+  raw.replace(INVISIBLE_CHARS, "").normalize("NFC").trim();
 
 /**
  * Exported so the page can write a cache entry under the same key the plan/

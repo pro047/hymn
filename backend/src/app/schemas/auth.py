@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from datetime import datetime
 from typing import Annotated
 
@@ -79,6 +80,28 @@ def normalize_join_code(value: object) -> object:
     return value.strip().lower() if isinstance(value, str) else value
 
 
+# BOM plus the zero-width set (ZWSP/ZWNJ/ZWJ/word joiner): characters that ride
+# along invisibly when a name is copied out of a document or chat, and that
+# str.strip() does not remove.
+_INVISIBLE_CHARS = re.compile(r"[\ufeff\u200b-\u200d\u2060]")
+
+
+def normalize_church_name(value: object) -> object:
+    """Folds a church name to the one spelling lookups and storage share.
+
+    churches.name is a unique key compared byte-for-byte, so any spelling
+    difference the eye cannot see splits a congregation in two: macOS copies
+    Korean out of filenames in NFD, and a pasted name can carry a BOM. Either
+    variant used to miss the existing row, found a same-looking church with no
+    invite code asked, and make the signer-up its leader. NFC + stripping the
+    invisibles closes that; case is left alone because the name is also what
+    the church sees displayed.
+    """
+    if not isinstance(value, str):
+        return value
+    return unicodedata.normalize("NFC", _INVISIBLE_CHARS.sub("", value)).strip()
+
+
 # BeforeValidator runs ahead of the Field constraints (verified against pydantic
 # 2.x), so min_length sees the trimmed value: "   " is rejected as
 # string_too_short with ctx, which the client already words itself. Trimming
@@ -87,6 +110,7 @@ def normalize_join_code(value: object) -> object:
 TrimmedStr = Annotated[str, BeforeValidator(_strip)]
 NormalizedEmail = Annotated[EmailStr, BeforeValidator(normalize_email)]
 JoinCode = Annotated[str, BeforeValidator(normalize_join_code)]
+ChurchName = Annotated[str, BeforeValidator(normalize_church_name)]
 # A password being *set*, as opposed to one being offered as proof of identity.
 # Length stays a Field constraint and only the rest moves into the validator:
 # pydantic reports a constraint as string_too_short/string_too_long with ctx,
@@ -104,9 +128,9 @@ NewPassword = Annotated[
 # predate the rule. The gate belongs on the way in, not on the way back.
 CurrentPassword = Annotated[str, Field(min_length=PASSWORD_MIN_LENGTH, max_length=128)]
 # The church name arrives as a query string on /auth/check-church, where nothing
-# else bounds its length. Trimmed the same way SignupRequest.church is, so the
+# else bounds its length. Normalized the same way SignupRequest.church is, so the
 # lookup asks about the row a signup with that name would actually reach.
-ChurchNameQuery = Annotated[TrimmedStr, Field(min_length=1, max_length=NAME_MAX_LENGTH)]
+ChurchNameQuery = Annotated[ChurchName, Field(min_length=1, max_length=NAME_MAX_LENGTH)]
 
 
 class LoginRequest(BaseModel):
@@ -118,7 +142,7 @@ class SignupRequest(BaseModel):
     name: TrimmedStr = Field(..., min_length=1, max_length=NAME_MAX_LENGTH)
     email: NormalizedEmail
     password: NewPassword
-    church: TrimmedStr = Field(..., min_length=1, max_length=NAME_MAX_LENGTH)
+    church: ChurchName = Field(..., min_length=1, max_length=NAME_MAX_LENGTH)
     # Optional in the schema, required by the service — but only for a church
     # that already exists. Founding one issues the code instead of asking for
     # it, and a required field would make that signup impossible to word.

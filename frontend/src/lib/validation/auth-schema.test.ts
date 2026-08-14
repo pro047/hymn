@@ -79,6 +79,18 @@ describe("signupSchema", () => {
     expect(result.success).toBe(true);
     expect(result.data?.password).toBe(" Passwor1 ");
   });
+
+  it("NFD로 입력된 교회명은 NFC로 정규화해 보내야 한다", () => {
+    // Mirrors normalize_church_name in schemas/auth.py: an invisible spelling
+    // difference used to found a lookalike church with no invite code asked.
+    const decomposed = "한빛교회".normalize("NFD");
+    expect(decomposed).not.toBe("한빛교회"); // the fixture must actually differ
+
+    const result = signupSchema.safeParse(signupWith({ church: decomposed }));
+
+    expect(result.success).toBe(true);
+    expect(result.data?.church).toBe("한빛교회");
+  });
 });
 
 /**

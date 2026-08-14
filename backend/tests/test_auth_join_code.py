@@ -6,6 +6,8 @@ passes the tenancy check on every score that church owns. Signup input rules
 live in test_auth_signup.py; what is here is the gating those rules feed.
 """
 
+import unicodedata
+
 SIGNUP_PAYLOAD = {
     "name": "founder",
     "email": "founder@example.com",
@@ -201,6 +203,67 @@ def test_check_church_with_a_blank_name_should_return_422(client):
     response = client.get("/auth/check-church", params={"name": "   "})
 
     assert response.status_code == 422, response.text
+
+
+# An invisible spelling difference — NFD Korean off a macOS filename, a BOM
+# picked up in a paste — used to miss the existing row entirely. The signup
+# then founded a same-looking church, asked for no invite code, and made the
+# signer-up its leader: the exact hole the code exists to close, reopened by
+# a normalization form no one can see.
+
+KOREAN_CHURCH = "작은샘물교회"  # NFC
+
+
+def _nfd(value: str) -> str:
+    decomposed = unicodedata.normalize("NFD", value)
+    assert decomposed != value, "the fixture must actually change the spelling"
+    return decomposed
+
+
+def test_signup_with_an_nfd_spelling_should_join_not_found(client):
+    founding = client.post("/auth/signup", json=_payload(church=KOREAN_CHURCH))
+    assert founding.status_code == 201, founding.text
+    code = founding.json()["church"]["code"]
+
+    response = _join(client, code, church=_nfd(KOREAN_CHURCH))
+
+    assert response.status_code == 201, response.text
+    # A member of the existing church, not the leader of a lookalike.
+    assert response.json()["user"]["role"] == "member"
+
+
+def test_signup_with_an_nfd_spelling_and_no_code_should_return_403(client):
+    """The other half of the same pin: reaching the existing church means the
+    invite gate applies. 201 here would mean a lookalike church was founded."""
+    founding = client.post("/auth/signup", json=_payload(church=KOREAN_CHURCH))
+    assert founding.status_code == 201, founding.text
+
+    response = client.post(
+        "/auth/signup",
+        json=_payload(email="joiner@example.com", church=_nfd(KOREAN_CHURCH)),
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_check_church_should_see_through_nfd_and_a_bom(client):
+    founding = client.post("/auth/signup", json=_payload(church=KOREAN_CHURCH))
+    assert founding.status_code == 201, founding.text
+
+    response = client.get(
+        "/auth/check-church", params={"name": "\ufeff" + _nfd(KOREAN_CHURCH)}
+    )
+
+    assert response.json() == {"exists": True}
+
+
+def test_a_church_founded_with_an_nfd_name_should_be_stored_in_nfc(client):
+    """Normalizing lookups but not storage would flip the bug around: the NFD
+    row would be the one no normalized lookup can ever find again."""
+    response = client.post("/auth/signup", json=_payload(church=_nfd(KOREAN_CHURCH)))
+
+    assert response.status_code == 201, response.text
+    assert response.json()["church"]["name"] == KOREAN_CHURCH
 
 
 def test_rotating_the_invite_code_should_retire_the_old_one(client):

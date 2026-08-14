@@ -12,6 +12,7 @@
 import { z } from "zod";
 
 import type { ApiError } from "../api-error";
+import { normalizeChurchName } from "../church-check";
 
 // Mirrors the module-level constants in backend/src/app/schemas/auth.py.
 const PASSWORD_MIN_LENGTH = 8;
@@ -74,7 +75,10 @@ export const signupSchema = z.object({
   name: requiredText(NAME_MAX_LENGTH),
   email: emailField,
   password: newPasswordField,
-  church: requiredText(NAME_MAX_LENGTH),
+  // Same normalization the lookup cache keys by and the server stores (NFC,
+  // invisibles stripped) — mirrors ChurchName in schemas/auth.py. Without it
+  // the submitted spelling could miss the row the lookup just said exists.
+  church: z.string().transform(normalizeChurchName).pipe(requiredText(NAME_MAX_LENGTH)),
   // Optional here because founding a church is issued a code rather than asked
   // for one. Whether it is required for *this* signup depends on whether the
   // church already exists, which only the server knows — the refine below reads
