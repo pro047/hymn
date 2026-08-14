@@ -31,7 +31,10 @@ class ScoreCreate(BaseModel):
     # No church field, deliberately. The church comes from the caller's token,
     # so it cannot be chosen by the request — naming it here was what let an
     # unauthenticated caller write into any church, or invent a new one.
-    title: str = Field(..., max_length=255)
+    # Length caps mirror the columns (title varchar(255), file_uri varchar(1024)).
+    # Without them an oversized value passes validation and blows up at commit
+    # as a DataError, which surfaces as a 500 instead of a 422.
+    title: str = Field(..., min_length=1, max_length=255)
     week_of: date
     storage_type: Literal['s3', 'local']
 
@@ -41,7 +44,7 @@ class ScoreCreate(BaseModel):
     content_type: str | None = None
     note: str | None = None
     # local
-    file_uri: str | None = None
+    file_uri: str | None = Field(None, max_length=1024)
 
 class ScoreCreateResponse(BaseModel):
     score_id: str
@@ -62,9 +65,10 @@ class ScoreResponse(BaseModel):
     created_at: datetime
 
 class ScoreUpdate(BaseModel):
-    title: str | None = None
+    # Same caps as ScoreCreate: both write the same columns.
+    title: str | None = Field(None, min_length=1, max_length=255)
     week_of: date | None = None
-    file_uri: str | None = None
+    file_uri: str | None = Field(None, max_length=1024)
 
     # Same rule on the way in through an edit: otherwise a score could be
     # created for a valid week and then moved into a past one.
