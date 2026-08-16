@@ -79,6 +79,36 @@ describe("signupSchema", () => {
     expect(result.success).toBe(true);
     expect(result.data?.password).toBe(" Passwor1 ");
   });
+
+  it("서버가 받아주는 이모지 비밀번호로는 가입을 막지 않아야 한다", () => {
+    // pydantic counts code points; JS .length counts UTF-16 units, under which
+    // an astral character weighs double. Counting units here refused passwords
+    // the server would have taken.
+    const password = "Aa" + "😀".repeat(8); // 10 code points, 18 UTF-16 units
+
+    expect(password.length).toBeGreaterThan(16); // the trap this test pins
+    expect(signupSchema.safeParse(signupWith({ password })).success).toBe(true);
+  });
+
+  it("이모지 비밀번호도 코드포인트 기준 16자 경계를 지켜야 한다", () => {
+    const atLimit = "Aa" + "😀".repeat(14); // 16 code points
+    const pastLimit = "Aa" + "😀".repeat(15); // 17 code points
+
+    expect(signupSchema.safeParse(signupWith({ password: atLimit })).success).toBe(true);
+    expect(signupSchema.safeParse(signupWith({ password: pastLimit })).success).toBe(false);
+  });
+
+  it("NFD로 입력된 교회명은 NFC로 정규화해 보내야 한다", () => {
+    // Mirrors normalize_church_name in schemas/auth.py: an invisible spelling
+    // difference used to found a lookalike church with no invite code asked.
+    const decomposed = "한빛교회".normalize("NFD");
+    expect(decomposed).not.toBe("한빛교회"); // the fixture must actually differ
+
+    const result = signupSchema.safeParse(signupWith({ church: decomposed }));
+
+    expect(result.success).toBe(true);
+    expect(result.data?.church).toBe("한빛교회");
+  });
 });
 
 /**
@@ -240,6 +270,16 @@ describe("loginSchema", () => {
     const result = loginSchema.safeParse({ email: " Tester@Example.COM ", password: "Password1" });
 
     expect(result.data?.email).toBe("tester@example.com");
+  });
+
+  it("128 코드포인트 이하의 이모지 비밀번호로는 로그인을 막지 않아야 한다", () => {
+    // The server cap counts code points, so a legacy password of 65 astral
+    // characters is legal there while .length reads it as 130. Refusing it
+    // here would lock the account out with no reset to recover through.
+    const password = "😀".repeat(65); // 65 code points, 130 UTF-16 units
+
+    expect(password.length).toBeGreaterThan(128); // the trap this test pins
+    expect(loginSchema.safeParse({ email: "a@b.co", password }).success).toBe(true);
   });
 });
 

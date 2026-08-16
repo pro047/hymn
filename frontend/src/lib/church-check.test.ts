@@ -66,6 +66,24 @@ describe("planChurchCheck", () => {
 
     expect(plan).toEqual({ action: "query", status: "checking", key: "Grace Church" });
   });
+
+  it("NFD로 입력된 이름은 NFC 캐시 항목과 같은 키를 써야 한다", () => {
+    // macOS pastes Korean out of filenames in NFD. The server folds both
+    // spellings to NFC, so treating them as two names here would spend a
+    // second rate-limited lookup and could disagree with the server's answer.
+    const decomposed = "확인교회".normalize("NFD");
+    expect(decomposed).not.toBe("확인교회"); // the fixture must actually differ
+
+    const plan = planChurchCheck(decomposed, cacheOf({ 확인교회: true }));
+
+    expect(plan).toEqual({ action: "reuse", status: "existing", key: "확인교회" });
+  });
+
+  it("BOM이 붙어도 같은 캐시 항목을 써야 한다", () => {
+    const plan = planChurchCheck("\uFEFF확인교회", cacheOf({ 확인교회: true }));
+
+    expect(plan).toEqual({ action: "reuse", status: "existing", key: "확인교회" });
+  });
 });
 
 describe("resolveChurchCheck", () => {

@@ -127,8 +127,16 @@ export function useScores() {
   };
 
   const updateScore = async (scoreId) => {
-    const title = window.prompt("새 제목을 입력하세요.");
+    const input = window.prompt("새 제목을 입력하세요.");
+    if (input === null) return;
+    const title = input.trim();
     if (!title) return;
+    // The column is varchar(255); the server answers 422 past that, but the
+    // prompt is native so a maxlength attribute cannot cap it client-side.
+    if (title.length > 255) {
+      setError("제목은 255자 이내로 입력해주세요.");
+      return;
+    }
     try {
       const response = await apiFetch(API_PATHS.score(scoreId), {
         method: "PATCH",

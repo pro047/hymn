@@ -67,6 +67,22 @@ def _own_score_or_404(session: Session, score_id: str, user: User) -> Score:
         raise HTTPException(404, "악보를 찾을 수 없습니다.")
     return score
 
+
+def _writable_score_or_error(session: Session, score_id: str, user: User) -> Score:
+    """A score the caller may modify: their own upload, or any of the church's
+    if they lead it.
+
+    403 rather than 404 inside the church, unlike the cross-church case above:
+    a member can already read the score, so its existence is not the secret —
+    only the write is refused. Rows predating uploader_id are NULL and so fall
+    to the leader, which matches production: every legacy row was uploaded by
+    the one account that exists, and that account leads its church.
+    """
+    score = _own_score_or_404(session, score_id, user)
+    if user.role != "leader" and score.uploader_id != user.id:
+        raise HTTPException(403, "본인이 올린 악보만 수정하거나 삭제할 수 있습니다.")
+    return score
+
 @router.post('/scores', response_model=ScoreCreateResponse)
 def create_score(
     payload: ScoreCreate,
@@ -86,6 +102,7 @@ def create_score(
         key = f"scores/{church_id}/{uuid4()}.{ext}"
         score = Score(
             church_id=church_id,
+            uploader_id=user.id,
             title=payload.title,
             week_of=normalized_week_of,
             file_url=object_url(key),
@@ -118,6 +135,7 @@ def create_score(
     _reject_foreign_object_key(payload.file_uri, church_id)
     score = Score(
         church_id=church_id,
+        uploader_id=user.id,
         title=payload.title,
         week_of=normalized_week_of,
         file_url=payload.file_uri,
@@ -202,7 +220,7 @@ def update_score(
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    score = _own_score_or_404(session, score_id, user)
+    score = _writable_score_or_error(session, score_id, user)
 
     if payload.title is not None:
         score.title = payload.title
@@ -249,7 +267,7 @@ def delete_score(
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    score = _own_score_or_404(session, score_id, user)
+    score = _writable_score_or_error(session, score_id, user)
     session.delete(score)
     session.commit()
     return

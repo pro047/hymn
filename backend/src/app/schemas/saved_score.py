@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SavedScoreItem(BaseModel):
@@ -16,7 +16,8 @@ class SavedScoreItem(BaseModel):
 
 
 class SavedScoreUploadRequest(BaseModel):
-    title: str
+    # Same cap as ScoreCreate.title: writes the same scores.title varchar(255).
+    title: str = Field(..., min_length=1, max_length=255)
     filename: str
     content_type: str | None = None
 
