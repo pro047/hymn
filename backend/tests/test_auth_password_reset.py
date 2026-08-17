@@ -19,6 +19,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.login_guard import ACCOUNT_LOCKED_MESSAGE, MAX_FAILURES
 from app.main import app
 from app.models import PasswordResetToken, RefreshToken
 from app.rate_limit import PASSWORD_RESET_REQUEST_LIMIT
@@ -121,6 +122,23 @@ def _change_password(client, access_token: str, new_password: str = NEW_PASSWORD
         json={"current_password": CURRENT_PASSWORD, "new_password": new_password},
         headers={"Authorization": f"Bearer {access_token}"},
     )
+
+
+def _lock_the_account(client) -> None:
+    """Locks the account the way login_guard exists to be locked.
+
+    One wrong password per host, so the per-address limits in rate_limit.py stay
+    out of it — that spray is the whole reason the per-account counter exists,
+    and driving it through /login rather than calling record_failure keeps the
+    route's own wiring in the test.
+    """
+    for attempt in range(MAX_FAILURES):
+        refused = client.post(
+            "/auth/login",
+            json={"email": SIGNUP_PAYLOAD["email"], "password": "Wrongpass1"},
+            headers={"X-Real-IP": f"203.0.113.{attempt + 100}"},
+        )
+        assert refused.status_code == 401, f"attempt {attempt + 1}: {refused.text}"
 
 
 def test_requesting_a_reset_for_an_unknown_address_should_return_202_and_send_nothing(
@@ -249,6 +267,28 @@ def test_a_detected_refresh_replay_should_kill_an_outstanding_link(client, outbo
     assert _confirm(client, stale).status_code == 401
     # The refused confirm set nothing: the account still has the old password.
     assert _login(client, CURRENT_PASSWORD).status_code == 200
+
+
+def test_resetting_the_password_should_lift_the_account_lockout(client, outbox):
+    """Otherwise the recovery path does not recover anything.
+
+    login_guard's accepted cost is that anyone who knows an address can lock its
+    owner out for fifteen minutes; a reset is the one thing that should end that
+    early, because the caller proved they hold the mailbox. Unlike
+    change_password — where clearing the counter would let a stolen access token
+    do it — that proof comes first here, so the clear is safe.
+    """
+    _signup(client)
+    _lock_the_account(client)
+    locked = _login(client, CURRENT_PASSWORD)
+    # The message, not just the status: slowapi answers 429 too, and a test that
+    # read only the code would pass on the wrong lockout entirely.
+    assert locked.status_code == 429 and locked.json()["detail"] == ACCOUNT_LOCKED_MESSAGE
+    token = _mailed_token(client, outbox)
+
+    assert _confirm(client, token).status_code == 204
+
+    assert _login(client, NEW_PASSWORD).status_code == 200
 
 
 def test_confirming_with_the_mailed_token_should_replace_the_password(client, outbox):

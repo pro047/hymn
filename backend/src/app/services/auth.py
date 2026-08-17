@@ -726,6 +726,15 @@ def reset_password(session: Session, *, token: str, new_password: str) -> None:
     refresh token goes and token_version is bumped, which retires the access
     tokens already issued too, and nothing is handed back — the client sends
     them to /login with the password they just chose.
+
+    It also lifts any login_guard lockout on the account. change_password does
+    not, and the difference is which proof came first: there, the caller only
+    proved they hold an access token, so clearing the counter would let a stolen
+    one unlock an account its owner had locked by spraying. Here the caller
+    proved they read the mailbox, and the alternative is worse than the risk —
+    anybody who knows an address can lock it for fifteen minutes, and without
+    this the recovery path recovers nothing: the confirm answers 204 and the
+    login that follows it answers 429.
     """
     token_hash = _hash_reset_token(token)
     row = (
@@ -753,12 +762,21 @@ def reset_password(session: Session, *, token: str, new_password: str) -> None:
         session.rollback()
         raise InvalidPasswordResetTokenError
 
+    # Read off the ORM before the commit expires it: the clear below needs the
+    # address, and reaching for user.email after the commit would cost a SELECT.
+    email = user.email
+
     user.password_hash = new_hash
     revoke_all_sessions(session, user=user)
     # One commit for the spent link, the new hash and the revocations. Splitting
     # them could leave a consumed link with the old password still live, or a
     # changed password whose link is still good for a second use.
     session.commit()
+
+    # After the commit, not before: an unlock is worth nothing if the password
+    # change it accompanies never landed, and this counter is in memory with no
+    # rollback of its own to undo it.
+    login_guard.clear(email)
 
 
 def revoke_refresh_token(session: Session, refresh_token: str | None) -> None:
