@@ -59,6 +59,34 @@ data "aws_iam_policy_document" "inline" {
     ]
   }
 
+  # Absent unless an identity is passed in, the same shape as SSMAccess below.
+  # A module consumer that does not send mail gets no ses:* at all rather than a
+  # statement scoped to an empty ARN.
+  dynamic "statement" {
+    for_each = var.ses_identity_arn == "" ? [] : [1]
+    content {
+      sid    = "SesSendFromNoReply"
+      effect = "Allow"
+      # SendEmail only. SendRawEmail exists for hand-built MIME, which this app
+      # does not produce, and it is the action that would let a caller forge
+      # headers the condition below cannot see.
+      actions = [
+        "ses:SendEmail"
+      ]
+      # The identity, not "*". Scoped this way the instance can send as this
+      # domain and nothing else in the account.
+      resources = [var.ses_identity_arn]
+      condition {
+        # And within the domain, one address. Without this the role could send
+        # as any local-part — including something that reads like a person, or
+        # like the account owner — from a host that is exposed to the internet.
+        test     = "StringEquals"
+        variable = "ses:FromAddress"
+        values   = [var.ses_from_address]
+      }
+    }
+  }
+
   dynamic "statement" {
     for_each = var.allow_ssm ? [1] : []
     content {
@@ -97,6 +125,27 @@ data "aws_iam_policy_document" "inline" {
 }
 
 resource "aws_iam_policy" "inline" {
+  lifecycle {
+    precondition {
+      # Without this the SES statement is still created, with the condition
+      # "ses:FromAddress" = "" — which matches nothing, so every SendEmail is
+      # denied. deliver_password_reset swallows that, so the user is answered
+      # 202 and no mail is ever sent, with no error anywhere the operator looks.
+      # Failing the plan is the only place this is cheap to notice.
+      condition     = var.ses_identity_arn == "" || var.ses_from_address != ""
+      error_message = "ses_from_address must be set whenever an SES identity is passed in; an empty one denies every send silently."
+    }
+
+    precondition {
+      # SES authorises against the identity, so a sender outside the verified
+      # domain is refused at send time — swallowed by deliver_password_reset,
+      # so the user is answered 202 and nothing ever arrives. Same silent shape
+      # as the empty address above, same reason to fail the plan instead.
+      condition     = var.ses_domain == "" || endswith(var.ses_from_address, "@${var.ses_domain}")
+      error_message = "ses_from_address must be under ses_domain; SES rejects a sender outside the verified identity."
+    }
+  }
+
   name   = "${local.name_prefix}-ec2-inline"
   policy = data.aws_iam_policy_document.inline.json
 }

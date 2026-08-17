@@ -75,6 +75,28 @@ variable "image_bucket_allowed_origins" {
   default     = []
 }
 
+variable "ses_domain" {
+  description = "Domain to verify with SES for outbound mail (empty disables SES entirely)"
+  type        = string
+  default     = ""
+}
+
+variable "ses_from_address" {
+  description = "The single From address the app may send as; must be under ses_domain"
+  type        = string
+  default     = ""
+
+  validation {
+    # Shape only — a variable validation cannot reference another variable, so
+    # the domain match is a precondition in the iam module instead. It is not a
+    # `check` block: those emit warnings and apply anyway, and every failure
+    # mode here ends as a swallowed send rather than an error, so a warning is
+    # exactly the wrong severity.
+    condition     = var.ses_from_address == "" || can(regex("^[^@\\s]+@[^@\\s]+$", var.ses_from_address))
+    error_message = "ses_from_address must be empty or a single address like no-reply@example.com."
+  }
+}
+
 variable "rds_username" {
   description = "Master username for RDS"
   type        = string
