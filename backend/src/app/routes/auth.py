@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response
@@ -68,6 +69,28 @@ from app.services.auth import (
 from app.utils.email import EmailSender, deliver_password_reset, get_email_sender
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# The reset endpoints live on their own router because main.py mounts them only
+# when PASSWORD_RESET_ENABLED says to. Not registering beats a dependency that
+# answers 404: an unmounted route is absent from /openapi.json too, so the
+# feature is invisible rather than visibly switched off.
+password_reset_router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Off unless the deployment says otherwise, and the default is the whole point.
+# get_email_sender still returns the console sender, which writes the reset link
+# — the entire credential — to the application log. In dev that log is how the
+# round trip is completed; in production it is a copy of every reset link the
+# app has ever minted, readable by anyone who can reach `docker logs` or the log
+# pipeline, in exchange for a feature that delivers no mail to anybody. So the
+# switch is opt-in and stays off until the SES adapter lands.
+#
+# Same spelling as S3_FORCE_PATH_STYLE in utils/s3.py: a bare truthiness test
+# would read "false" as on.
+PASSWORD_RESET_ENABLED = os.getenv("PASSWORD_RESET_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # Every `detail` here is rendered straight to the user: api-error.ts shows the
 # string as-is for a non-422 body, so an English one reaches the screen in
@@ -232,7 +255,7 @@ def change_own_password(
 # FastAPI would render for a route returning None. An empty body is part of the
 # uniform answer: whatever is in it, both callers must get the same bytes, and
 # nothing is the easiest same.
-@router.post("/password-reset/request", status_code=202, response_class=Response)
+@password_reset_router.post("/password-reset/request", status_code=202, response_class=Response)
 @limiter.limit(PASSWORD_RESET_REQUEST_LIMIT)
 def request_password_reset(
     request: Request,
@@ -260,7 +283,7 @@ def request_password_reset(
         )
 
 
-@router.post("/password-reset/confirm", status_code=204)
+@password_reset_router.post("/password-reset/confirm", status_code=204)
 @limiter.limit(PASSWORD_RESET_CONFIRM_LIMIT)
 def confirm_password_reset(
     request: Request,

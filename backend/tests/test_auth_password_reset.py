@@ -13,8 +13,12 @@ one 422 below exists only to prove the type is shared and has not been forked.
 """
 
 import hashlib
+import json
 import logging
+import os
 import re
+import subprocess
+import sys
 from datetime import timedelta
 
 import pytest
@@ -23,8 +27,13 @@ from app.login_guard import ACCOUNT_LOCKED_MESSAGE, MAX_FAILURES
 from app.main import app
 from app.models import PasswordResetToken, RefreshToken
 from app.rate_limit import PASSWORD_RESET_REQUEST_LIMIT
+from app.routes.auth import password_reset_router
+from app.routes.auth import router as auth_router
 from app.services.auth import REFRESH_REUSE_GRACE_SECONDS, decode_token
 from app.utils.email import get_email_sender
+
+# The subprocess below gets no conftest, so it needs src on the path explicitly.
+SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 
 RESET_REQUESTS_PER_HOUR = int(PASSWORD_RESET_REQUEST_LIMIT.split("/")[0])
 
@@ -457,6 +466,50 @@ def test_the_console_sender_should_log_a_usable_link(client, caplog):
     found = TOKEN_IN_LINK.search(logged)
     assert found, logged
     assert _confirm(client, found.group(1)).status_code == 204
+
+
+def test_the_reset_routes_should_be_absent_when_the_flag_is_off():
+    """The gate is a deployment control, so it is tested as one.
+
+    In a subprocess because the flag is read at import time: this process has
+    already built `app` with the flag on (conftest sets it), and reloading the
+    modules underneath a live TestClient to see the other branch would be a
+    worse test than starting a clean interpreter.
+
+    Absence, not a 404 handler. An unmounted route is missing from
+    /openapi.json too, so a scanner reading the schema never learns the endpoint
+    exists — and the console sender cannot be reached to write a live reset link
+    into the production log.
+    """
+    # Read off the OpenAPI schema rather than app.routes: it is the published
+    # surface the docstring above makes a claim about, and app.routes also holds
+    # mount objects that carry no path at all.
+    probe = "import json; from app.main import app; print(json.dumps(sorted(app.openapi()['paths'])))"
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        env={**os.environ, "PASSWORD_RESET_ENABLED": "false", "PYTHONPATH": SRC_DIR},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    paths = json.loads(result.stdout)
+    assert not [path for path in paths if path.startswith("/auth/password-reset")], paths
+    # The app was really built, so the assertion above is absence and not a
+    # probe that quietly failed to import anything.
+    assert "/auth/login" in paths
+
+
+def test_the_always_on_router_should_not_carry_the_reset_routes():
+    """What makes the gate above possible, pinned separately.
+
+    The two routers are the only thing keeping /auth/login and
+    /auth/password-reset independently mountable. Move one reset route back onto
+    `router` for convenience and the flag still reads true in every test — the
+    endpoint would simply ship unconditionally, and nothing else would notice.
+    """
+    assert not [route for route in auth_router.routes if "password-reset" in route.path]
+    assert [route for route in password_reset_router.routes if "password-reset" in route.path]
 
 
 def test_reset_request_burst_past_the_limit_should_return_429(client, outbox):

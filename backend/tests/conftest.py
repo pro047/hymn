@@ -17,6 +17,10 @@ os.environ.setdefault("AUTH_SECRET", "test-secret")
 os.environ.setdefault("S3_BUCKET", "test-bucket")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
+# Production defaults this off (see routes/auth.py). The suite turns it on so the
+# reset routes are mounted; that they are *absent* when it is off is covered by
+# test_auth_password_reset.py, which reads the flag in a subprocess.
+os.environ["PASSWORD_RESET_ENABLED"] = "true"
 
 import pytest
 from alembic import command
