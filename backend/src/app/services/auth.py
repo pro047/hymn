@@ -561,8 +561,20 @@ def revoke_all_sessions(session: Session, *, user: User) -> None:
     Bumping token_version retires those too: each carries the version it was
     minted under, and get_current_user refuses any that no longer match. Does
     not commit — the caller owns the transaction boundary.
+
+    An outstanding reset link goes with them. It is not a session, but it is the
+    same kind of thing — access to the account, already granted, sitting
+    somewhere out of our sight — and every caller of this function is saying
+    "whatever is outstanding, end it". Leaving it out made the obvious defence
+    useless: an attacker who copied the link out of the mailbox and waited could
+    still take the account for the rest of the TTL *after* the owner noticed and
+    changed their password, which is precisely when the copy stops being
+    something the owner can do anything about.
     """
     revoke_all_refresh_tokens(session, user_id=user.id)
+    session.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete(
+        synchronize_session=False
+    )
     user.token_version += 1
 
 

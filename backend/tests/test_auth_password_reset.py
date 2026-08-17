@@ -15,12 +15,14 @@ one 422 below exists only to prove the type is shared and has not been forked.
 import hashlib
 import logging
 import re
+from datetime import timedelta
 
 import pytest
 
 from app.main import app
-from app.models import PasswordResetToken
+from app.models import PasswordResetToken, RefreshToken
 from app.rate_limit import PASSWORD_RESET_REQUEST_LIMIT
+from app.services.auth import REFRESH_REUSE_GRACE_SECONDS, decode_token
 from app.utils.email import get_email_sender
 
 RESET_REQUESTS_PER_HOUR = int(PASSWORD_RESET_REQUEST_LIMIT.split("/")[0])
@@ -113,6 +115,14 @@ def _mailed_token(client, outbox) -> str:
     return _token_from(outbox)
 
 
+def _change_password(client, access_token: str, new_password: str = NEW_PASSWORD):
+    return client.post(
+        "/auth/password",
+        json={"current_password": CURRENT_PASSWORD, "new_password": new_password},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+
 def test_requesting_a_reset_for_an_unknown_address_should_return_202_and_send_nothing(
     client, outbox, db_session
 ):
@@ -184,6 +194,61 @@ def test_a_second_request_should_invalidate_the_first_link(client, outbox, db_se
     assert db_session.query(PasswordResetToken).count() == 1
     assert _confirm(client, first).status_code == 401
     assert _confirm(client, second).status_code == 204
+
+
+def test_changing_the_password_should_invalidate_an_outstanding_link(
+    client, outbox, db_session
+):
+    """The defence a user reaches for first has to actually defend.
+
+    Somebody with a moment in the mailbox can copy the link and sit on it. The
+    owner notices, changes their password — and until the link dies with that
+    change, the copy is still good for the rest of the TTL and hands the account
+    over *after* the owner locked it down. A link is a pending grant of access
+    like a session is, so it goes where the sessions go.
+    """
+    tokens = _signup(client)
+    stale = _mailed_token(client, outbox)
+
+    assert _change_password(client, tokens["access_token"]).status_code == 204
+
+    assert _confirm(client, stale, new_password="Attacker1").status_code == 401
+    assert db_session.query(PasswordResetToken).count() == 0
+    # And the refused confirm set nothing: the live password is the owner's.
+    assert _login(client, NEW_PASSWORD).status_code == 200
+    assert _login(client, "Attacker1").status_code == 401
+
+
+def test_a_detected_refresh_replay_should_kill_an_outstanding_link(client, outbox, db_session):
+    """The same sweep, reached from the other caller that runs it.
+
+    revoke_all_sessions is where the link now dies, and three paths call it —
+    so a detected replay ends a pending reset too. That is intended: a replay is
+    the theft signal, and a link sitting in a mailbox is one more thing already
+    outstanding. It is pinned here because it is *not* what the test above would
+    notice: move the delete down into change_password and that one still passes
+    while this behaviour silently disappears.
+
+    The cost is real and accepted — a user who requested a link, and whose stale
+    refresh token is then replayed, finds the link dead and has to ask again.
+    """
+    tokens = _signup(client)
+    original = tokens["refresh_token"]
+    assert client.post("/auth/refresh", json={"refresh_token": original}).status_code == 200
+    stale = _mailed_token(client, outbox)
+
+    # Aged rather than slept, the way test_auth_refresh.py does it: within the
+    # grace window a reuse is two tabs racing, past it it is a replay.
+    row = db_session.get(RefreshToken, decode_token(original)["jti"])
+    row.rotated_at = row.rotated_at - timedelta(seconds=REFRESH_REUSE_GRACE_SECONDS + 60)
+    db_session.flush()
+
+    assert client.post("/auth/refresh", json={"refresh_token": original}).status_code == 401
+
+    assert db_session.query(PasswordResetToken).count() == 0
+    assert _confirm(client, stale).status_code == 401
+    # The refused confirm set nothing: the account still has the old password.
+    assert _login(client, CURRENT_PASSWORD).status_code == 200
 
 
 def test_confirming_with_the_mailed_token_should_replace_the_password(client, outbox):
