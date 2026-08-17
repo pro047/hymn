@@ -78,6 +78,17 @@ LOGIN_LIMIT = "10/minute"
 # so a stolen access token cannot lock the real owner out of /login — which
 # leaves this the one credential path with no per-account counter behind it.
 PASSWORD_CHANGE_LIMIT = "10/minute"
+# Unauthenticated, and every accepted call sends mail to somebody who did not
+# ask for it — the limit is as much about not being a spam relay as about the
+# endpoint itself. An hour rather than a minute because a person who really has
+# forgotten their password requests one link, waits for mail, and at worst asks
+# again: five in an hour is already generous for that, and a per-minute budget
+# would leave a mailbox floodable at 300 messages an hour.
+PASSWORD_RESET_REQUEST_LIMIT = "5/hour"
+# The confirm side is not in the same danger — a token is 32 random bytes, so
+# guessing is not a threat model — but each attempt spends a bcrypt round on an
+# unauthenticated route, which is worth capping on its own.
+PASSWORD_RESET_CONFIRM_LIMIT = "10/minute"
 SIGNUP_LIMIT = "5/minute"
 REFRESH_LIMIT = "20/minute"
 LOGOUT_LIMIT = "20/minute"
