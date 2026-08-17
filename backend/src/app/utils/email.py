@@ -10,17 +10,21 @@ monkeypatch the third.
 So the transport is an object with one method, resolved through
 `get_email_sender` as a FastAPI dependency: production picks it from the
 environment, and a test overrides it the same way it already overrides the
-database session. The SES implementation lands in the next commit; until then
-the console sender is what both dev and production get, which is safe to deploy
-because a link printed to the log is a link nobody receives — the flow is not
-reachable from the UI yet either.
+database session.
+
+Two switches, and they are not the same switch. `PASSWORD_RESET_ENABLED`
+(routes/auth.py) decides whether the endpoints exist at all; `EMAIL_SENDER` here
+decides what carries the mail. `require_deliverable_transport` below is what
+stops them from drifting into the one combination that leaks credentials —
+production, feature on, console transport.
 """
 
 import logging
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +80,180 @@ class ConsoleEmailSender:
         )
 
 
+class SesEmailSender:
+    """Sends through Amazon SES.
+
+    The client is injected rather than built here so a test can hand in a stub
+    and assert what SES would have been asked to do. Building it inside `send`
+    would leave the request shape — which is the only interesting thing in this
+    class — verifiable solely against the real AWS API.
+    """
+
+    def __init__(self, client, *, from_address: str):
+        self._client = client
+        self._from_address = from_address
+
+    def send(self, message: EmailMessage) -> None:
+        # Charset spelled out on both parts. The subject is Korean and the body
+        # always is; SES defaults to 7-bit US-ASCII and would mangle every
+        # message this app sends.
+        self._client.send_email(
+            FromEmailAddress=self._from_address,
+            Destination={"ToAddresses": [message.to]},
+            Content={
+                "Simple": {
+                    "Subject": {"Data": message.subject, "Charset": "UTF-8"},
+                    "Body": {"Text": {"Data": message.body, "Charset": "UTF-8"}},
+                }
+            },
+        )
+
+
+class TransportMisconfigured(RuntimeError):
+    """The configured transport cannot deliver mail where it is being asked to."""
+
+
+def _console_in_production_message(app_env: str) -> str:
+    return (
+        f"PASSWORD_RESET_ENABLED is on and APP_ENV={app_env}, but EMAIL_SENDER is not 'ses'. "
+        "The console sender writes the whole reset link — the credential itself — to the "
+        "application log, and delivers mail to nobody. Set EMAIL_SENDER=ses with "
+        "SES_FROM_ADDRESS, or turn PASSWORD_RESET_ENABLED off."
+    )
+
+
+# Bounded on purpose. deliver_password_reset is a sync background task, so it
+# runs in anyio's threadpool — the same pool the sync route handlers use. On
+# boto3's defaults (60s connect, 60s read, 5 attempts) one unreachable SES
+# endpoint would hold a worker for minutes and drag down throughput on endpoints
+# that have nothing to do with mail. Worst case here is ~30s.
+_SES_TIMEOUTS = {"connect_timeout": 5, "read_timeout": 10, "max_attempts": 2}
+
+
+@lru_cache(maxsize=1)
+def _ses_client():
+    """Built once. boto3 clients are thread-safe and creating one costs a
+    config/credential resolution, which is not worth paying per request.
+
+    Cached, so AWS_REGION is read once per process — it is deployment config,
+    not something that changes under a running app.
+    """
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "sesv2",
+        region_name=os.getenv("AWS_REGION", "ap-northeast-2"),
+        config=Config(
+            connect_timeout=_SES_TIMEOUTS["connect_timeout"],
+            read_timeout=_SES_TIMEOUTS["read_timeout"],
+            retries={"max_attempts": _SES_TIMEOUTS["max_attempts"], "mode": "standard"},
+        ),
+    )
+
+
 def get_email_sender() -> EmailSender:
-    """The transport for this request. A FastAPI dependency, so tests override it."""
+    """The transport for this request. A FastAPI dependency, so tests override it.
+
+    Read from the environment on every call rather than into a module constant.
+    PASSWORD_RESET_URL_BASE above is a constant because it is one value read
+    once; this is a *selector*, and a constant would make every test of the
+    selection need a module reload.
+    """
+    if os.getenv("EMAIL_SENDER", "console").strip().lower() == "ses":
+        from_address = os.getenv("SES_FROM_ADDRESS", "").strip()
+        if not from_address:
+            # Refused rather than defaulted. SES rejects an unverified sender
+            # anyway, and deliver_password_reset swallows the failure — so a
+            # guessed default would fail silently, once per user, forever.
+            raise TransportMisconfigured("EMAIL_SENDER=ses requires SES_FROM_ADDRESS")
+        return SesEmailSender(_ses_client(), from_address=from_address)
     return ConsoleEmailSender()
+
+
+def _require_usable_link_base() -> None:
+    """A delivered mail with an undeliverable link is the worst of both.
+
+    PASSWORD_RESET_URL_BASE defaults to localhost because that is what dev
+    needs. Once SES is carrying real mail, an unset base means the user gets a
+    genuine, DKIM-signed message whose only link points at their own machine —
+    and by the time they work that out the token has expired and the retry is
+    behind a 5/hour limit. Nothing else in the flow would notice.
+    """
+    parsed = urlparse(PASSWORD_RESET_URL_BASE.strip())
+    local = {"localhost", "127.0.0.1", "::1", ""}
+    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "") in local:
+        raise TransportMisconfigured(
+            f"PASSWORD_RESET_URL_BASE is {PASSWORD_RESET_URL_BASE!r}, which no recipient "
+            "can open. Set it to the public reset page, e.g. "
+            "https://www.score-hymn.com/reset-password."
+        )
+
+
+# Both are demanded explicitly rather than defaulted, because this function is
+# the one place that must not be disarmable by omission. APP_ENV in particular
+# is read by nothing else in the backend — it has no other consumer that would
+# notice it going missing from the deployment's env file, so an absent or
+# misspelled value would silently turn the production branch below into a no-op.
+_KNOWN_APP_ENVS = frozenset({"production", "development", "test"})
+_KNOWN_SENDERS = frozenset({"console", "ses"})
+
+
+def require_deliverable_transport() -> None:
+    """Refuses to serve the reset flow unless mail can actually arrive.
+
+    Called from main.py inside the PASSWORD_RESET_ENABLED branch, so it can only
+    fire when somebody deliberately turned the feature on. Several switches
+    guard this flow and nothing else made them agree: the flag could be flipped
+    in production while EMAIL_SENDER stayed at its default, which is precisely
+    the configuration that turns the application log into a store of live reset
+    links for every account. Failing at import is loud; the alternative — a 500
+    per request — is a line in a log nobody reads, next to the links.
+
+    Every branch here fails closed, and that is the whole design. Two earlier
+    versions did not:
+
+    - one tested EMAIL_SENDER alone and let a missing SES_FROM_ADDRESS through,
+      so the app booted, the route mounted, and every request 500'd when the
+      dependency resolved. Checking a selector is not the same as checking that
+      the thing it selects exists — hence get_email_sender() is *called*.
+    - one defaulted APP_ENV to "development", so a deployment whose env file
+      simply lacked APP_ENV skipped the production branch entirely. The outermost
+      check was the only one that failed open, which is the worst place for it.
+
+    Development is left alone deliberately. The console sender *is* the dev
+    round trip: the link in the container log is how the flow gets completed
+    with no mail infrastructure at all. It just has to be asked for by name.
+    """
+    app_env = os.getenv("APP_ENV", "").strip().lower()
+    if app_env not in _KNOWN_APP_ENVS:
+        raise TransportMisconfigured(
+            f"APP_ENV is {app_env!r}; expected one of {sorted(_KNOWN_APP_ENVS)}. "
+            "PASSWORD_RESET_ENABLED is on, and which transport is safe depends on "
+            "this value — it is not allowed to be absent or guessed."
+        )
+
+    sender = os.getenv("EMAIL_SENDER", "").strip().lower()
+    if sender not in _KNOWN_SENDERS:
+        # No default. The console sender logs the reset link, so "unset" must
+        # never resolve to it while the feature is on.
+        raise TransportMisconfigured(
+            f"EMAIL_SENDER is {sender!r}; expected one of {sorted(_KNOWN_SENDERS)}. "
+            "PASSWORD_RESET_ENABLED is on, so the transport has to be chosen "
+            "explicitly rather than fallen back to."
+        )
+
+    if sender == "console":
+        if app_env == "production":
+            raise TransportMisconfigured(_console_in_production_message(app_env))
+        return
+
+    # Raises TransportMisconfigured on its own if SES_FROM_ADDRESS is missing.
+    get_email_sender()
+    if app_env == "production":
+        # Not in dev: pointing a real SES send at a localhost link is exactly how
+        # the transport gets exercised end to end before the page exists.
+        _require_usable_link_base()
 
 
 def password_reset_link(token: str) -> str:
@@ -120,6 +295,14 @@ def deliver_password_reset(sender: EmailSender, *, to: str, token: str) -> None:
     try:
         sender.send(password_reset_message(to=to, token=token))
     except Exception:
-        # No address, no token: this line reaches the same log a support ticket
-        # would quote. That the send failed is all it may say.
+        # The message says nothing, but exc_info carries a traceback and the
+        # provider's own error text — and SES puts the recipient in it, e.g.
+        # "Email address is not verified. The following identities failed the
+        # check in region AP-NORTHEAST-2: <address>". So this line can hold an
+        # address. It never holds the token: the token is not an argument to
+        # anything that raises here, and the URL is built inside the message.
+        #
+        # Kept as exception() rather than error() anyway. Without the traceback
+        # a swallowed failure is indistinguishable from a successful send, and
+        # this is the only record that a user was told 202 and got nothing.
         logger.exception("Password reset mail could not be delivered")

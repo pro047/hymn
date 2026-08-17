@@ -21,6 +21,11 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 # reset routes are mounted; that they are *absent* when it is off is covered by
 # test_auth_password_reset.py, which reads the flag in a subprocess.
 os.environ["PASSWORD_RESET_ENABLED"] = "true"
+# With the flag on, require_deliverable_transport refuses to let the app import
+# unless both of these are named explicitly — no defaults, so a deployment
+# cannot disarm the guard by leaving them out. The suite has to say the same.
+os.environ["APP_ENV"] = "test"
+os.environ["EMAIL_SENDER"] = "console"
 
 import pytest
 from alembic import command

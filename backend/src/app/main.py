@@ -10,6 +10,7 @@ from app.routes.auth import PASSWORD_RESET_ENABLED, password_reset_router
 from app.routes.auth import router as auth_router
 from app.routes.saved_score import router as saved_score_router
 from app.routes.score import router as score_router
+from app.utils.email import require_deliverable_transport
 
 app = FastAPI(title="Hymn Backend")
 
@@ -48,6 +49,9 @@ app.include_router(score_router)
 app.include_router(auth_router)
 app.include_router(saved_score_router)
 if PASSWORD_RESET_ENABLED:
+    # Before the mount, not after: if the transport cannot deliver in this
+    # environment the route must not come into existence at all.
+    require_deliverable_transport()
     app.include_router(password_reset_router)
 
 @app.get("/health")
