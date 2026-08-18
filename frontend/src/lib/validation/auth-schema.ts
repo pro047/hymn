@@ -214,9 +214,47 @@ export const passwordChangeFormSchema = passwordChangeSchema
     path: ["new_password"],
   });
 
+/** The exact body POST /auth/password-reset/request accepts. 1:1 with PasswordResetRequest. */
+export const passwordResetRequestSchema = z.object({ email: emailField });
+
+/**
+ * The exact body POST /auth/password-reset/confirm accepts. Keep 1:1 with
+ * PasswordResetConfirm.
+ *
+ * The token is checked for presence and nothing else, deliberately unlike the
+ * server's 16..256 bound. It arrives from a link rather than from typing, so a
+ * length rule here could only ever reject a token the server would have
+ * accepted — and the one case that produces is the server changing how long a
+ * token is, which would then be refused on this side before it was ever sent.
+ * `new_password` reuses the signup field for the reason the server reuses
+ * NewPassword: two gates on the same thing drift apart.
+ */
+export const passwordResetSchema = z.object({
+  token: z.string().trim().min(1, REQUIRED_MESSAGE),
+  new_password: newPasswordField,
+});
+
+/**
+ * What the reset form gates on. Same shape as the change form minus
+ * `current_password` — a reset proves identity with the mailed link instead, so
+ * there is no old password to ask for and nothing to compare against.
+ *
+ * The `FIELDS_SETTLED_TOGETHER` entries above already cover this form: the
+ * `current_password` name they list is simply absent here, and clearing a field
+ * that carries no error is a no-op.
+ */
+export const passwordResetFormSchema = passwordResetSchema
+  .extend({ new_password_confirm: z.string() })
+  .refine((values) => values.new_password === values.new_password_confirm, {
+    message: PASSWORD_MISMATCH_MESSAGE,
+    path: ["new_password_confirm"],
+  });
+
 export type SignupBody = z.infer<typeof signupSchema>;
 export type LoginBody = z.infer<typeof loginSchema>;
 export type PasswordChangeBody = z.infer<typeof passwordChangeSchema>;
+export type PasswordResetRequestBody = z.infer<typeof passwordResetRequestSchema>;
+export type PasswordResetBody = z.infer<typeof passwordResetSchema>;
 
 /**
  * Reshapes zod issues into the same {@link ApiError} the server path produces, so
