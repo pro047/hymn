@@ -87,6 +87,35 @@ class RefreshToken(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
 
+class PasswordResetToken(Base):
+    """One outstanding reset link for one account.
+
+    The token itself is never stored — only its SHA-256 — so a dump of this
+    table cannot be turned back into a working link. Hashing rather than
+    bcrypt: the value is 32 bytes of `secrets`, so there is nothing to brute
+    force and a slow hash would only cost the confirm route ~200ms.
+
+    Rows are deleted when spent or superseded rather than kept and flagged. A
+    refresh token is soft-deleted so a replay stays visible, but a reset link
+    has no session to protect after the fact — presenting a spent one is
+    answered the same way as presenting garbage, so there is nothing the extra
+    row would let us say.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    # Indexed because every request deletes this user's outstanding tokens
+    # first; Postgres does not index a foreign key on its own.
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 64 hex characters, unique so a lookup can claim the row in one statement.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+
 class Score(Base):
     __tablename__ = "scores"
 

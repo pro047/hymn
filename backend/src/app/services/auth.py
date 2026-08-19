@@ -1,3 +1,4 @@
+import hashlib
 import os
 import secrets
 import uuid
@@ -12,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import login_guard
-from app.models import Church, RefreshToken, User, generate_join_code
+from app.models import Church, PasswordResetToken, RefreshToken, User, generate_join_code
 from app.schemas.auth import SignupRequest
 
 ACCESS_TOKEN_EXPIRES_IN_SECONDS = 60 * 60
@@ -560,8 +561,20 @@ def revoke_all_sessions(session: Session, *, user: User) -> None:
     Bumping token_version retires those too: each carries the version it was
     minted under, and get_current_user refuses any that no longer match. Does
     not commit — the caller owns the transaction boundary.
+
+    An outstanding reset link goes with them. It is not a session, but it is the
+    same kind of thing — access to the account, already granted, sitting
+    somewhere out of our sight — and every caller of this function is saying
+    "whatever is outstanding, end it". Leaving it out made the obvious defence
+    useless: an attacker who copied the link out of the mailbox and waited could
+    still take the account for the rest of the TTL *after* the owner noticed and
+    changed their password, which is precisely when the copy stops being
+    something the owner can do anything about.
     """
     revoke_all_refresh_tokens(session, user_id=user.id)
+    session.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete(
+        synchronize_session=False
+    )
     user.token_version += 1
 
 
@@ -613,6 +626,157 @@ def change_password(
     # live and every old session still is too; committing the revocations first
     # would sign everyone out over a change that then failed to land.
     session.commit()
+
+
+class InvalidPasswordResetTokenError(AuthError):
+    """One error for unknown, expired and already-spent reset links alike.
+
+    Same reasoning as InvalidRefreshTokenError: the caller's next move is to
+    request a fresh link whichever it was, and telling them which would say
+    whether a link they hold was ever real.
+    """
+
+
+# Half an hour. Long enough to walk from the request to a mail client on another
+# device, short enough that a link left sitting in an inbox — the place these
+# leak from — is usually already dead by the time anyone else reads it.
+PASSWORD_RESET_TOKEN_TTL_SECONDS = 30 * 60
+# 32 bytes from secrets, i.e. 256 bits. The token is the entire proof of email
+# ownership, so it is sized like a credential rather than like a code somebody
+# has to retype — nobody types this one, it arrives as a link.
+PASSWORD_RESET_TOKEN_BYTES = 32
+
+
+@dataclass(frozen=True)
+class PasswordResetGrant:
+    """A minted link, carried out to the mailer. Read before the commit, like
+    AuthResult, so the caller never touches an expired ORM attribute."""
+
+    email: str
+    token: str
+
+
+def _hash_reset_token(token: str) -> str:
+    """What actually goes in the database.
+
+    SHA-256 and not bcrypt: bcrypt exists to make guessing a *low-entropy*
+    secret expensive, and this one is 256 random bits — there is nothing to
+    guess. A slow hash here would only add ~200ms to every confirm.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def begin_password_reset(session: Session, *, email: str) -> PasswordResetGrant | None:
+    """Mints a reset link for the address, or None if nobody owns it.
+
+    None rather than an exception, because "no such account" is not an error
+    here: the route answers 202 either way and simply has nothing to send. The
+    address is deliberately not disclosed anywhere else in the flow.
+
+    Any link already outstanding for the account is deleted first. Two live
+    links would mean an old one — perhaps the one that was intercepted, which is
+    why the user is here — keeps working after the user asked for a new one.
+    """
+    user = session.query(User).filter(User.email == email).first()
+    if user is None:
+        return None
+
+    session.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id
+    ).delete(synchronize_session=False)
+
+    token = secrets.token_urlsafe(PASSWORD_RESET_TOKEN_BYTES)
+    session.add(
+        PasswordResetToken(
+            user_id=user.id,
+            token_hash=_hash_reset_token(token),
+            expires_at=_naive_utc_now() + timedelta(seconds=PASSWORD_RESET_TOKEN_TTL_SECONDS),
+        )
+    )
+    # Read off the local and the ORM before the commit expires them: the mailer
+    # runs after this returns, and the address it needs must not cost a SELECT
+    # on a session the request has already finished with.
+    grant = PasswordResetGrant(email=user.email, token=token)
+    session.commit()
+    return grant
+
+
+def _claim_password_reset_token(session: Session, *, token_hash: str) -> int:
+    """Atomically spends the link. 1 if we got it, 0 if somebody else did.
+
+    A conditional DELETE, so single-use survives two requests arriving together:
+    under READ COMMITTED the loser blocks on the winner's row lock, re-reads
+    after the commit, finds nothing and deletes nothing. Checking "does the row
+    exist" and then deleting it would leave a gap in which both requests set a
+    password — and only one of them is the person who read the mail.
+    """
+    return (
+        session.query(PasswordResetToken)
+        .filter(PasswordResetToken.token_hash == token_hash)
+        .delete(synchronize_session=False)
+    )
+
+
+def reset_password(session: Session, *, token: str, new_password: str) -> None:
+    """Sets a new password from a mailed link, and ends every session.
+
+    Unlike change_password there is no current password to prove and no session
+    to keep: the caller may well be someone who was locked out, and the reason
+    they are here may be that somebody else has their old credentials. So every
+    refresh token goes and token_version is bumped, which retires the access
+    tokens already issued too, and nothing is handed back — the client sends
+    them to /login with the password they just chose.
+
+    It also lifts any login_guard lockout on the account. change_password does
+    not, and the difference is which proof came first: there, the caller only
+    proved they hold an access token, so clearing the counter would let a stolen
+    one unlock an account its owner had locked by spraying. Here the caller
+    proved they read the mailbox, and the alternative is worse than the risk —
+    anybody who knows an address can lock it for fifteen minutes, and without
+    this the recovery path recovers nothing: the confirm answers 204 and the
+    login that follows it answers 429.
+    """
+    token_hash = _hash_reset_token(token)
+    row = (
+        session.query(PasswordResetToken)
+        .filter(PasswordResetToken.token_hash == token_hash)
+        .first()
+    )
+    if row is None or row.expires_at <= _naive_utc_now():
+        raise InvalidPasswordResetTokenError
+
+    user = session.get(User, row.user_id)
+    if user is None:
+        # The FK is ON DELETE CASCADE, so this is all but unreachable; it is
+        # here because the alternative is an AttributeError on a live route.
+        raise InvalidPasswordResetTokenError
+
+    # Before the claim below, so the ~200ms bcrypt is not held across the row
+    # lock that the DELETE takes (2-D #9's rule).
+    new_hash = hash_password(new_password)
+
+    if _claim_password_reset_token(session, token_hash=token_hash) != 1:
+        # Another request spent the link between the read and here. Rolled back
+        # rather than allowed through: it is one use, and the other caller has
+        # already had it.
+        session.rollback()
+        raise InvalidPasswordResetTokenError
+
+    # Read off the ORM before the commit expires it: the clear below needs the
+    # address, and reaching for user.email after the commit would cost a SELECT.
+    email = user.email
+
+    user.password_hash = new_hash
+    revoke_all_sessions(session, user=user)
+    # One commit for the spent link, the new hash and the revocations. Splitting
+    # them could leave a consumed link with the old password still live, or a
+    # changed password whose link is still good for a second use.
+    session.commit()
+
+    # After the commit, not before: an unlock is worth nothing if the password
+    # change it accompanies never landed, and this counter is in memory with no
+    # rollback of its own to undo it.
+    login_guard.clear(email)
 
 
 def revoke_refresh_token(session: Session, refresh_token: str | None) -> None:

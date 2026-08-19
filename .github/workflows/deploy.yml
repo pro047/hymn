@@ -142,6 +142,14 @@ jobs:
           # therefore ends the script itself. Left narrow on purpose — a blanket
           # `set -e` would change the failure behaviour of fifteen other steps
           # that have never been exercised failing.
+          #
+          # The health poll after `up -d` closes the other half of that hole.
+          # `restart: unless-stopped` means a container that cannot start just
+          # loops, and nothing downstream looked: the deploy went on to write the
+          # nginx config and reported Success while the API was down. Any startup
+          # failure lands here — a bad ENV_FILE line, a missing variable, an
+          # import error — none of which the migration step can see, because
+          # `alembic upgrade head` never imports app.main.
           PARAMS=$(jq -n \
             --arg img_backend "${IMG_BACKEND}" \
             --arg img_frontend "${IMG_FRONTEND}" \
@@ -162,6 +170,7 @@ jobs:
                 "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml pull",
                 "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml run --rm backend alembic upgrade head || { echo \"MIGRATION FAILED - refusing to start the new containers; the running ones are untouched\"; exit 1; }",
                 "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml up -d",
+                "for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && break; sleep 2; done; curl -fsS http://127.0.0.1:8000/health >/dev/null || { echo \"BACKEND DID NOT COME UP within 60s. Deploy reported success but the API is down; check: sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml logs --tail=50 backend\"; exit 1; }",
                 "sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled",
                 "cat > /tmp/score-hymn.nginx.conf <<\"NGINX\"\n" + $nginx_conf + "\nNGINX",
                 "sudo mv /tmp/score-hymn.nginx.conf /etc/nginx/sites-available/score-hymn",
@@ -172,8 +181,44 @@ jobs:
                 "sudo systemctl reload nginx || sudo systemctl restart nginx"
               ]
             }')
-          aws ssm send-command \
+          # send-command returns as soon as the script is *queued*, so on its own
+          # it reports Success no matter what happens on the host. Every `exit 1`
+          # in the array above — the migration gate and the health poll — ended
+          # the on-host script and was then thrown away here, which made both
+          # gates invisible to the deploy. The command id is captured and waited
+          # on so that a failed script fails the job.
+          CMD_ID=$(aws ssm send-command \
             --instance-ids "$TARGET_INSTANCE" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy hymn (production)" \
-            --parameters "$PARAMS"
+            --parameters "$PARAMS" \
+            --query 'Command.CommandId' --output text)
+          echo "SSM command: $CMD_ID"
+
+          # The invocation is not queryable the instant send-command returns, so
+          # the wait is retried rather than trusted on the first call.
+          for _ in $(seq 1 5); do
+            aws ssm wait command-executed \
+              --command-id "$CMD_ID" --instance-id "$TARGET_INSTANCE" && break
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$TARGET_INSTANCE" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            # wait exits non-zero both for "not there yet" and for a genuinely
+            # failed command; only the first is worth retrying.
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 5
+          done
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$CMD_ID" --instance-id "$TARGET_INSTANCE" \
+            --query Status --output text)
+          aws ssm get-command-invocation \
+            --command-id "$CMD_ID" --instance-id "$TARGET_INSTANCE" \
+            --query StandardOutputContent --output text
+          if [ "$STATUS" != "Success" ]; then
+            echo "::error::Deploy script ended with status $STATUS"
+            aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$TARGET_INSTANCE" \
+              --query StandardErrorContent --output text
+            exit 1
+          fi

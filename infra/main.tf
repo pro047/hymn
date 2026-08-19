@@ -6,6 +6,15 @@ module "network" {
   create_nat_gateway = var.create_nat_gateway
 }
 
+module "ses" {
+  source = "./modules/ses"
+  count  = var.ses_domain == "" ? 0 : 1
+
+  project     = var.project
+  environment = var.environment
+  domain      = var.ses_domain
+}
+
 module "iam" {
   source = "./modules/iam"
 
@@ -19,6 +28,12 @@ module "iam" {
     "${var.environment}-*",
     var.environment
   ]
+  # one() rather than [0]: the module is counted, so this stays valid when
+  # ses_domain is empty and hands the iam module "" — which is what turns the
+  # SES statement off there.
+  ses_identity_arn = try(one(module.ses[*].identity_arn), "")
+  ses_from_address = var.ses_from_address
+  ses_domain       = var.ses_domain
 }
 
 module "ecr" {

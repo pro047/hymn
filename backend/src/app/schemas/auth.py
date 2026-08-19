@@ -178,6 +178,28 @@ class PasswordChangeRequest(BaseModel):
         return self
 
 
+class PasswordResetRequest(BaseModel):
+    """Who to send a reset link to. Nothing else — not even a captcha field.
+
+    The route answers 202 whether or not this address is registered, so any
+    extra field here would be one more thing an unauthenticated caller could
+    vary to tell the two cases apart.
+    """
+
+    email: NormalizedEmail
+
+
+class PasswordResetConfirm(BaseModel):
+    # 43 characters for the 32 bytes token_urlsafe emits today. Bounded loosely
+    # on both sides: the point is to refuse a body that is obviously not a token
+    # before it reaches a database lookup, not to pin the current format.
+    token: str = Field(..., min_length=16, max_length=256)
+    # The same NewPassword signup and /auth/password use. A separate rule here
+    # would let a reset set a password the signup form would have refused, and
+    # the drift would be invisible until someone was locked out by it.
+    new_password: NewPassword
+
+
 class EmailCheckResponse(BaseModel):
     available: bool
 

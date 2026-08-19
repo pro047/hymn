@@ -4,7 +4,12 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { requestAuth } from "../api/auth";
 import { API_PATHS } from "../api/paths";
 import { alertMessageOf, clearFieldError, toFormError, type ApiError } from "../lib/api-error";
-import { PASSWORD_CHANGED_NOTICE, wasPasswordChanged } from "../lib/auth-notice";
+import {
+  PASSWORD_CHANGED_NOTICE,
+  PASSWORD_RESET_NOTICE,
+  wasPasswordChanged,
+  wasPasswordReset,
+} from "../lib/auth-notice";
 import { setTokens } from "../lib/auth-storage";
 import { loginSchema, toValidationError } from "../lib/validation/auth-schema";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
@@ -19,10 +24,15 @@ const RENDERED_FIELDS = ["email", "password"] as const;
 export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  // Set by the account page, which ends its own session when the password
-  // changes and so cannot show the confirmation itself. Read once at render:
-  // it describes how the user arrived, not anything they do from here.
-  const showPasswordChanged = wasPasswordChanged(location);
+  // Set by the account or reset page, each of which ends its own session and so
+  // cannot show the confirmation itself. Read once at render: it describes how
+  // the user arrived, not anything they do from here. Only one can ever be set —
+  // they are written by different pages on different navigations.
+  const noticeMessage = wasPasswordReset(location)
+    ? PASSWORD_RESET_NOTICE
+    : wasPasswordChanged(location)
+      ? PASSWORD_CHANGED_NOTICE
+      : "";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [apiError, setApiError] = useState<ApiError | null>(null);
@@ -82,10 +92,10 @@ export default function LoginPage() {
       <div className="mx-auto w-full max-w-md">
         <Card className="border-stone-200">
           <CardContent className="pt-6">
-            {showPasswordChanged ? (
+            {noticeMessage ? (
               <Alert className="mb-4">
                 <AlertTitle>변경 완료</AlertTitle>
-                <AlertDescription>{PASSWORD_CHANGED_NOTICE}</AlertDescription>
+                <AlertDescription>{noticeMessage}</AlertDescription>
               </Alert>
             ) : null}
             <p className="mb-4 text-center text-lg font-normal text-stone-300">H Y M N</p>
@@ -131,6 +141,15 @@ export default function LoginPage() {
                   </p>
                 ) : null}
               </div>
+
+              <p className="mt-4 text-center text-[12px] text-stone-500">
+                <Link
+                  to="/forgot-password"
+                  className="font-medium text-stone-700 underline underline-offset-2"
+                >
+                  비밀번호를 잊으셨나요?
+                </Link>
+              </p>
 
               <p className="my-8 text-center text-[12px] text-stone-500">
                 계정이 없으신가요?{" "}

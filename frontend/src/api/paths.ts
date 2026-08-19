@@ -21,6 +21,10 @@ export const API_PATHS = {
   authSignup: `${API_BASE}/auth/signup`,
   authMe: `${API_BASE}/auth/me`,
   authPassword: `${API_BASE}/auth/password`,
+  // Both live behind PASSWORD_RESET_ENABLED on the server, so a deployment
+  // without that flag answers 404 here rather than 202/204.
+  authPasswordResetRequest: `${API_BASE}/auth/password-reset/request`,
+  authPasswordResetConfirm: `${API_BASE}/auth/password-reset/confirm`,
   authRefresh: `${API_BASE}/auth/refresh`,
   authLogout: `${API_BASE}/auth/logout`,
 };

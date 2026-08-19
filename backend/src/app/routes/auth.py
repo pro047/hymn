@@ -1,6 +1,7 @@
+import os
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response
 from jose import JWTError
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,8 @@ from app.rate_limit import (
     LOGOUT_LIMIT,
     ME_LIMIT,
     PASSWORD_CHANGE_LIMIT,
+    PASSWORD_RESET_CONFIRM_LIMIT,
+    PASSWORD_RESET_REQUEST_LIMIT,
     REFRESH_LIMIT,
     ROTATE_JOIN_CODE_LIMIT,
     SIGNUP_LIMIT,
@@ -32,6 +35,8 @@ from app.schemas.auth import (
     LogoutRequest,
     NormalizedEmail,
     PasswordChangeRequest,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     RefreshRequest,
     RefreshResponse,
     SessionResponse,
@@ -46,20 +51,46 @@ from app.services.auth import (
     EmailAlreadyRegisteredError,
     InvalidCredentialsError,
     InvalidJoinCodeError,
+    InvalidPasswordResetTokenError,
     InvalidRefreshTokenError,
     NotChurchLeaderError,
     authenticate,
+    begin_password_reset,
     change_password,
     decode_token,
     parse_bearer_token,
     register_user,
+    reset_password,
     revoke_refresh_token,
     rotate_join_code,
     rotate_refresh_token,
     visible_join_code,
 )
+from app.utils.email import EmailSender, deliver_password_reset, get_email_sender
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# The reset endpoints live on their own router because main.py mounts them only
+# when PASSWORD_RESET_ENABLED says to. Not registering beats a dependency that
+# answers 404: an unmounted route is absent from /openapi.json too, so the
+# feature is invisible rather than visibly switched off.
+password_reset_router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Off unless the deployment says otherwise, and the default is the whole point.
+# get_email_sender still returns the console sender, which writes the reset link
+# — the entire credential — to the application log. In dev that log is how the
+# round trip is completed; in production it is a copy of every reset link the
+# app has ever minted, readable by anyone who can reach `docker logs` or the log
+# pipeline, in exchange for a feature that delivers no mail to anybody. So the
+# switch is opt-in and stays off until the SES adapter lands.
+#
+# Same spelling as S3_FORCE_PATH_STYLE in utils/s3.py: a bare truthiness test
+# would read "false" as on.
+PASSWORD_RESET_ENABLED = os.getenv("PASSWORD_RESET_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # Every `detail` here is rendered straight to the user: api-error.ts shows the
 # string as-is for a non-422 body, so an English one reaches the screen in
@@ -81,6 +112,9 @@ INVALID_JOIN_CODE_MESSAGE = "초대 코드가 올바르지 않습니다. 교회 
 # already known — which is why /login cannot word itself this way.
 INVALID_CURRENT_PASSWORD_MESSAGE = "현재 비밀번호가 올바르지 않습니다."
 NOT_CHURCH_LEADER_MESSAGE = "교회 리더만 초대 코드를 관리할 수 있습니다."
+# Expired, already used, never issued — one sentence for all three, and it names
+# the only thing the caller can do about any of them.
+INVALID_RESET_TOKEN_MESSAGE = "재설정 링크가 만료되었거나 이미 사용되었습니다. 다시 요청해 주세요."
 
 
 def _auth_response(model: type[LoginResponse], result: AuthResult) -> LoginResponse:
@@ -215,6 +249,63 @@ def change_own_password(
         # 403 is also the truer word — the caller is authenticated, and it is
         # this one request that is refused.
         raise HTTPException(status_code=403, detail=INVALID_CURRENT_PASSWORD_MESSAGE) from None
+
+
+# response_class=Response so the 202 body is empty rather than the `null` that
+# FastAPI would render for a route returning None. An empty body is part of the
+# uniform answer: whatever is in it, both callers must get the same bytes, and
+# nothing is the easiest same.
+@password_reset_router.post("/password-reset/request", status_code=202, response_class=Response)
+@limiter.limit(PASSWORD_RESET_REQUEST_LIMIT)
+def request_password_reset(
+    request: Request,
+    payload: PasswordResetRequest,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+    sender: EmailSender = Depends(get_email_sender),
+):
+    """Mails a reset link, and says the same thing whether or not it did.
+
+    202 with an empty body for every address, registered or not. Anything else
+    — a 404, a different message, a different shape — turns this into the
+    unauthenticated address oracle that /auth/check-email is rate-limited to
+    make expensive, except this one would need no rate limit to be useful.
+
+    The send is a background task for the same reason: SMTP takes hundreds of
+    milliseconds and only runs for an address that exists, so sending inline
+    would leave the answer in the response time. It is the same defence the
+    decoy password hash provides on /login, moved to where the work is.
+    """
+    grant = begin_password_reset(session, email=payload.email)
+    if grant is not None:
+        background_tasks.add_task(
+            deliver_password_reset, sender, to=grant.email, token=grant.token
+        )
+
+
+@password_reset_router.post("/password-reset/confirm", status_code=204)
+@limiter.limit(PASSWORD_RESET_CONFIRM_LIMIT)
+def confirm_password_reset(
+    request: Request,
+    payload: PasswordResetConfirm,
+    session: Session = Depends(get_session),
+):
+    """Sets the new password from a mailed link. Every session ends with it.
+
+    204 and nothing back, deliberately: no token pair, not even the address the
+    link belonged to. A reset is the recovery path for an account that may be in
+    someone else's hands, so the caller re-authenticates with the password they
+    just chose rather than being handed a live session by an unauthenticated
+    request.
+
+    401 rather than 403 for a bad link, unlike /auth/password: there is no
+    session here for the web client to misread, and the caller genuinely has no
+    valid credential — the link *was* the credential.
+    """
+    try:
+        reset_password(session, token=payload.token, new_password=payload.new_password)
+    except InvalidPasswordResetTokenError:
+        raise HTTPException(status_code=401, detail=INVALID_RESET_TOKEN_MESSAGE) from None
 
 
 @router.post("/refresh", response_model=RefreshResponse)

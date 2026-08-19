@@ -7,8 +7,10 @@ import { Button } from "./components/ui/button";
 import { isAuthenticated } from "./lib/auth-storage";
 import AccountPage from "./pages/account-page";
 import ChurchPage from "./pages/church-page";
+import ForgotPasswordPage from "./pages/forgot-password-page";
 import HomePage from "./pages/home-page";
 import LoginPage from "./pages/login-page";
+import ResetPasswordPage from "./pages/reset-password-page";
 import SignupPage from "./pages/signup-page";
 
 function ProtectedHomePage() {
@@ -92,6 +94,13 @@ function App() {
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/signup" element={<SignupRoute />} />
+      {/* Unwrapped, unlike the two above. A signed-in user can still have
+          forgotten their password — /account asks for the very password they
+          cannot remember — and the reset link is opened wherever mail is read,
+          which may be a browser that is already logged in. Bouncing either
+          route to "/" would strand exactly the person they exist for. */}
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/church" element={<ProtectedChurchPage />} />
       <Route path="/account" element={<ProtectedAccountPage />} />
       <Route path="/" element={<ProtectedHomePage />} />
