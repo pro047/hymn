@@ -16,6 +16,27 @@ services:
       - "127.0.0.1:8000:8000"
     env_file:
       - .env.prod
+    environment:
+      # Password reset settings. None of these is a secret, so they live here
+      # instead of in the ENV_FILE repository secret: a secret is write-only,
+      # which means adding one line to it requires retyping DATABASE_URL and
+      # AUTH_SECRET from memory, and nothing that ships to production is
+      # reviewable in a diff. These are.
+      #
+      # `environment` wins over `env_file`, and that precedence is load-bearing
+      # for APP_ENV rather than incidental. The deployed env file predates this
+      # feature and says "staging", which require_deliverable_transport rejects
+      # outright — it accepts production/development/test and refuses to guess
+      # (backend/src/app/utils/email.py). Left to the env file, the backend
+      # would raise at import, restart-loop, and take the site down with it.
+      #
+      # All five are required together once the flag is on; the app will not
+      # boot with any of them missing, deliberately. See .env.example.
+      APP_ENV: production
+      PASSWORD_RESET_ENABLED: "true"
+      EMAIL_SENDER: ses
+      SES_FROM_ADDRESS: no-reply@score-hymn.com
+      PASSWORD_RESET_URL_BASE: https://www.score-hymn.com/reset-password
     restart: unless-stopped
 
   frontend:
