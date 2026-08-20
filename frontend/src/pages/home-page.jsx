@@ -9,6 +9,7 @@ import RecentScoresCard from "../features/home/sections/recent-scores-card";
 import StageCard from "../features/home/sections/stage-card";
 import WeekSummaryCard from "../features/home/sections/week-summary-card";
 import SavedScoresCard from "../features/score/components/saved-scores-card";
+import ScoreEditDialog from "../features/score/components/score-edit-dialog";
 import ScoreUploadDialog from "../features/score/components/score-upload-dialog";
 import { SAVED_SCORES_ENABLED } from "../features/score/feature-flags";
 import { useScores } from "../features/score/hooks/use-scores";
@@ -31,6 +32,7 @@ export default function HomePage() {
     saveToLibrary: false,
     sessionKey: 0,
   });
+  const [editingScore, setEditingScore] = useState(null);
 
   const {
     scores,
@@ -39,6 +41,7 @@ export default function HomePage() {
     weekSummaries,
     error,
     isUploading,
+    isUpdating,
     pendingSaveScoreId,
     isApplyingSavedScore,
     createScoreWithUpload,
@@ -148,7 +151,7 @@ export default function HomePage() {
               <StageCard
                 scores={upcomingSundayScores}
                 weekOf={upcomingSundayWeekOf}
-                onUpdate={updateScore}
+                onUpdate={setEditingScore}
                 onDelete={deleteScore}
                 savedScoreIds={savedScoreIds}
                 pendingSaveScoreId={pendingSaveScoreId}
@@ -181,6 +184,17 @@ export default function HomePage() {
 
         <Separator />
       </div>
+
+      {/* Keyed on the score so picking a different row remounts the form
+          instead of carrying the previous title and file selection over. */}
+      <ScoreEditDialog
+        key={editingScore?.id ?? "none"}
+        open={Boolean(editingScore)}
+        score={editingScore}
+        onClose={() => setEditingScore(null)}
+        onSubmit={updateScore}
+        loading={isUpdating}
+      />
 
       <ScoreUploadDialog
         key={uploadDialogState.sessionKey}

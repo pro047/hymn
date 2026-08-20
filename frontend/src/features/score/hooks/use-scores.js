@@ -9,6 +9,7 @@ export function useScores() {
   const [savedScores, setSavedScores] = useState([]);
   const [error, setError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const [pendingSaveScoreId, setPendingSaveScoreId] = useState(null);
   const [isApplyingSavedScore, setIsApplyingSavedScore] = useState(false);
 
@@ -126,29 +127,65 @@ export function useScores() {
     }
   };
 
-  const updateScore = async (scoreId) => {
-    const input = window.prompt("새 제목을 입력하세요.");
-    if (input === null) return;
-    const title = input.trim();
-    if (!title) return;
-    // The column is varchar(255); the server answers 422 past that, but the
-    // prompt is native so a maxlength attribute cannot cap it client-side.
-    if (title.length > 255) {
-      setError("제목은 255자 이내로 입력해주세요.");
-      return;
+  const uploadReplacementFile = async (scoreId, file) => {
+    const issued = await apiFetch(API_PATHS.scoreFile(scoreId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, content_type: file.type }),
+    });
+    if (!issued.ok) {
+      throw new Error("업로드 주소를 받지 못했습니다.");
     }
+    const { upload_url: uploadUrl, s3_key: s3Key } = await issued.json();
+    const uploaded = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!uploaded.ok) {
+      throw new Error("S3 업로드에 실패했습니다.");
+    }
+    return s3Key;
+  };
+
+  const updateScore = async ({ scoreId, title, file = null }) => {
+    if (!isAuthenticated()) {
+      setError("로그인이 필요합니다.");
+      return { ok: false };
+    }
+    // The column is varchar(255) and the server answers 422 past it. The dialog
+    // caps the field too; this stays because the message is readable and the
+    // 422 body is not.
+    if (title.length > 255) {
+      const message = "제목은 255자 이내로 입력해주세요.";
+      setError(message);
+      return { ok: false, message };
+    }
+
+    setIsUpdating(true);
     try {
+      // Upload first, PATCH second. Reversed, a failed PUT would leave the row
+      // pointing at an object that was never written — a broken image on the
+      // page. This way the score keeps the file it already had.
+      const fileUri = file ? await uploadReplacementFile(scoreId, file) : null;
       const response = await apiFetch(API_PATHS.score(scoreId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
+        body: JSON.stringify(fileUri ? { title, file_uri: fileUri } : { title }),
       });
       if (!response.ok) {
         throw new Error("악보 수정에 실패했습니다.");
       }
       await fetchScores();
+      return { ok: true };
     } catch (err) {
+      // Returned as well as pushed to `error`, because the page's alert renders
+      // behind the dialog's own fixed backdrop — the caller has to show this
+      // itself or the user sees the button stop spinning and nothing else.
       setError(err.message);
+      return { ok: false, message: err.message };
+    } finally {
+      setIsUpdating(false);
     }
   };
 
@@ -252,6 +289,7 @@ export function useScores() {
     weekSummaries,
     error,
     isUploading,
+    isUpdating,
     pendingSaveScoreId,
     isApplyingSavedScore,
     createScoreWithUpload,

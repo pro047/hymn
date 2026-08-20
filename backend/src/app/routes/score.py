@@ -8,7 +8,14 @@ from sqlalchemy.orm import Session
 from app.db import get_session
 from app.deps import get_current_user
 from app.models import Score, SetItem, User, Week
-from app.schemas.score import ScoreCreate, ScoreCreateResponse, ScoreResponse, ScoreUpdate
+from app.schemas.score import (
+    ScoreCreate,
+    ScoreCreateResponse,
+    ScoreFileUploadRequest,
+    ScoreFileUploadResponse,
+    ScoreResponse,
+    ScoreUpdate,
+)
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_get, presign_put
 
@@ -213,6 +220,39 @@ def get_score(
         created_at=score.created_at
     )
 
+@router.post("/scores/{score_id}/file", response_model=ScoreFileUploadResponse)
+def create_score_file_upload(
+    score_id: str,
+    payload: ScoreFileUploadRequest,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """A presigned PUT for replacing the file of a score that already exists.
+
+    Mints a key and signs it, and touches no column. The client uploads to the
+    URL and only then PATCHes file_uri, so an upload that fails leaves the score
+    pointing at the file it already had rather than at an object that was never
+    written. Doing it the other way round would show a broken image instead.
+
+    The key is a fresh uuid rather than the score's current one. Overwriting in
+    place would keep the old extension when the type changes, let any cache
+    keyed on the unchanged URL keep serving the old image, and destroy the
+    original before the new bytes are known to be good. The superseded object is
+    left in the bucket: nothing references it, and _download_url signs only the
+    key stored on the row.
+
+    Two paths leave an object nothing points at, and neither is cleaned up here.
+    A PATCH that fails after a successful upload orphans the new key, and a
+    retry signs another one rather than reusing it. Both are bounded by how
+    often a write fails and cost a few KB each; a sweep over keys absent from
+    the scores table is the way to reclaim them if it ever matters.
+    """
+    score = _writable_score_or_error(session, score_id, user)
+    ext = extension_from_input(payload.filename, payload.content_type)
+    key = f"scores/{score.church_id}/{uuid4()}.{ext}"
+    return {"upload_url": presign_put(key, 900), "s3_key": key}
+
+
 @router.patch("/scores/{score_id}", response_model=ScoreResponse)
 def update_score(
     score_id: str,
@@ -245,7 +285,12 @@ def update_score(
         # caller file a harmless score and then point it at a foreign key.
         _reject_foreign_object_key(payload.file_uri, score.church_id)
         score.file_uri = payload.file_uri
-        score.file_url = payload.file_uri
+        # object_url, not the key itself — the column holds a URL everywhere
+        # else (create_score does the same at the s3 branch) and every client
+        # reads it as `download_url ?? file_url`. Storing the bare key survives
+        # only because the gate above forces the scores/ prefix, which is
+        # exactly what makes _download_url sign it and hide the fallback.
+        score.file_url = object_url(payload.file_uri)
 
     session.commit()
     session.refresh(score)
