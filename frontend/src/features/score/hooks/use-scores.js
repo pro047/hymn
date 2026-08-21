@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../../../api/client";
 import { API_PATHS } from "../../../api/paths";
 import { isAuthenticated } from "../../../lib/auth-storage";
+import { SAVED_SCORES_ENABLED } from "../feature-flags";
 
 export function useScores() {
   const [scores, setScores] = useState([]);
@@ -43,7 +44,9 @@ export function useScores() {
   }, []);
 
   const fetchSavedScores = useCallback(async () => {
-    if (!isAuthenticated()) {
+    // Nothing renders saved scores while the flag is off, so this request only
+    // cost a round trip on every mount and threw its answer away.
+    if (!SAVED_SCORES_ENABLED || !isAuthenticated()) {
       setSavedScores([]);
       return;
     }

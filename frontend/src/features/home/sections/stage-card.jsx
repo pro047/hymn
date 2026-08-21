@@ -14,19 +14,14 @@ export default function StageCard({
 
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0">
-        <div>
-          <CardTitle>콘티</CardTitle>
-          <p className="mt-1 text-xs text-stone-500">{weekOf} (돌아오는 일요일)</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" type="button">
-            섞기
-          </Button>
-          <Button size="sm" type="button">
-            발행
-          </Button>
-        </div>
+      {/* No 섞기/발행 here. Both were buttons with no onClick — reordering has
+          no API (SetItem.order_no is only rewritten when week_of changes) and
+          publishing has no transition (status is written 'draft' at creation,
+          never changed, and not even carried in ScoreResponse). Put them back
+          when the endpoints exist, not before. */}
+      <CardHeader>
+        <CardTitle>콘티</CardTitle>
+        <p className="mt-1 text-xs text-stone-500">{weekOf} (돌아오는 일요일)</p>
       </CardHeader>
       <CardContent className="space-y-2">
         {stageScores.length === 0 ? (
