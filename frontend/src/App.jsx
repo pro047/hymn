@@ -39,25 +39,30 @@ function ProtectedHomePage() {
     return <Navigate to="/login" replace />;
   }
 
+  // Handed to the page instead of layered over it. As a `fixed` sibling the
+  // group stayed put while the header scrolled away, and it only cleared the
+  // header's own right-hand side because the tab bar is hidden while
+  // SAVED_SCORES_ENABLED is off — turning the flag on would have collided.
   return (
-    <div className="relative">
-      <div className="fixed right-4 top-4 z-20 flex gap-2">
-        {role === "leader" ? (
+    <HomePage
+      headerActions={
+        <div className="flex flex-wrap items-center gap-2">
+          {role === "leader" ? (
+            <Button type="button" variant="outline" size="sm" asChild>
+              <Link to="/church">교회 관리</Link>
+            </Button>
+          ) : null}
+          {/* No role condition, unlike the link above: a member has a password
+              too, which is why the change form is not on the church page. */}
           <Button type="button" variant="outline" size="sm" asChild>
-            <Link to="/church">교회 관리</Link>
+            <Link to="/account">계정</Link>
           </Button>
-        ) : null}
-        {/* No role condition, unlike the link above: a member has a password
-            too, which is why the change form is not on the church page. */}
-        <Button type="button" variant="outline" size="sm" asChild>
-          <Link to="/account">계정</Link>
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={logout}>
-          로그아웃
-        </Button>
-      </div>
-      <HomePage />
-    </div>
+          <Button type="button" variant="outline" size="sm" onClick={logout}>
+            로그아웃
+          </Button>
+        </div>
+      }
+    />
   );
 }
 
