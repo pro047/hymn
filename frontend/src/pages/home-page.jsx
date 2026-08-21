@@ -14,11 +14,13 @@ import ScoreUploadDialog from "../features/score/components/score-upload-dialog"
 import { SAVED_SCORES_ENABLED } from "../features/score/feature-flags";
 import { useScores } from "../features/score/hooks/use-scores";
 
+// 주차·설정 are gone: both rendered "준비 중인 탭입니다" and nothing else.
+// What remains is a tab bar only when there is more than one destination —
+// with the library flag off, "악보" is the whole page and a one-tab bar is
+// furniture. Turning SAVED_SCORES_ENABLED on brings the bar back.
 const tabs = [
   { id: "scores", label: "악보" },
-  { id: "weeks", label: "주차" },
   ...(SAVED_SCORES_ENABLED ? [{ id: "library", label: "보관함" }] : []),
-  { id: "settings", label: "설정" },
 ];
 
 export default function HomePage() {
@@ -110,19 +112,21 @@ export default function HomePage() {
               </h1>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {tabs.map((tab) => (
-              <Button
-                key={tab.id}
-                type="button"
-                size="sm"
-                variant={activeTab === tab.id ? "default" : "ghost"}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                {tab.label}
-              </Button>
-            ))}
-          </div>
+          {tabs.length > 1 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {tabs.map((tab) => (
+                <Button
+                  key={tab.id}
+                  type="button"
+                  size="sm"
+                  variant={activeTab === tab.id ? "default" : "ghost"}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {tab.label}
+                </Button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </header>
 
@@ -158,27 +162,24 @@ export default function HomePage() {
                 onToggleSave={SAVED_SCORES_ENABLED ? toggleSavedScore : null}
               />
             </>
-          ) : activeTab === "library" ? (
-            <>
-              <SavedScoresCard
-                scores={savedScores}
-                onApplyRequest={(score) => openUploadDialog({ mode: "library", savedScore: score })}
-                onQuickUpload={(file) =>
-                  openUploadDialog({
-                    mode: "pc",
-                    file,
-                    lockMode: true,
-                    saveToLibrary: true,
-                  })
-                }
-                onRemove={removeSavedScore}
-                pendingSaveScoreId={pendingSaveScoreId}
-              />
-            </>
           ) : (
-            <section className="rounded-xl border border-dashed border-stone-300 bg-white p-8 text-sm text-stone-500">
-              준비 중인 탭입니다.
-            </section>
+            /* Reachable only with SAVED_SCORES_ENABLED on — that flag is what
+               puts the 보관함 tab in the bar at all. There is no third branch
+               now that 주차·설정 are gone. */
+            <SavedScoresCard
+              scores={savedScores}
+              onApplyRequest={(score) => openUploadDialog({ mode: "library", savedScore: score })}
+              onQuickUpload={(file) =>
+                openUploadDialog({
+                  mode: "pc",
+                  file,
+                  lockMode: true,
+                  saveToLibrary: true,
+                })
+              }
+              onRemove={removeSavedScore}
+              pendingSaveScoreId={pendingSaveScoreId}
+            />
           )}
         </main>
 

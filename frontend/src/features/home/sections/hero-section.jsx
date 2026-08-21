@@ -22,18 +22,13 @@ export default function HeroSection({ totalSongs, onUpload }) {
             악보 업로드
           </Button>
         </div>
-        <div className="grid w-full grid-cols-3 gap-3 md:w-auto">
+        {/* One tile, not three. "상태: Draft" and "버전: v1" were fixed strings:
+            status never leaves the server (ScoreResponse omits it) and nothing
+            in the codebase versions a week at all. */}
+        <div className="w-full md:w-auto">
           <div className="rounded-lg border border-stone-200 bg-white px-4 py-3">
             <p className="text-xs text-stone-500">총 곡 수</p>
             <p className="mt-1 text-lg font-semibold text-stone-950">{totalSongs}</p>
-          </div>
-          <div className="rounded-lg border border-stone-200 bg-white px-4 py-3">
-            <p className="text-xs text-stone-500">상태</p>
-            <p className="mt-1 text-lg font-semibold text-stone-950">Draft</p>
-          </div>
-          <div className="rounded-lg border border-stone-200 bg-white px-4 py-3">
-            <p className="text-xs text-stone-500">버전</p>
-            <p className="mt-1 text-lg font-semibold text-stone-950">v1</p>
           </div>
         </div>
       </CardContent>

@@ -135,6 +135,17 @@ it("서명 발급이 실패하면 업로드를 시도하지 않아야 한다", a
   expect(calls).toEqual(["POST /scores/score-1/file"]);
 });
 
+it("보관함 플래그가 꺼져 있으면 저장소 목록을 부르지 않아야 한다", async () => {
+  // Arrange & Act — SAVED_SCORES_ENABLED is false, so nothing renders saved
+  // scores; fetching them cost a round trip per mount and discarded the answer.
+  renderHook(() => useScores());
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+
+  // Assert
+  expect(calls.some((call) => call.includes("saved-scores"))).toBe(false);
+  expect(calls.some((call) => call.includes("/scores"))).toBe(true);
+});
+
 it("제목이 255자를 넘으면 아무 요청도 보내지 않아야 한다", async () => {
   // Arrange — the column is varchar(255); the server's 422 body is not readable.
   const result = await mountedHook();
