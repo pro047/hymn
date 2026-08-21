@@ -23,7 +23,10 @@ const tabs = [
   ...(SAVED_SCORES_ENABLED ? [{ id: "library", label: "보관함" }] : []),
 ];
 
-export default function HomePage() {
+// headerActions is a slot, not a role flag: who may see 교회 관리 and what
+// 로그아웃 does are session concerns, and App already answers both. This page
+// only decides where the group sits.
+export default function HomePage({ headerActions = null }) {
   const [activeTab, setActiveTab] = useState("scores");
   const [uploadDialogState, setUploadDialogState] = useState({
     open: false,
@@ -112,19 +115,26 @@ export default function HomePage() {
               </h1>
             </div>
           </div>
-          {tabs.length > 1 ? (
-            <div className="flex flex-wrap items-center gap-2">
-              {tabs.map((tab) => (
-                <Button
-                  key={tab.id}
-                  type="button"
-                  size="sm"
-                  variant={activeTab === tab.id ? "default" : "ghost"}
-                  onClick={() => setActiveTab(tab.id)}
-                >
-                  {tab.label}
-                </Button>
-              ))}
+          {tabs.length > 1 || headerActions ? (
+            // Two groups, one row. The outer gap is wider than the inner one so
+            // navigating the page and leaving it do not read as one button row.
+            <div className="flex flex-wrap items-center gap-4">
+              {tabs.length > 1 ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {tabs.map((tab) => (
+                    <Button
+                      key={tab.id}
+                      type="button"
+                      size="sm"
+                      variant={activeTab === tab.id ? "default" : "ghost"}
+                      onClick={() => setActiveTab(tab.id)}
+                    >
+                      {tab.label}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+              {headerActions}
             </div>
           ) : null}
         </div>
