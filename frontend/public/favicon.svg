@@ -1,0 +1,11 @@
+<!-- The H badge from the app header (home-page.jsx), redrawn as bars rather
+     than a <text> element: text would resolve to a different font on every
+     renderer, and the strokes blur once the icon is scaled down to 16px. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="6" fill="#1c1917" />
+  <g fill="#fafaf9">
+    <rect x="8" y="7" width="4" height="18" />
+    <rect x="20" y="7" width="4" height="18" />
+    <rect x="8" y="14" width="16" height="4" />
+  </g>
+</svg>
