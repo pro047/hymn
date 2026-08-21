@@ -45,7 +45,7 @@ export default function StageCard({
               <button
                 type="button"
                 className="truncate text-left text-sm font-medium text-stone-900"
-                onClick={() => onUpdate(score.id)}
+                onClick={() => onUpdate(score)}
               >
                 {score.title}
               </button>
@@ -61,7 +61,7 @@ export default function StageCard({
                     {savedScoreIds.has(score.id) ? "저장 해제" : "저장"}
                   </Button>
                 ) : null}
-                <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score.id)}>
+                <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score)}>
                   수정
                 </Button>
                 <Button

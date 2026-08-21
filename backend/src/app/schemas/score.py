@@ -64,6 +64,19 @@ class ScoreResponse(BaseModel):
     download_url: str | None = None
     created_at: datetime
 
+class ScoreFileUploadRequest(BaseModel):
+    # Required here, unlike ScoreCreate where the s3 branch checks it at
+    # runtime: that model also serves the `local` branch, which has no filename.
+    # This route has one branch and nothing to do without one.
+    filename: str = Field(..., min_length=1, max_length=1024)
+    content_type: str | None = None
+
+
+class ScoreFileUploadResponse(BaseModel):
+    upload_url: str
+    s3_key: str
+
+
 class ScoreUpdate(BaseModel):
     # Same caps as ScoreCreate: both write the same columns.
     title: str | None = Field(None, min_length=1, max_length=255)
