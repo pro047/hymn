@@ -14,16 +14,6 @@ export function useScores() {
   const [pendingSaveScoreId, setPendingSaveScoreId] = useState(null);
   const [isApplyingSavedScore, setIsApplyingSavedScore] = useState(false);
 
-  const weekSummaries = useMemo(() => {
-    const uniqueWeeks = new Map();
-    scores.forEach((score) => {
-      if (!uniqueWeeks.has(score.week_of)) {
-        uniqueWeeks.set(score.week_of, score);
-      }
-    });
-    return Array.from(uniqueWeeks.values()).slice(0, 3);
-  }, [scores]);
-
   const savedScoreIds = useMemo(
     () => new Set(savedScores.map((score) => score.score_id)),
     [savedScores]
@@ -289,7 +279,6 @@ export function useScores() {
     scores,
     savedScores,
     savedScoreIds,
-    weekSummaries,
     error,
     isUploading,
     isUpdating,
