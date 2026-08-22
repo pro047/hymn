@@ -5,9 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Separator } from "../components/ui/separator";
 import HeroSection from "../features/home/sections/hero-section";
-import RecentScoresCard from "../features/home/sections/recent-scores-card";
 import StageCard from "../features/home/sections/stage-card";
-import WeekSummaryCard from "../features/home/sections/week-summary-card";
 import SavedScoresCard from "../features/score/components/saved-scores-card";
 import ScoreEditDialog from "../features/score/components/score-edit-dialog";
 import ScoreUploadDialog from "../features/score/components/score-upload-dialog";
@@ -43,7 +41,6 @@ export default function HomePage({ headerActions = null }) {
     scores,
     savedScores,
     savedScoreIds,
-    weekSummaries,
     error,
     isUploading,
     isUpdating,
@@ -152,26 +149,23 @@ export default function HomePage({ headerActions = null }) {
 
         <main className="space-y-6">
           {activeTab === "scores" ? (
-            <>
-              <section className="grid gap-4 md:grid-cols-2">
-                <WeekSummaryCard weekSummaries={weekSummaries} />
-                <RecentScoresCard
-                  scores={scores}
-                  savedScoreIds={savedScoreIds}
-                  pendingSaveScoreId={pendingSaveScoreId}
-                  onToggleSave={SAVED_SCORES_ENABLED ? toggleSavedScore : null}
-                />
-              </section>
-              <StageCard
-                scores={upcomingSundayScores}
-                weekOf={upcomingSundayWeekOf}
-                onUpdate={setEditingScore}
-                onDelete={deleteScore}
-                savedScoreIds={savedScoreIds}
-                pendingSaveScoreId={pendingSaveScoreId}
-                onToggleSave={SAVED_SCORES_ENABLED ? toggleSavedScore : null}
-              />
-            </>
+            /* 다가오는 주차·최근 악보 cards are gone. Both sliced the first
+               three of a list the server sorts by created_at ASC, so they
+               showed the oldest rows under names promising the newest. Fixing
+               the sort would not have earned them back: no week is ever
+               uploaded ahead of the coming Sunday (30 weeks, 5 songs each, none
+               past it), so a corrected 다가오는 주차 has exactly one week to
+               show — the one 콘티 already shows — and 최근 악보 becomes a subset
+               of it. */
+            <StageCard
+              scores={upcomingSundayScores}
+              weekOf={upcomingSundayWeekOf}
+              onUpdate={setEditingScore}
+              onDelete={deleteScore}
+              savedScoreIds={savedScoreIds}
+              pendingSaveScoreId={pendingSaveScoreId}
+              onToggleSave={SAVED_SCORES_ENABLED ? toggleSavedScore : null}
+            />
           ) : (
             /* Reachable only with SAVED_SCORES_ENABLED on — that flag is what
                puts the 보관함 tab in the bar at all. There is no third branch
