@@ -222,8 +222,29 @@ run_stage() {
 # 이 파이프라인이 막으려는 것(근거 없는 판단이 구현까지 흘러가는 것)이 그대로
 # 일어난다 — 무인 모드는 "게이트를 없앤다"가 아니라 "판정 가능한 것만 자동으로
 # 넘긴다"는 뜻이다.
+# 파일 내용 해시 — 승인 마커가 "무엇을 승인했는가"를 내용 단위로 기억하는 키.
+# approve.sh 의 file_hash 와 결과가 같아야 한다 (run-tests 가 교차 검증한다).
+file_hash() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1"
+  else sha256sum "$1"; fi | awk '{print $1}'
+}
+
 gate_human() {
   local msg=$1 file=$2 force=${3:-0}
+
+  # 승인 마커: 사람이 approve.sh 로 "이 내용을 검토했다"를 남긴 것.
+  # 해시로 내용에 묶여 있어 승인 후 파일이 바뀌면 무효가 된다.
+  # AUTO 보다 먼저 본다 — 명시적 승인은 force 게이트까지 통과시키는 유일한
+  # 무인 경로다 (AUTO 는 force 를 못 넘는다).
+  local marker="$file.approved"
+  if [ -f "$marker" ]; then
+    if [ "$(cat "$marker")" = "$(file_hash "$file")" ]; then
+      log "  ✔ 승인 마커 — 게이트 통과: $msg"
+      return 0
+    fi
+    log "  ⚠ 승인 마커가 낡음 ($(basename "$file") 이 승인 뒤에 바뀜) — 재승인 필요"
+  fi
+
   [ "$AUTO" = "1" ] && [ "$force" != "1" ] \
     && { log "  (AUTO=1 — 게이트 통과: $msg)"; return 0; }
 
@@ -237,15 +258,25 @@ $(printf '\033[1;33m[게이트]\033[0m') $msg
   y = 진행   e = 열어보기   n = 중단
 EOF
   printf '  > ' >&2
-  # `|| ans=n` 은 tty 가 없을 때(cron·백그라운드·CI)를 위한 것이다. 이 스크립트는
-  # `set -e` 로 도는데, /dev/tty 를 못 열면 read 가 rc=1 로 끝나 **그 자리에서
-  # exit 1** 이 된다 — 아래 case 도 die 도 타지 않아서 호출자는 "게이트에서 막힘"
-  # 을 다른 실패와 구분할 수 없다. 없는 tty 는 "사람이 y 를 누르지 않았다" 와 같은
-  # 뜻이므로 중단(n)으로 떨어뜨려 의도한 die 경로를 타게 한다.
-  local ans; read -r ans < /dev/tty || ans=n
+  # tty 가 없으면(런처 모드·cron·CI) read 가 rc=1 로 끝난다. 예전에는 n 과 같이
+  # 취급해 exit 2 로 죽였는데, 그러면 호출자가 "사람이 거부함"(2)과 "사람이 아직
+  # 검토하지 않음"을 구분할 수 없다. 후자는 별도 코드(4)로 내보내고 승인 방법을
+  # 찍어 준다 — 사람이 approve.sh 로 마커를 만들고 재실행하면 위의 마커 검사로
+  # 통과한다. `|| ans=...` 가드가 없으면 set -e 가 read 실패 지점에서 exit 1 을
+  # 내 어느 경로도 타지 못한다 (2026-08-18 실전에서 밟은 함정).
+  local ans; read -r ans < /dev/tty || ans=__NO_TTY__
   case "$ans" in
     y|Y) return 0 ;;
     e|E) "${EDITOR:-less}" "$file"; gate_human "$msg" "$file" "$force" ;;
+    __NO_TTY__)
+      state "AWAITING_APPROVAL" "$msg — $(basename "$file")"
+      {
+        printf '\033[1;33m[승인 대기]\033[0m tty 가 없어 게이트에서 멈춘다 (exit 4)\n'
+        printf '  검토 대상: %s\n' "$file"
+        printf '  검토한 사람이 터미널에서 직접:  %s/approve.sh %s %s\n' "$ROOT" "$FEATURE" "$(basename "$file")"
+        printf '  승인 후 재실행하면 이 게이트는 마커로 통과한다 (내용이 바뀌면 무효)\n'
+      } >&2
+      exit 4 ;;
     *)   die "사람이 중단함" ;;
   esac
 }

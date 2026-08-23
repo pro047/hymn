@@ -22,10 +22,10 @@ setup() {
   git init -q .
   git config user.email t@t; git config user.name t
   mkdir -p prompts test
-  cp "$SRC/orchestrate.sh" .
+  cp "$SRC/orchestrate.sh" "$SRC/approve.sh" .
   cp "$SRC/prompts/"*.md prompts/
   cp "$HERE/fake-claude" test/claude       # ← 이름이 'claude' 여야 가로챈다
-  chmod +x orchestrate.sh test/claude
+  chmod +x orchestrate.sh approve.sh test/claude
   printf '.pipeline/\n' > .gitignore
   echo x > x.txt; git add -A; git commit -qm init
   export PATH="$SANDBOX/test:$PATH"
@@ -94,10 +94,10 @@ else
 fi
 teardown
 
-# tty 없는 환경(cron·백그라운드·CI)에서 게이트가 **의도한 경로로** 죽는지.
-# 이 스크립트는 set -e 로 도는데, /dev/tty 를 못 열면 read 가 rc=1 → 그 자리에서
-# exit 1 이 되어 die 를 건너뛴다. 그러면 호출자가 "게이트에서 막힘"(exit 2)을
-# 다른 실패와 구분할 수 없다. 실전 1회 실행에서 실제로 겪은 뒤 넣은 케이스다.
+# tty 없는 환경(런처 모드·cron·CI)에서 게이트가 **의도한 경로로** 멈추는지.
+# 마커 없이 게이트에 걸리면 "사람이 아직 검토하지 않음" = exit 4 (승인 대기).
+# "사람이 거부함"(exit 2)과 구분되어야 런처가 산출물을 보여주고 재실행할 수 있다.
+# set -e 아래에서 read 실패가 exit 1 로 새는 함정은 실전 1회에서 겪었다 (2026-08-18).
 #
 # macOS 에 setsid 가 없어서 python3 로 세션을 떼어 controlling terminal 을 없앤다.
 # 테스트 전용 의존성이고, 없으면 케이스를 건너뛴다 (조용히 통과시키지 않는다).
@@ -107,11 +107,11 @@ if command -v python3 >/dev/null 2>&1; then
   python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
     env FAKE_SCENARIO_JUDGE=judge_flagged AUTO=1 TEST_CMD=true \
     ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
-  if [ "$got" -eq 2 ] && [ ! -f .pipeline/feat/IMPL.md ] \
-     && grep -q 'phase: DIED' .pipeline/feat/STATE.md 2>/dev/null; then
-    green "  PASS  tty 가 없으면 게이트가 exit 2 로 죽는다 (die 경로)"; PASS=$((PASS+1))
+  if [ "$got" -eq 4 ] && [ ! -f .pipeline/feat/IMPL.md ] \
+     && grep -q 'phase: AWAITING_APPROVAL' .pipeline/feat/STATE.md 2>/dev/null; then
+    green "  PASS  tty 없는 게이트는 exit 4 승인 대기로 멈춘다"; PASS=$((PASS+1))
   else
-    red   "  FAIL  tty 부재 시 종료 경로 — exit=$got (기대 2), phase=$(grep -m1 'phase:' .pipeline/feat/STATE.md 2>/dev/null)"
+    red   "  FAIL  tty 부재 시 종료 경로 — exit=$got (기대 4), phase=$(grep -m1 'phase:' .pipeline/feat/STATE.md 2>/dev/null)"
     FAIL=$((FAIL+1))
   fi
   teardown
@@ -119,6 +119,61 @@ else
   red "  SKIP  tty 부재 케이스 — python3 없음 (setsid 대체 불가)"
 fi
 
+echo
+echo "=== 승인 마커 (런처 모드) ==="
+# 런처 모드의 계약 세 가지를 검사한다:
+#   1) 사람이 남긴 마커는 tty 없는 게이트를 통과시킨다
+#   2) 승인 후 내용이 바뀐 마커(낡은 마커)는 통과시키지 않는다
+#   3) approve.sh 자체가 tty 없이는 마커를 만들지 못한다 (런처 대리 승인 차단)
+# 1의 마커는 approve.sh --hash 로 만든다 — orchestrate.sh 의 file_hash 와
+# 구현이 어긋나면 이 케이스가 잡는다 (교차 검증).
+if command -v python3 >/dev/null 2>&1; then
+  detach() { python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"; }
+
+  setup
+  mkdir -p .pipeline/feat
+  printf 'STATUS: DONE\n\n(검토된 설계)\n\nALLOWED_FILES:\n- x.txt\n\n' > .pipeline/feat/DESIGN.md
+  sleep 1
+  printf 'STATUS: DONE\nUNVERIFIED: 0 REFUTED: 0\n' > .pipeline/feat/JUDGE.md
+  ./approve.sh --hash .pipeline/feat/DESIGN.md > .pipeline/feat/DESIGN.md.approved
+  got=0
+  detach env FAKE_SCENARIO=ok AUTO=0 TEST_CMD=true ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
+  if [ "$got" -eq 0 ] && [ -f .pipeline/feat/IMPL.md ]; then
+    green "  PASS  유효한 승인 마커는 tty 없는 게이트를 통과시킨다"; PASS=$((PASS+1))
+  else
+    red   "  FAIL  마커 통과 실패 — exit=$got (기대 0)"; FAIL=$((FAIL+1))
+  fi
+  teardown
+
+  setup
+  mkdir -p .pipeline/feat
+  printf 'STATUS: DONE\n\n(검토된 설계)\n\nALLOWED_FILES:\n- x.txt\n\n' > .pipeline/feat/DESIGN.md
+  sleep 1
+  printf 'STATUS: DONE\nUNVERIFIED: 0 REFUTED: 0\n' > .pipeline/feat/JUDGE.md
+  echo "stale-hash-of-previously-approved-content" > .pipeline/feat/DESIGN.md.approved
+  got=0
+  detach env FAKE_SCENARIO=ok AUTO=0 TEST_CMD=true ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
+  if [ "$got" -eq 4 ] && [ ! -f .pipeline/feat/IMPL.md ]; then
+    green "  PASS  낡은 마커는 통과시키지 않는다 (재승인 요구)"; PASS=$((PASS+1))
+  else
+    red   "  FAIL  낡은 마커 — exit=$got (기대 4)$([ -f .pipeline/feat/IMPL.md ] && echo ', IMPL.md 생성됨')"; FAIL=$((FAIL+1))
+  fi
+  teardown
+
+  setup
+  mkdir -p .pipeline/feat
+  printf 'STATUS: DONE\n' > .pipeline/feat/DESIGN.md
+  got=0
+  detach ./approve.sh feat DESIGN.md >/dev/null 2>&1 || got=$?
+  if [ "$got" -ne 0 ] && [ ! -f .pipeline/feat/DESIGN.md.approved ]; then
+    green "  PASS  approve.sh 는 tty 없이 마커를 만들지 않는다"; PASS=$((PASS+1))
+  else
+    red   "  FAIL  tty 없는 approve — exit=$got$([ -f .pipeline/feat/DESIGN.md.approved ] && echo ', 마커 생성됨')"; FAIL=$((FAIL+1))
+  fi
+  teardown
+else
+  red "  SKIP  승인 마커 케이스 — python3 없음 (setsid 대체 불가)"
+fi
 # 대조군 — 게이트가 '항상 막는' 게 아니라는 것. 이게 없으면 위 PASS 는 무의미하다.
 setup
 got=0
