@@ -97,12 +97,17 @@ touch "$FAIL_LOG" "$MODEL_LOG"
 export FEATURE WORK ROOT
 
 log() { printf '\033[1;36m[orch]\033[0m %s\n' "$*" >&2; }
-die() { state "DIED" "$*"; printf '\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 2; }
+die() {
+  state "DIED" "$*" "실패했다. $FAIL_LOG 와 위 note 를 읽고 원인을 사람에게 보고해라. 재실행 여부는 사람이 정한다. 런처가 임의로 재실행하지 마라."
+  printf '\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 2; }
 
-# ─────────────────────────────────────────── 상담역용 상태 브로드캐스트
-# 셸은 대화를 못 한다. 대신 상태를 파일로 흘려서 상담역이 읽게 한다.
+# ─────────────────────────────────────────── 상담역·런처용 상태 브로드캐스트
+# 셸은 대화를 못 한다. 대신 상태를 파일로 흘려서 상담역·런처 세션이 읽게 한다.
+# 3번째 인자가 "## 다음 행동" 블록이 된다 — 런처 계약은 문서(SKILL.md)가 아니라
+# 런처가 실제로 읽는 이 파일에 박는다. 문서에만 적힌 계약은 안 지켜졌다(2026-08-24:
+# 런처 세션이 스크립트 stderr 의 터미널 안내를 그대로 전달하고, 정지 후 갈 길을 잃었다).
 state() {
-  local phase=$1 note=${2:-}
+  local phase=$1 note=${2:-} next=${3:-}
   cat > "$STATE" <<EOF
 # 파이프라인 상태 (셸이 자동 생성 — 사람이 편집하지 말 것)
 
@@ -112,6 +117,9 @@ state() {
 - pid: $$
 - updated: $(date -Iseconds)
 - note: $note
+
+## 다음 행동 (런처 세션은 이 블록만 따르면 된다)
+${next:-진행 중 — 개입 불필요. 이 파일을 다시 읽으면 최신 상태가 보인다.}
 
 ## 지금까지 생성된 산출물
 $(ls -1 "$WORK"/*.md 2>/dev/null | sed 's|.*/|- |' || echo "- (없음)")
@@ -204,10 +212,10 @@ run_stage() {
     DONE)
       log "  ✔ $name DONE" ;;
     BLOCKED)
-      state "BLOCKED:$name" "사람 판단 필요"
+      state "BLOCKED:$name" "사람 판단 필요" "$artifact 의 BLOCKED_REASON·BLOCKED_NEEDS 를 사람에게 보고하고 결정을 받아라. 결정 전에는 재실행하지 마라 — 같은 곳에서 또 막힌다."
       log "  ⛔ $name BLOCKED"
       sed -n '/^BLOCKED_REASON:/,$p' "$artifact" >&2
-      printf '\n\033[1;33m→ 터미널 2에서 이렇게 물어봐:\033[0m\n  "%s BLOCKED 났어. 원인 뭐야?"\n\n' "$name" >&2
+      printf '\n\033[1;33m→ 상담역(advisor.sh 또는 런처 세션)에게 물어봐:\033[0m\n  "%s BLOCKED 났어. 원인 뭐야?"\n\n' "$name" >&2
       exit 3 ;;
     *)
       die "$name: STATUS 라인 없음 또는 형식 위반 (DONE|BLOCKED 필수)" ;;
@@ -248,7 +256,7 @@ gate_human() {
   [ "$AUTO" = "1" ] && [ "$force" != "1" ] \
     && { log "  (AUTO=1 — 게이트 통과: $msg)"; return 0; }
 
-  state "GATE" "$msg"
+  state "GATE" "$msg" "tty 게이트에서 사람 응답 대기 중 — 런처 개입 불필요."
   cat >&2 <<EOF
 
 $(printf '\033[1;33m[게이트]\033[0m') $msg
@@ -269,7 +277,7 @@ EOF
     y|Y) return 0 ;;
     e|E) "${EDITOR:-less}" "$file"; gate_human "$msg" "$file" "$force" ;;
     __NO_TTY__)
-      state "AWAITING_APPROVAL" "$msg — $(basename "$file")"
+      state "AWAITING_APPROVAL" "$msg — $(basename "$file")" "1) $file 을 사람에게 보여줘라. 2) 승인은 사람만 한다 — 별도 터미널에서 $ROOT/approve.sh $FEATURE $(basename "$file") 실행. 런처가 대신 실행하거나 .approved 를 직접 쓰는 것은 금지다. 3) 승인 후 같은 명령으로 재실행하면 이 게이트는 마커로 통과한다."
       {
         printf '\033[1;33m[승인 대기]\033[0m tty 가 없어 게이트에서 멈춘다 (exit 4)\n'
         printf '  검토 대상: %s\n' "$file"
@@ -331,7 +339,7 @@ gate_scope() {
 ATTEMPT=0
 state "START"
 log "=== $FEATURE 시작 ==="
-log "상담역 띄우려면 다른 터미널에서: ./advisor.sh $FEATURE"
+log "상담 창구: 터미널이면 ./advisor.sh $FEATURE, 런처 세션이면 $WORK/STATE.md 를 읽어라"
 
 if [ "$FRESH_DESIGN" != "1" ] && [ -f "$WORK/DESIGN.md" ] \
    && [ "$(grep -m1 '^STATUS:' "$WORK/DESIGN.md" | awk '{print $2}')" = "DONE" ]; then
@@ -410,6 +418,6 @@ while :; do
   gate_human "재시도 $((ATTEMPT + 1)) 진행? (상담역에게 FAIL_LOG 물어봐도 됨)" "$FAIL_LOG"
 done
 
-state "DONE"
+state "DONE" "" "완주다. 산출물($WORK/{DESIGN,JUDGE,IMPL,VERIFY}.md)과 테스트 통과 사실을 사람에게 보고해라."
 log "=== $FEATURE 완료 ==="
 log "산출물: $WORK/{DESIGN,JUDGE,IMPL,VERIFY}.md"

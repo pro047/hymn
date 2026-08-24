@@ -153,8 +153,9 @@ if command -v python3 >/dev/null 2>&1; then
   echo "stale-hash-of-previously-approved-content" > .pipeline/feat/DESIGN.md.approved
   got=0
   detach env FAKE_SCENARIO=ok AUTO=0 TEST_CMD=true ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
-  if [ "$got" -eq 4 ] && [ ! -f .pipeline/feat/IMPL.md ]; then
-    green "  PASS  낡은 마커는 통과시키지 않는다 (재승인 요구)"; PASS=$((PASS+1))
+  if [ "$got" -eq 4 ] && [ ! -f .pipeline/feat/IMPL.md ] \
+     && grep -q 'approve.sh feat DESIGN.md' .pipeline/feat/STATE.md 2>/dev/null; then
+    green "  PASS  낡은 마커는 통과시키지 않고 STATE 에 승인 안내를 남긴다"; PASS=$((PASS+1))
   else
     red   "  FAIL  낡은 마커 — exit=$got (기대 4)$([ -f .pipeline/feat/IMPL.md ] && echo ', IMPL.md 생성됨')"; FAIL=$((FAIL+1))
   fi
@@ -289,10 +290,12 @@ echo
 echo "=== 상담역 상태 창구 ==="
 setup
 env FAKE_SCENARIO=ok AUTO=1 TEST_CMD="true" ./orchestrate.sh feat >/dev/null 2>&1
-if grep -q 'phase: DONE' .pipeline/feat/STATE.md 2>/dev/null; then
-  green "  PASS  STATE.md 가 최종 상태를 반영한다"; PASS=$((PASS+1))
+if grep -q 'phase: DONE' .pipeline/feat/STATE.md 2>/dev/null \
+   && grep -q '## 다음 행동' .pipeline/feat/STATE.md \
+   && grep -q '완주' .pipeline/feat/STATE.md; then
+  green "  PASS  STATE.md 가 최종 상태와 다음 행동을 반영한다"; PASS=$((PASS+1))
 else
-  red   "  FAIL  STATE.md 미갱신"; FAIL=$((FAIL+1))
+  red   "  FAIL  STATE.md 미갱신 또는 다음 행동 블록 없음"; FAIL=$((FAIL+1))
 fi
 teardown
 
