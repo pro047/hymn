@@ -151,6 +151,14 @@ run_stage() {
   state "RUNNING:$name" "model=$model"
   log "▶ $name (model=$model, fallback=$fallback, 턴≤$turns, 예산≤\$$budget)"
 
+  # 종료 계약(_contract.md)에 거부 처리 계약(_denial.md)을 이어 붙인다.
+  # _denial.md 가 없어도 돌아가야 한다 — 그래야 그 파일만 단독으로 되돌릴 수 있다.
+  # cat 에 두 경로를 그냥 넘기면 한쪽이 없을 때 명령 자체가 실패한다.
+  local sys_append; sys_append="$(cat "$PROMPTS/_contract.md")"
+  if [ -f "$PROMPTS/_denial.md" ]; then
+    sys_append="$sys_append"$'\n\n'"$(cat "$PROMPTS/_denial.md")"
+  fi
+
   set +e
   envsubst < "$prompt_file" | claude -p \
     --model "$model" \
@@ -160,7 +168,7 @@ run_stage() {
     --max-turns "$turns" \
     --max-budget-usd "$budget" \
     --permission-mode acceptEdits \
-    --append-system-prompt "$(cat "$PROMPTS/_contract.md")" \
+    --append-system-prompt "$sys_append" \
     | tee "$stream" \
     | jq --unbuffered -r '
         select(.type? == "assistant") | .message.content[]? |
@@ -299,15 +307,28 @@ EOF
 # 판정 근거는 DESIGN.md 의 ALLOWED_FILES 블록 하나뿐이다.
 # 사람이 읽는 표를 파싱하지 않는 이유: 형식이 흔들리고, 흔들리는 걸 파싱하면
 # 게이트가 조용히 통과시킨다. 계약은 기계가 읽을 수 있는 모양이어야 한다.
+# DESIGN.md 의 ALLOWED_FILES 블록을 기계가 읽는 목록으로 뽑는다.
+#
+# gate_scope 와 "승인 직후 재생성" 두 곳에서 쓴다. 로직을 복사해 두 벌로 두면
+# 한쪽만 고쳐졌을 때 게이트가 판정하는 목록과 훅이 허용하는 목록이 갈라진다 —
+# 그때 나타나는 증상은 "설계에 있는 파일인데 거부됨"이라 원인을 찾기 어렵다.
+extract_allowed_files() {
+  local out=$1
+  # grep 은 매치가 0건이면 exit 1 이다. set -e 아래에서 그건 "계약이 비었다"가 아니라
+  # "스크립트 사망"으로 나타난다 — 판정하기 전에 죽으므로 반드시 감싼다.
+  set +e
+  sed -n '/^ALLOWED_FILES:/,/^[[:space:]]*$/p' "$WORK/DESIGN.md" \
+    | grep '^- ' | sed -e 's/^- *//' -e 's|^\./||' | sort -u > "$out"
+  set -e
+}
+
 gate_scope() {
   local stage=$1
   local allowed="$WORK/allowed_files.txt" changed="$WORK/changed_files.txt"
 
-  # grep 은 매치가 0건이면 exit 1 이다. set -e 아래에서 그건 "계약이 비었다"가 아니라
-  # "스크립트 사망"으로 나타난다 — 게이트가 판정하기 전에 죽으므로 반드시 감싼다.
+  extract_allowed_files "$allowed"
+
   set +e
-  sed -n '/^ALLOWED_FILES:/,/^[[:space:]]*$/p' "$WORK/DESIGN.md" \
-    | grep '^- ' | sed -e 's/^- *//' -e 's|^\./||' | sort -u > "$allowed"
 
   # cut -c4- : git status --porcelain 은 앞 3칸이 상태코드+공백이다.
   # .pipeline/ 은 산출물이라 항상 제외한다 (.gitignore 가 지워져도 게이트는 살아 있어야 한다)
@@ -383,6 +404,20 @@ if [ "$UNVERIFIED" -gt 0 ] || [ "$REFUTED" -gt 0 ]; then
 fi
 
 gate_human "설계 검토 — 여기서 틀리면 뒤가 전부 낭비다" "$WORK/DESIGN.md"
+
+# ── 승인된 범위를 하위 프로세스(그리고 그 훅)에 알린다 ────────────────
+# 사람이 방금 승인한 DESIGN.md 에는 마이그레이션 계획(§5)과 변경 파일 목록이
+# 들어 있다. 그런데 민감 경로 훅(alembic/ · auth/ 등)은 그 승인을 볼 방법이 없어
+# 헤드리스 세션에서 ask 를 띄우고, 답할 tty 가 없어 거부로 끝난다 —
+# 2026-08-24 impl 이 이렇게 죽었다(마이그레이션 파일 Write 거부, 산출물 0).
+#
+# 승인 "직후" 에 뽑는 것이 중요하다. 게이트 전에 만들어두면 사람이 검토하는 동안
+# 설계가 바뀌었을 때 승인된 내용과 목록이 갈라진다.
+#
+# 이것은 가드 면제가 아니다. 목록에 있는 파일만 통과하고, 목록 밖은 그대로 ask 다.
+extract_allowed_files "$WORK/allowed_files.txt"
+export PIPELINE_APPROVED_SCOPE="$WORK/allowed_files.txt"
+log "승인 범위 $(wc -l < "$WORK/allowed_files.txt" | tr -d ' ')개 파일을 훅에 전달"
 
 while :; do
   ATTEMPT=$((ATTEMPT + 1))
