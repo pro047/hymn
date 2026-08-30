@@ -69,6 +69,22 @@ BUDGET_VERIFY="${BUDGET_VERIFY:-5}"
 
 MODEL_LOG=""   # WORK 확정 후 아래에서 설정
 
+# ── 에이전트가 스스로 돌려도 되는 명령 (mvp b30b9a9 이식) ──────────────
+# 읽기 전용 검사만 넣는다. 합격 판정은 여전히 셸이 $TEST_CMD 와 범위 게이트로
+# 직접 한다 — 여기서 여는 것은 "판정권"이 아니라 "제출 전에 스스로 확인할 권한"이다.
+# 헤드리스라 ask 는 곧 거부고, 확인 불가는 BLOCKED 가 된다 —
+# 2026-08-30 token-sweep-a impl 이 실제로 여기서 멈췄다.
+# python 허용은 임의 실행과 동급이지만, 범위 게이트(목록 밖 변경 = 즉사)가 백스톱이다.
+AGENT_TOOLS=(
+  "Bash(git status:*)"
+  "Bash(git diff:*)"
+  "Bash(git log:*)"
+  "Bash(git ls-files:*)"
+  "Bash(backend/.venv/bin/python:*)"
+  "Bash(cd backend && .venv/bin/python:*)"
+  "Bash(cd frontend && pnpm test:*)"
+)
+
 # ── worktree 격리 강제 ───────────────────────────────
 # 각 단계는 --permission-mode acceptEdits 로 돈다. 메인 체크아웃에서 돌리면
 # 사람이 작업 중인 파일을 에이전트가 그대로 덮어쓴다. 규칙으로 부탁하지 않고 막는다.
@@ -170,6 +186,7 @@ run_stage() {
     --max-turns "$turns" \
     --max-budget-usd "$budget" \
     --permission-mode acceptEdits \
+    --allowedTools "${AGENT_TOOLS[@]}" \
     --append-system-prompt "$sys_append" \
     | tee "$stream" \
     | jq --unbuffered -r '
