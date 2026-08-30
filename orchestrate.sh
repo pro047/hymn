@@ -25,7 +25,9 @@ AUTO="${AUTO:-0}"
 # (중단 후 재실행에서 비싼 설계를 다시 만들지 않기 위한 것 — 설계 게이트는 그대로 거친다)
 # 설계를 새로 뽑고 싶으면 FRESH_DESIGN=1
 FRESH_DESIGN="${FRESH_DESIGN:-0}"
-TEST_CMD="${TEST_CMD:-npm test}"
+# 기본값이 "npm test" 였을 때 이 저장소에서 성공 불가라 예산만 태운 전례가 있다
+# (핸드오프 08-28, ~$39). 아래는 song-usage-split 완주에서 실측 검증된 명령이다.
+TEST_CMD="${TEST_CMD:-(cd backend && .venv/bin/python -m pytest -q) && (cd frontend && pnpm test)}"
 
 # ── 모델 티어링 ──────────────────────────────────────
 # 별칭 대신 풀 ID를 박는다. 별칭은 어느 날 조용히 다른 모델을 가리킨다.
@@ -203,8 +205,13 @@ run_stage() {
   if [ -n "$actual" ] && [[ "$actual" != *"$model"* ]]; then
     log "  ⚠ 모델 교체 감지: 요청=$model 실제=$actual"
     echo "- $(date -Iseconds) | $name | 요청 $model → 실제 $actual" >> "$MODEL_LOG"
+    # 게이트는 MODEL_LOG 가 아니라 단계별 스냅숏에 건다 — MODEL_LOG 는 모든 단계가
+    # append 하는 저널이라 승인 마커(내용 해시)가 다음 단계에서 반드시 낡는다.
+    # 스냅숏은 타임스탬프 없이 결정적이라 같은 교체가 반복돼도 마커가 살아 있다.
+    local swap_note="$WORK/$name.model-swap"
+    printf '%s | 요청 %s → 실제 %s\n' "$name" "$model" "$actual" > "$swap_note"
     if [ "$AUTO" != "1" ]; then
-      gate_human "요청한 모델이 안 돌았다. 결과를 신뢰할지 판단해라" "$MODEL_LOG"
+      gate_human "요청한 모델이 안 돌았다. 결과를 신뢰할지 판단해라" "$swap_note"
     fi
   elif [ -z "$actual" ]; then
     echo "- $(date -Iseconds) | $name | 실제 모델 확인 불가 (필드명 점검 필요)" >> "$MODEL_LOG"
@@ -332,7 +339,7 @@ gate_scope() {
 
   # cut -c4- : git status --porcelain 은 앞 3칸이 상태코드+공백이다.
   # .pipeline/ 은 산출물이라 항상 제외한다 (.gitignore 가 지워져도 게이트는 살아 있어야 한다)
-  git -C "$ROOT" status --porcelain \
+  git -C "$ROOT" status --porcelain -uall \
     | cut -c4- | sed 's|^\./||' | grep -v '^\.pipeline/' | sort -u > "$changed"
   set -e
 
