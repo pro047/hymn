@@ -149,6 +149,53 @@ describe("추가 방식 선택", () => {
   });
 });
 
+describe("업로드 결과 처리", () => {
+  function submitFilledForm() {
+    fillTitleAndFile();
+    fireEvent.click(screen.getByRole("button", { name: "주차 고르기" }));
+    fireEvent.click(submitButton());
+  }
+
+  it("재사용 결과면 안내 문구를 띄우고 다이얼로그를 닫아야 한다", async () => {
+    // Arrange — the hook answered {reused: true}: nothing was uploaded and the
+    // church's existing file stays. The text is the frontend's own, since a
+    // success response carries no server detail.
+    const { props } = renderDialog({
+      onUploadSubmit: vi.fn().mockResolvedValue({ ok: true, reused: true }),
+    });
+
+    // Act
+    submitFilledForm();
+
+    // Assert
+    await vi.waitFor(() =>
+      expect(window.alert).toHaveBeenCalledWith(
+        "기존 악보를 사용합니다. 악보를 바꾸려면 [수정]을 사용해 주세요."
+      )
+    );
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("409 detail을 그대로 보여주고 다이얼로그를 닫지 않아야 한다", async () => {
+    // Arrange — the message is server-authored (D5-a/D10); the dialog must not
+    // invent its own, and must keep the form so the user can fix the week.
+    const detail = "이 곡은 이미 그 주차에 등록되어 있습니다.";
+    const { props } = renderDialog({
+      onUploadSubmit: vi.fn().mockResolvedValue({ ok: false, message: detail }),
+    });
+
+    // Act
+    submitFilledForm();
+
+    // Assert
+    await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toBe(detail));
+    expect(props.onClose).not.toHaveBeenCalled();
+    // The form survives for a retry — closing would throw the input away.
+    expect(screen.getByLabelText("악보 제목").value).toBe("은혜");
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+});
+
 describe("주차 달력 제한", () => {
   it("오늘 이전 날짜를 비활성화하도록 전달해야 한다", () => {
     renderDialog();

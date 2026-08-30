@@ -44,6 +44,7 @@ export default function ScoreUploadDialog({
   const [selectedSavedScoreId, setSelectedSavedScoreId] = useState(
     initialSavedScore?.score_id ?? ""
   );
+  const [submitError, setSubmitError] = useState("");
   const previewUrl = useMemo(() => {
     if (!file) return "";
     return URL.createObjectURL(file);
@@ -89,20 +90,36 @@ export default function ScoreUploadDialog({
       });
     }
 
-    if (result?.ok) {
-      onClose();
-      setTitle("");
-      setWeekOf(null);
-      setFile(null);
-      setSelectedSavedScoreId("");
-      window.alert(
-        mode === "library"
-          ? "선택한 악보를 반영했습니다."
-          : saveToLibrary
-            ? "보관함에 업로드되었습니다."
-            : "업로드가 완료되었습니다."
-      );
+    if (!result?.ok) {
+      // D5-a's same-week 409 and D10's saved-score reupload 409 carry a
+      // server-authored detail; it stays on screen and the dialog stays open
+      // so the caller can fix the week and retry, rather than losing the form.
+      setSubmitError(result?.message || "");
+      return;
     }
+
+    onClose();
+    setTitle("");
+    setWeekOf(null);
+    setFile(null);
+    setSelectedSavedScoreId("");
+    setSubmitError("");
+
+    if (result.reused) {
+      // D5: 200 with nothing uploaded — the file this church has used for
+      // months is untouched. This text is the frontend's own, since a success
+      // response carries no server detail to show instead.
+      window.alert("기존 악보를 사용합니다. 악보를 바꾸려면 [수정]을 사용해 주세요.");
+      return;
+    }
+
+    window.alert(
+      mode === "library"
+        ? "선택한 악보를 반영했습니다."
+        : saveToLibrary
+          ? "보관함에 업로드되었습니다."
+          : "업로드가 완료되었습니다."
+    );
   };
 
   return (
@@ -243,6 +260,12 @@ export default function ScoreUploadDialog({
               ) : null}
             </>
           )}
+
+          {submitError ? (
+            <p className="text-sm text-red-600" role="alert">
+              {submitError}
+            </p>
+          ) : null}
 
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>

@@ -4,12 +4,12 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, func
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.db import get_session
 from app.deps import get_current_user
-from app.models import SavedScore, Score, SetItem, User, Week
+from app.models import SavedScore, Score, Song, User
 from app.schemas.saved_score import (
     SavedScoreApplyRequest,
     SavedScoreItem,
@@ -17,6 +17,7 @@ from app.schemas.saved_score import (
     SavedScoreUploadResponse,
     SavedScoreUseResponse,
 )
+from app.services.song import attach_usage, get_or_reuse_song
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_get, presign_put
 
@@ -27,15 +28,6 @@ def _normalize_week_date(week_of):
     if not week_of:
         return week_of
     return week_of - timedelta(days=(week_of.weekday() + 1) % 7)
-
-
-def _ensure_week(session: Session, week_of):
-    week = session.query(Week).filter(Week.date == week_of).first()
-    if not week:
-        week = Week(date=week_of)
-        session.add(week)
-        session.flush()
-    return week
 
 
 def _download_url(file_uri: str | None) -> str | None:
@@ -60,9 +52,15 @@ def list_saved_scores(
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
+    # Joined to Song, not read off the Score snapshot: a PATCH on *any* week's
+    # usage rewrites the song's title/file (D3/D8), and the library would
+    # otherwise keep serving the superseded title and the old S3 key — which
+    # still resolves, so the disagreement is silent. Score.song_id is NOT NULL,
+    # so the inner join cannot drop a saved row.
     query = (
-        session.query(SavedScore, Score)
+        session.query(SavedScore, Score, Song)
         .join(Score, Score.id == SavedScore.score_id)
+        .join(Song, Song.id == Score.song_id)
         .filter(SavedScore.user_id == user.id)
     )
 
@@ -79,16 +77,16 @@ def list_saved_scores(
     return [
         SavedScoreItem(
             score_id=score.id,
-            title=score.title,
+            title=song.title,
             week_of=score.week_of,
-            file_url=score.file_url,
-            file_uri=score.file_uri,
-            download_url=_download_url(score.file_uri),
+            file_url=song.file_url,
+            file_uri=song.file_uri,
+            download_url=_download_url(song.file_uri),
             saved_at=saved.created_at,
             last_used_at=saved.last_used_at,
             use_count=saved.use_count,
         )
-        for saved, score in rows
+        for saved, score, song in rows
     ]
 
 
@@ -100,9 +98,29 @@ def upload_saved_score(
 ):
     ext = extension_from_input(payload.filename, payload.content_type)
     key = f"scores/{user.church_id}/{uuid4()}.{ext}"
+
+    song, created = get_or_reuse_song(
+        session,
+        church_id=user.church_id,
+        title=payload.title,
+        uploader_id=user.id,
+        file_url=object_url(key),
+        file_uri=key,
+    )
+    # Unlike POST /scores, a saved-score reupload is refused rather than
+    # silently reused: SavedScoreUploadResponse has no room for a
+    # reused_song/upload_url=null signal without becoming an ALLOWED_FILES
+    # change, and 409 needs none since it is an HTTPException.
+    if not created:
+        raise HTTPException(
+            status_code=409,
+            detail="이미 등록된 곡입니다. 악보를 바꾸려면 [수정]을 사용해 주세요.",
+        )
+
     score = Score(
         church_id=user.church_id,
         uploader_id=user.id,
+        song_id=song.id,
         title=payload.title,
         week_of=None,
         file_url=object_url(key),
@@ -172,32 +190,7 @@ def apply_saved_score(
         raise HTTPException(status_code=404, detail="Score not found")
 
     normalized_week_of = _normalize_week_date(payload.week_of)
-    week = _ensure_week(session, normalized_week_of)
-    score.week_of = normalized_week_of
-
-    items = session.query(SetItem).filter(SetItem.score_id == score.id).all()
-    order_no = (
-        session.query(func.coalesce(func.max(SetItem.order_no), 0))
-        .filter(SetItem.week_id == week.id, SetItem.week_date == week.date)
-        .scalar()
-        or 0
-    )
-
-    if items:
-        for item in items:
-            order_no += 1
-            item.week_id = week.id
-            item.week_date = week.date
-            item.order_no = order_no
-    else:
-        session.add(
-            SetItem(
-                week_id=week.id,
-                week_date=week.date,
-                order_no=order_no + 1,
-                score_id=score.id,
-            )
-        )
+    attach_usage(session, score, normalized_week_of)
 
     saved.use_count += 1
     saved.last_used_at = dt.datetime.utcnow()

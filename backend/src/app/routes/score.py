@@ -2,12 +2,11 @@ from datetime import timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_session
 from app.deps import get_current_user
-from app.models import Score, SetItem, User, Week
+from app.models import Score, User
 from app.schemas.score import (
     ScoreCreate,
     ScoreCreateResponse,
@@ -15,6 +14,14 @@ from app.schemas.score import (
     ScoreFileUploadResponse,
     ScoreResponse,
     ScoreUpdate,
+)
+from app.services.song import (
+    SongTitleTaken,
+    attach_usage,
+    get_or_reuse_song,
+    has_usage_in_week,
+    rename_song,
+    replace_song_file,
 )
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_get, presign_put
@@ -25,14 +32,6 @@ def _normalize_week_date(week_of):
     if not week_of:
         return week_of
     return week_of - timedelta(days=(week_of.weekday() + 1) % 7)
-
-def _ensure_week(session: Session, week_of):
-    week = session.query(Week).filter(Week.date == week_of).first()
-    if not week:
-        week = Week(date=week_of)
-        session.add(week)
-        session.flush()
-    return week
 
 def _download_url(file_uri: str | None) -> str | None:
     if not file_uri:
@@ -101,90 +100,93 @@ def create_score(
     # text church_name and created the church if the name was unknown, with no
     # authentication at all: anyone could file scores under any congregation.
     church_id = user.church_id
-    week = _ensure_week(session, normalized_week_of)
+
     if payload.storage_type == 's3':
         if not payload.filename:
             raise HTTPException(400, 'filename required for s3')
         ext = extension_from_input(payload.filename, payload.content_type)
-        key = f"scores/{church_id}/{uuid4()}.{ext}"
-        score = Score(
-            church_id=church_id,
-            uploader_id=user.id,
-            title=payload.title,
-            week_of=normalized_week_of,
-            file_url=object_url(key),
-            file_uri=key,
-            status='draft'
-        )
-        session.add(score)
-        session.flush()
-        order_no = session.query(func.coalesce(func.max(SetItem.order_no), 0)).filter(
-            SetItem.week_id == week.id,
-            SetItem.week_date == week.date,
-        ).scalar()
-        session.add(SetItem(
-            week_id=week.id,
-            week_date=week.date,
-            order_no=(order_no or 0) + 1,
-            score_id=score.id,
-        ))
-        session.commit()
-        session.refresh(score)
-        return {
-            "score_id": score.id,
-            "upload_url": presign_put(key, 900),
-            "download_url": presign_get(key),
-            "s3_key": key,
-        }
+        candidate_key = f"scores/{church_id}/{uuid4()}.{ext}"
+        candidate_file_url = object_url(candidate_key)
+        candidate_file_uri = candidate_key
+    else:
+        if not payload.file_uri:
+            raise HTTPException(400, 'file_uri required for local')
+        _reject_foreign_object_key(payload.file_uri, church_id)
+        candidate_file_url = payload.file_uri
+        candidate_file_uri = payload.file_uri
 
-    if not payload.file_uri:
-        raise HTTPException(400, 'file_uri required for local')
-    _reject_foreign_object_key(payload.file_uri, church_id)
+    song, created = get_or_reuse_song(
+        session,
+        church_id=church_id,
+        title=payload.title,
+        uploader_id=user.id,
+        file_url=candidate_file_url,
+        file_uri=candidate_file_uri,
+    )
+    if not created and has_usage_in_week(session, song_id=song.id, week_of=normalized_week_of):
+        raise HTTPException(409, "이 곡은 이미 그 주차에 등록되어 있습니다.")
+
+    # A reused song keeps its existing file; the candidate key above was never
+    # uploaded to, so writing it into the usage snapshot would point at an
+    # object that does not exist.
+    file_url = candidate_file_url if created else song.file_url
+    file_uri = candidate_file_uri if created else song.file_uri
+
     score = Score(
         church_id=church_id,
         uploader_id=user.id,
+        song_id=song.id,
         title=payload.title,
         week_of=normalized_week_of,
-        file_url=payload.file_uri,
-        file_uri=payload.file_uri,
-        status='draft'
+        file_url=file_url,
+        file_uri=file_uri,
+        status='draft',
     )
     session.add(score)
     session.flush()
-    order_no = session.query(func.coalesce(func.max(SetItem.order_no), 0)).filter(
-        SetItem.week_id == week.id,
-        SetItem.week_date == week.date,
-    ).scalar()
-    session.add(SetItem(
-        week_id=week.id,
-        week_date=week.date,
-        order_no=(order_no or 0) + 1,
-        score_id=score.id,
-    ))
+    attach_usage(session, score, normalized_week_of)
     session.commit()
     session.refresh(score)
+
+    if payload.storage_type == 's3':
+        return {
+            "score_id": score.id,
+            "upload_url": presign_put(candidate_file_uri, 900) if created else None,
+            "download_url": _download_url(file_uri),
+            "s3_key": file_uri,
+            "reused_song": not created,
+        }
+
     return {
         "score_id": score.id,
         "church_id": score.church_id,
         "week_of": score.week_of,
         "title": score.title,
         "file_uri": score.file_uri,
-        "created_at": score.created_at
+        "created_at": score.created_at,
+        "reused_song": not created,
     }
 
 @router.get("/scores", response_model=list[ScoreResponse])
 def list_scores(session: Session = Depends(get_session)):
-    scores = session.query(Score).filter(Score.week_of.is_not(None)).order_by(Score.created_at.asc()).all()
+    scores = (
+        session.query(Score)
+        .options(joinedload(Score.song))
+        .filter(Score.week_of.is_not(None))
+        .order_by(Score.created_at.asc())
+        .all()
+    )
     return [
         ScoreResponse(
             id=s.id,
             church_id=s.church_id,
             week_of=s.week_of,
-            title=s.title,
-            file_url=s.file_url,
-            file_uri=s.file_uri,
-            download_url=_download_url(s.file_uri),
+            title=s.song.title,
+            file_url=s.song.file_url,
+            file_uri=s.song.file_uri,
+            download_url=_download_url(s.song.file_uri),
             created_at=s.created_at,
+            song_id=s.song_id,
         )
         for s in scores
     ]
@@ -209,15 +211,17 @@ def get_score(
     rather than deleted so the next reader copies a protected route.
     """
     score = _own_score_or_404(session, score_id, user)
+    song = score.song
     return ScoreResponse(
         id=score.id,
         church_id=score.church_id,
         week_of=score.week_of,
-        title=score.title,
-        file_url=score.file_url,
-        file_uri=score.file_uri,
-        download_url=_download_url(score.file_uri),
-        created_at=score.created_at
+        title=song.title,
+        file_url=song.file_url,
+        file_uri=song.file_uri,
+        download_url=_download_url(song.file_uri),
+        created_at=score.created_at,
+        song_id=score.song_id,
     )
 
 @router.post("/scores/{score_id}/file", response_model=ScoreFileUploadResponse)
@@ -261,49 +265,48 @@ def update_score(
     user: User = Depends(get_current_user),
 ):
     score = _writable_score_or_error(session, score_id, user)
+    song = score.song
 
     if payload.title is not None:
-        score.title = payload.title
+        try:
+            rename_song(session, song, payload.title)
+        except SongTitleTaken:
+            raise HTTPException(409, "같은 제목의 곡이 이미 있습니다.") from None
+        # Keeps this usage's own snapshot in step with the rename it asked
+        # for; other weeks' snapshots are untouched, same as the file case.
+        score.title = song.title
     if payload.week_of is not None:
         normalized_week_of = _normalize_week_date(payload.week_of)
         if normalized_week_of != score.week_of:
-            score.week_of = normalized_week_of
-            week = _ensure_week(session, normalized_week_of)
-            items = session.query(SetItem).filter(SetItem.score_id == score.id).all()
-            if items:
-                order_no = session.query(func.coalesce(func.max(SetItem.order_no), 0)).filter(
-                    SetItem.week_id == week.id,
-                    SetItem.week_date == week.date,
-                ).scalar() or 0
-                for item in items:
-                    order_no += 1
-                    item.week_id = week.id
-                    item.week_date = week.date
-                    item.order_no = order_no
+            attach_usage(session, score, normalized_week_of)
     if payload.file_uri is not None:
         # Both ways in get the same gate. Checking only on create would let the
         # caller file a harmless score and then point it at a foreign key.
         _reject_foreign_object_key(payload.file_uri, score.church_id)
-        score.file_uri = payload.file_uri
         # object_url, not the key itself — the column holds a URL everywhere
         # else (create_score does the same at the s3 branch) and every client
         # reads it as `download_url ?? file_url`. Storing the bare key survives
         # only because the gate above forces the scores/ prefix, which is
         # exactly what makes _download_url sign it and hide the fallback.
-        score.file_url = object_url(payload.file_uri)
+        file_url = object_url(payload.file_uri)
+        replace_song_file(session, song, file_url=file_url, file_uri=payload.file_uri)
+        score.file_url = file_url
+        score.file_uri = payload.file_uri
 
     session.commit()
     session.refresh(score)
+    session.refresh(song)
 
     return ScoreResponse(
         id=score.id,
         church_id=score.church_id,
         week_of=score.week_of,
-        title=score.title,
-        file_url=score.file_url,
-        file_uri=score.file_uri,
-        download_url=_download_url(score.file_uri),
-        created_at=score.created_at
+        title=song.title,
+        file_url=song.file_url,
+        file_uri=song.file_uri,
+        download_url=_download_url(song.file_uri),
+        created_at=score.created_at,
+        song_id=score.song_id,
     )
 
 @router.delete('/scores/{score_id}', status_code=204)

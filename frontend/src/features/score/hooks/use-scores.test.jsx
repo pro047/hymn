@@ -146,6 +146,171 @@ it("보관함 플래그가 꺼져 있으면 저장소 목록을 부르지 않아
   expect(calls.some((call) => call.includes("/scores"))).toBe(true);
 });
 
+it("scores에 song_id가 있으면 곡 수를 distinct song_id로 세어야 한다", async () => {
+  // Arrange — 5 usages over 2 songs: the home page's "총 곡 수" must say 2,
+  // not 5. That mistake is the bug this feature exists to fix.
+  const items = [
+    { id: "u1", song_id: "s1", title: "A" },
+    { id: "u2", song_id: "s1", title: "A" },
+    { id: "u3", song_id: "s1", title: "A" },
+    { id: "u4", song_id: "s2", title: "B" },
+    { id: "u5", song_id: "s2", title: "B" },
+  ];
+  globalThis.fetch = vi.fn(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return ok(items);
+  });
+
+  // Act
+  const { result } = renderHook(() => useScores());
+
+  // Assert
+  await waitFor(() => expect(result.current.scores.length).toBe(5));
+  expect(result.current.totalSongs).toBe(2);
+});
+
+it("song_id가 없는 항목은 title로 곡 수를 세어야 한다", async () => {
+  // Arrange — a frontend deployed ahead of the migration sees no song_id;
+  // the fallback must count titles rather than show 0.
+  const items = [
+    { id: "u1", song_id: "s1", title: "A" },
+    { id: "u2", title: "B" },
+    { id: "u3", title: "B" },
+    { id: "u4", title: "C" },
+  ];
+  globalThis.fetch = vi.fn(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return ok(items);
+  });
+
+  // Act
+  const { result } = renderHook(() => useScores());
+
+  // Assert — {s1, B, C}
+  await waitFor(() => expect(result.current.scores.length).toBe(4));
+  expect(result.current.totalSongs).toBe(3);
+});
+
+it("재사용 응답이면 S3 PUT 없이 성공과 reused를 돌려줘야 한다", async () => {
+  // Arrange — upload_url is null on a reused create; running the PUT anyway
+  // would be fetch(null) and a crash. This lives here and not in the dialog
+  // test: the dialog mocks onUploadSubmit, so a PUT assertion there would
+  // pass no matter what the hook does.
+  const result = await mountedHook();
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return ok({ score_id: "score-9", upload_url: null, reused_song: true });
+  });
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.createScoreWithUpload({
+      title: "은혜",
+      weekOf: "2026-08-30",
+      file: IMAGE(),
+    });
+  });
+
+  // Assert — no PUT anywhere, but the list still refreshes: it was a success
+  expect(outcome).toEqual({ ok: true, scoreId: "score-9", reused: true });
+  expect(calls.some((call) => call.startsWith("PUT"))).toBe(false);
+  expect(calls.some((call) => call.startsWith("GET") && call.includes("/scores"))).toBe(true);
+});
+
+it("악보 등록 409의 서버 detail을 메시지로 올려야 한다", async () => {
+  // Arrange — D5-a: same song, same week. The Korean detail must reach the
+  // caller instead of being flattened to the generic failure message.
+  const result = await mountedHook();
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return {
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: "이 곡은 이미 그 주차에 등록되어 있습니다." }),
+    };
+  });
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.createScoreWithUpload({
+      title: "은혜",
+      weekOf: "2026-08-30",
+      file: IMAGE(),
+    });
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "이 곡은 이미 그 주차에 등록되어 있습니다." });
+  expect(calls.some((call) => call.startsWith("PUT"))).toBe(false);
+});
+
+it("제목 충돌 409의 서버 detail을 수정 실패 메시지로 올려야 한다", async () => {
+  // Arrange — D8: the rename collision message is server-authored; the dialog
+  // renders result.message, so flattening it here hides the reason on screen.
+  const result = await mountedHook();
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return {
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: "같은 제목의 곡이 이미 있습니다." }),
+    };
+  });
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.updateScore({ scoreId: "score-1", title: "겹치는 제목" });
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "같은 제목의 곡이 이미 있습니다." });
+});
+
+it("등록 422의 배열 detail을 읽을 수 있는 문장으로 올려야 한다", async () => {
+  // Arrange — FastAPI's `detail` is a string for HTTPException but an array of
+  // items for a 422, and Error(array) renders "[object Object]" in the dialog's
+  // alert. createScoreWithUpload has no client-side length guard (updateScore
+  // does), so an over-long title is exactly how a real user reaches this.
+  const result = await mountedHook();
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return {
+      ok: false,
+      status: 422,
+      json: async () => ({
+        detail: [
+          {
+            type: "string_too_long",
+            loc: ["body", "title"],
+            msg: "String should have at most 255 characters",
+            ctx: { max_length: 255 },
+          },
+        ],
+      }),
+    };
+  });
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.createScoreWithUpload({
+      title: "가".repeat(256),
+      weekOf: "2026-08-30",
+      file: IMAGE(),
+    });
+  });
+
+  // Assert — the field is labelled because the dialog shows nothing inline
+  expect(outcome).toEqual({
+    ok: false,
+    message: "제목: 최대 255자까지 입력할 수 있습니다.",
+  });
+  expect(calls.some((call) => call.startsWith("PUT"))).toBe(false);
+});
+
 it("제목이 255자를 넘으면 아무 요청도 보내지 않아야 한다", async () => {
   // Arrange — the column is varchar(255); the server's 422 body is not readable.
   const result = await mountedHook();

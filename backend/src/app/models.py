@@ -43,6 +43,7 @@ class Church(Base):
 
     users: Mapped[list["User"]] = relationship(back_populates="church", cascade="all, delete-orphan")
     scores: Mapped[list["Score"]] = relationship(back_populates="church", cascade="all, delete-orphan")
+    songs: Mapped[list["Song"]] = relationship(back_populates="church", cascade="all, delete-orphan")
 
 
 class User(Base):
@@ -116,12 +117,48 @@ class PasswordResetToken(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
 
+class Song(Base):
+    """The canonical song a church sings, distinct from a week's use of it.
+
+    `Score` stayed a weekly usage row (see below) rather than being renamed,
+    so this table sits above it: title/file here are the source of truth, and
+    every Score.song_id points at the row that answers "which song is this."
+    """
+
+    __tablename__ = "songs"
+    __table_args__ = (UniqueConstraint("church_id", "title_key", name="uq_songs_church_title_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    church_id: Mapped[str] = mapped_column(
+        ForeignKey("churches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    uploader_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Matching key, not display: normalize_title() applied to `title`. Kept as
+    # its own column so the migration and the app compute it the same way
+    # without either one re-deriving it from the other at read time.
+    title_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False
+    )
+
+    church: Mapped["Church"] = relationship(back_populates="songs")
+    usages: Mapped[list["Score"]] = relationship(back_populates="song", cascade="all, delete-orphan")
+
+
 class Score(Base):
     __tablename__ = "scores"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     church_id: Mapped[str] = mapped_column(ForeignKey("churches.id", ondelete="CASCADE"), nullable=False)
     uploader_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    song_id: Mapped[str] = mapped_column(ForeignKey("songs.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Weekly snapshot: what was actually filed for this week. `songs` holds the
+    # canonical values GET /scores now serves; these stay so a reupload can be
+    # traced and so downgrading the split migration loses nothing.
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     week_of: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     file_url: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -136,6 +173,7 @@ class Score(Base):
 
     church: Mapped["Church"] = relationship(back_populates="scores")
     uploader: Mapped["User"] = relationship(back_populates="uploaded_scores")
+    song: Mapped["Song"] = relationship(back_populates="usages")
     assets: Mapped[list["ScoreAsset"]] = relationship(back_populates="score", cascade="all, delete-orphan")
     set_items: Mapped[list["SetItem"]] = relationship(back_populates="score", cascade="all, delete-orphan")
     saved_by: Mapped[list["SavedScore"]] = relationship(

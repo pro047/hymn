@@ -29,6 +29,13 @@ const FIELD_LABELS: Record<string, string> = {
   church_address: "교회주소",
   phone: "휴대폰 번호",
   agreed_terms: "약관 동의",
+  // The score forms render no inline field errors at all, so they pass
+  // renderedFields: [] and every message arrives here to be labelled.
+  title: "제목",
+  filename: "파일 이름",
+  content_type: "파일 형식",
+  file_uri: "파일 주소",
+  week_of: "주차",
 };
 
 // Pydantic prefixes `loc` with where the value came from; the field name is
