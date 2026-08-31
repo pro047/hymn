@@ -50,3 +50,9 @@ frontend/dist/
 
 # Local data backups (S3 image dumps)
 /infra/hymn-images-dev-backup/
+
+# 직렬 에이전트 파이프라인 산출물·로그
+.pipeline/
+
+# 핸드오프·리서치 문서 (파이프라인이 EXTRA_FILES 로 반입한다)
+.claude/

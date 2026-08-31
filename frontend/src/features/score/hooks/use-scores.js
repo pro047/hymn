@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch } from "../../../api/client";
 import { API_PATHS } from "../../../api/paths";
+import { alertMessageOf, readApiError } from "../../../lib/api-error";
 import { isAuthenticated } from "../../../lib/auth-storage";
 import { SAVED_SCORES_ENABLED } from "../feature-flags";
 
@@ -17,6 +18,13 @@ export function useScores() {
   const savedScoreIds = useMemo(
     () => new Set(savedScores.map((score) => score.score_id)),
     [savedScores]
+  );
+
+  // Falls back to title when song_id is absent so a frontend deployed ahead
+  // of the migration still shows a meaningful count instead of 0.
+  const totalSongs = useMemo(
+    () => new Set(scores.map((score) => score.song_id ?? score.title)).size,
+    [scores]
   );
 
   const fetchScores = useCallback(async () => {
@@ -96,10 +104,29 @@ export function useScores() {
       });
 
       if (!response.ok) {
-        throw new Error("악보 생성에 실패했습니다.");
+        // D5-a's same-week 409 and D10's saved-score reupload 409 both carry a
+        // Korean detail the user needs to see; the generic message hid it.
+        // Read through api-error because a 422's `detail` is an array of items,
+        // not a string: passing it to Error() renders "[object Object]" on
+        // screen. Unlike updateScore, this path has no client-side length guard,
+        // so an over-long title reaches the server and comes back as a 422.
+        // `[]` and not omitted: the dialog renders no inline field errors, so
+        // every message has to be promoted to the alert or it is never seen.
+        const apiError = await readApiError(response, "악보 생성에 실패했습니다.", []);
+        throw new Error(alertMessageOf(apiError));
       }
 
       const data = await response.json();
+
+      // D5: a reused song's create response has upload_url=null — there is no
+      // file to PUT, and fetch(null, ...) would throw if this ran anyway.
+      // Scoped to saveToLibrary === false because D10 answers a saved-score
+      // reupload with 409, which is already caught above.
+      if (!saveToLibrary && data.reused_song) {
+        await fetchScores();
+        return { ok: true, scoreId: data.score_id, reused: true };
+      }
+
       const uploadResponse = await fetch(data.upload_url, {
         method: "PUT",
         headers: { "Content-Type": file.type || "application/octet-stream" },
@@ -114,7 +141,7 @@ export function useScores() {
       return { ok: true, scoreId: data.score_id };
     } catch (err) {
       setError(err.message);
-      return { ok: false };
+      return { ok: false, message: err.message };
     } finally {
       setIsUploading(false);
     }
@@ -167,7 +194,12 @@ export function useScores() {
         body: JSON.stringify(fileUri ? { title, file_uri: fileUri } : { title }),
       });
       if (!response.ok) {
-        throw new Error("악보 수정에 실패했습니다.");
+        // D8's title-collision 409 carries a Korean detail (rename_song's
+        // message); the generic message here used to swallow it. Same array-vs
+        // -string reason as createScoreWithUpload — the guard above only covers
+        // `title`, so a 422 can still arrive from another field.
+        const apiError = await readApiError(response, "악보 수정에 실패했습니다.", []);
+        throw new Error(alertMessageOf(apiError));
       }
       await fetchScores();
       return { ok: true };
@@ -277,6 +309,7 @@ export function useScores() {
 
   return {
     scores,
+    totalSongs,
     savedScores,
     savedScoreIds,
     error,

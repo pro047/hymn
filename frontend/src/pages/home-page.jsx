@@ -39,6 +39,7 @@ export default function HomePage({ headerActions = null }) {
 
   const {
     scores,
+    totalSongs,
     savedScores,
     savedScoreIds,
     error,
@@ -138,7 +139,7 @@ export default function HomePage({ headerActions = null }) {
       </header>
 
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
-        <HeroSection totalSongs={scores.length} onUpload={() => openUploadDialog()} />
+        <HeroSection totalSongs={totalSongs} onUpload={() => openUploadDialog()} />
 
         {error ? (
           <Alert variant="destructive">

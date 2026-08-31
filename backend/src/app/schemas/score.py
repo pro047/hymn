@@ -53,6 +53,9 @@ class ScoreCreateResponse(BaseModel):
     s3_key: str | None = None
     file_uri: str | None = None
     created_at: datetime | None = None
+    # Defaults False so a consumer that does not know this key yet (an older
+    # frontend build) keeps behaving as if every create were brand new.
+    reused_song: bool = False
 
 class ScoreResponse(BaseModel):
     id: str
@@ -63,6 +66,8 @@ class ScoreResponse(BaseModel):
     file_uri: str | None = None
     download_url: str | None = None
     created_at: datetime
+    # None only for schema compatibility; the route always fills it in.
+    song_id: str | None = None
 
 class ScoreFileUploadRequest(BaseModel):
     # Required here, unlike ScoreCreate where the s3 branch checks it at

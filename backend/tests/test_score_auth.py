@@ -13,7 +13,7 @@ because the app never makes one.
 
 from datetime import date, timedelta
 
-from app.models import Score
+from app.models import Score, Song
 from app.schemas.score import current_week_start
 
 
@@ -263,12 +263,18 @@ def test_editing_the_title_of_a_legacy_score_should_still_work(client, db_sessio
     file_uri must not trip over a row that could never satisfy it. Those rows
     already resolve to download_url=None, so nothing is signed for them either
     way — the gate is about what may be written, not what already exists.
+
+    Legacy is set on both Score and Song: the response now signs song.file_uri
+    (the split moved the canonical value there), so leaving Song's key alone
+    would make the row not legacy at all.
     """
     headers = _register(client, SIGNUP_PAYLOAD)
     score_id = _create_score(client, headers)
     # Put the row into the shape an old one holds. `client` runs against this
     # same session, so no commit is needed for the route to see it.
+    score = db_session.query(Score).filter(Score.id == score_id).first()
     db_session.query(Score).filter(Score.id == score_id).update({"file_uri": "a.pdf"})
+    db_session.query(Song).filter(Song.id == score.song_id).update({"file_uri": "a.pdf"})
 
     response = client.patch(f"/scores/{score_id}", json={"title": "새 제목"}, headers=headers)
 
