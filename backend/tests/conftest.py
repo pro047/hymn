@@ -38,6 +38,7 @@ from app import login_guard
 from app.db import get_session
 from app.main import app
 from app.rate_limit import limiter
+from app.services import token_sweep
 from app.services.auth import _decoy_password_hash, pwd_context
 
 # Captured before anything lowers it, so a test can put the real cost back.
@@ -88,16 +89,18 @@ def production_bcrypt_cost():
 
 @pytest.fixture(autouse=True)
 def reset_throttles():
-    """Gives every test empty rate-limit and lockout counters.
+    """Gives every test empty rate-limit, lockout and sweep-throttle state.
 
-    Both key on something the whole session shares — the limiter on the
-    caller's address, which TestClient always presents the same, and the login
-    guard on the email, which the auth tests reuse across files. Without this
-    the counters accumulate and whichever test runs after a limit is reached is
-    the one that fails.
+    All three key on something the whole session shares — the limiter on the
+    caller's address, which TestClient always presents the same, the login
+    guard on the email, which the auth tests reuse across files, and the sweep
+    throttle on nothing at all (it is process-global). Without this the state
+    accumulates and whichever test runs after a limit is reached, or after the
+    sweep throttle is already claimed, is the one that fails.
     """
     limiter.reset()
     login_guard.reset()
+    token_sweep.reset()
     yield
 
 

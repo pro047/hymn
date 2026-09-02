@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app import login_guard
 from app.models import Church, PasswordResetToken, RefreshToken, User, generate_join_code
 from app.schemas.auth import SignupRequest
+from app.services import token_sweep
 
 ACCESS_TOKEN_EXPIRES_IN_SECONDS = 60 * 60
 REFRESH_TOKEN_EXPIRES_IN_SECONDS = 60 * 60 * 24 * 30
@@ -438,6 +439,10 @@ def issue_token_bundle(session: Session, *, user: User) -> TokenBundle:
             expires_at=(now + timedelta(seconds=REFRESH_TOKEN_EXPIRES_IN_SECONDS)).replace(tzinfo=None),
         )
     )
+    # Piggybacks on the one path that grows this table, so the table is
+    # self-bounding: nobody logging in means nobody sweeping either. Return
+    # value is discarded — the module logs the count itself.
+    token_sweep.maybe_sweep_expired_refresh_tokens(session)
     return TokenBundle(
         access_token=access,
         refresh_token=refresh,
@@ -509,18 +514,26 @@ def rotate_refresh_token(session: Session, refresh_token: str) -> TokenBundle:
 def _reject_or_revoke_reuse(session: Session, *, jti: str, user: User) -> None:
     """A rotation lost the claim. Decide whether it was a race or a replay, then raise.
 
-    The claim failed for one of three reasons: the row is gone (a logout, or a
-    token that was never issued), it was rotated a moment ago (two tabs racing),
-    or it was rotated long ago (a replay of a spent token). rotated_at is read
-    as a column scalar, not off an ORM instance: the bulk UPDATE above leaves
-    the identity map untouched, so a loaded row would answer with its stale
-    pre-rotation value. The scalar always reflects the database.
+    The claim failed for one of four reasons: the row is gone (a logout, a row
+    token_sweep already reaped, or a token that was never issued), it was
+    rotated a moment ago (two tabs racing), or it was rotated long ago (a
+    replay of a spent token). rotated_at is read as a column scalar, not off an
+    ORM instance: the bulk UPDATE above leaves the identity map untouched, so a
+    loaded row would answer with its stale pre-rotation value. The scalar
+    always reflects the database.
 
     Absent or freshly rotated -> just refuse; the client recovers by adopting
     whatever token won the race. Rotated past the grace window -> the token was
     already spent, so this is a replay: end every session, access tokens
     included, and make everyone sign in again. The real client sees one 401 and
     logs back in; a thief is evicted along with it.
+
+    token_sweep only reaps rows whose expires_at is over an hour past, and
+    expires_at tracks this same jti's JWT `exp` claim to within about a second
+    (see token_sweep.py). A JWT that old already fails decode_token's exp
+    check before rotate_refresh_token ever calls this function, so a row swept
+    away is always one this function was already unreachable for — sweeping
+    never turns a detectable replay into a missing row.
     """
     rotated_at = (
         session.query(RefreshToken.rotated_at)
