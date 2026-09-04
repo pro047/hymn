@@ -13,7 +13,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import login_guard
-from app.models import Church, PasswordResetToken, RefreshToken, User, generate_join_code
+from app.models import (
+    Church,
+    PasswordResetToken,
+    RefreshToken,
+    User,
+    generate_join_code,
+    naive_utc_now,
+)
 from app.schemas.auth import SignupRequest
 from app.services import token_sweep
 
@@ -29,11 +36,6 @@ JWT_ALGORITHM = "HS256"
 # server clock, so there is no skew to widen this.
 REFRESH_REUSE_GRACE_SECONDS = 10
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def _naive_utc_now() -> datetime:
-    """UTC now, tz-naive — the shape every DateTime column in this app stores."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class AuthError(Exception):
@@ -439,9 +441,13 @@ def issue_token_bundle(session: Session, *, user: User) -> TokenBundle:
             expires_at=(now + timedelta(seconds=REFRESH_TOKEN_EXPIRES_IN_SECONDS)).replace(tzinfo=None),
         )
     )
-    # Piggybacks on the one path that grows this table, so the table is
-    # self-bounding: nobody logging in means nobody sweeping either. Return
-    # value is discarded — the module logs the count itself.
+    # Piggybacks on the one path that grows this table, which is what makes a
+    # scheduler unnecessary: no logins, no new rows, nothing to sweep. It does
+    # not make the table self-bounding — one pass removes at most
+    # REFRESH_SWEEP_MAX_ROWS every REFRESH_SWEEP_INTERVAL_SECONDS (4,000 rows a
+    # day) while issuance adds one per login, signup and refresh, so a busy
+    # enough deployment out-runs it and the fix would be to drain in a loop.
+    # Return value is discarded — the module logs the count itself.
     token_sweep.maybe_sweep_expired_refresh_tokens(session)
     return TokenBundle(
         access_token=access,
@@ -482,7 +488,7 @@ def _claim_refresh_token(session: Session, *, jti: str, user_id: str) -> int:
             RefreshToken.user_id == user_id,
             RefreshToken.rotated_at.is_(None),
         )
-        .update({RefreshToken.rotated_at: _naive_utc_now()}, synchronize_session=False)
+        .update({RefreshToken.rotated_at: naive_utc_now()}, synchronize_session=False)
     )
 
 
@@ -514,7 +520,7 @@ def rotate_refresh_token(session: Session, refresh_token: str) -> TokenBundle:
 def _reject_or_revoke_reuse(session: Session, *, jti: str, user: User) -> None:
     """A rotation lost the claim. Decide whether it was a race or a replay, then raise.
 
-    The claim failed for one of four reasons: the row is gone (a logout, a row
+    The claim failed for one of three reasons: the row is gone (a logout, a row
     token_sweep already reaped, or a token that was never issued), it was
     rotated a moment ago (two tabs racing), or it was rotated long ago (a
     replay of a spent token). rotated_at is read as a column scalar, not off an
@@ -540,7 +546,7 @@ def _reject_or_revoke_reuse(session: Session, *, jti: str, user: User) -> None:
         .filter(RefreshToken.id == jti, RefreshToken.user_id == user.id)
         .scalar()
     )
-    if rotated_at is not None and (_naive_utc_now() - rotated_at).total_seconds() > REFRESH_REUSE_GRACE_SECONDS:
+    if rotated_at is not None and (naive_utc_now() - rotated_at).total_seconds() > REFRESH_REUSE_GRACE_SECONDS:
         revoke_all_sessions(session, user=user)
         session.commit()
     else:
@@ -703,7 +709,7 @@ def begin_password_reset(session: Session, *, email: str) -> PasswordResetGrant 
         PasswordResetToken(
             user_id=user.id,
             token_hash=_hash_reset_token(token),
-            expires_at=_naive_utc_now() + timedelta(seconds=PASSWORD_RESET_TOKEN_TTL_SECONDS),
+            expires_at=naive_utc_now() + timedelta(seconds=PASSWORD_RESET_TOKEN_TTL_SECONDS),
         )
     )
     # Read off the local and the ORM before the commit expires them: the mailer
@@ -755,7 +761,7 @@ def reset_password(session: Session, *, token: str, new_password: str) -> None:
         .filter(PasswordResetToken.token_hash == token_hash)
         .first()
     )
-    if row is None or row.expires_at <= _naive_utc_now():
+    if row is None or row.expires_at <= naive_utc_now():
         raise InvalidPasswordResetTokenError
 
     user = session.get(User, row.user_id)

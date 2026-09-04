@@ -24,12 +24,12 @@ into a test about a DELETE.
 
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 
-from app.models import RefreshToken
+from app.models import RefreshToken, naive_utc_now
 from app.services import token_sweep
 from app.services.auth import REFRESH_REUSE_GRACE_SECONDS, _encode_token, decode_token
 from app.services.token_sweep import (
@@ -58,8 +58,8 @@ OTHER_PAYLOAD = {
 
 
 def _now() -> datetime:
-    """Naive UTC, the shape the expires_at column stores and the sweep compares."""
-    return datetime.now(UTC).replace(tzinfo=None)
+    """The same clock the column and the sweep use, not a fourth copy of it."""
+    return naive_utc_now()
 
 
 def _signup(client, payload: dict = SIGNUP_PAYLOAD) -> dict:
@@ -124,16 +124,32 @@ def test_the_sweep_constants_should_stay_at_their_reviewed_values():
     assert token_sweep.REFRESH_SWEEP_MAX_ROWS == 1000
 
 
-def test_sweeping_an_expired_live_row_should_delete_it(client, db_session):
+@pytest.mark.parametrize(
+    ("seconds_past_the_margin", "expected_deleted"),
+    [
+        pytest.param(-60, 0, id="inside-the-margin-is-kept"),
+        # Straddling the boundary by a minute passes either way, so the exact
+        # hit is the only case that tells <= apart from <.
+        pytest.param(0, 1, id="exactly-on-the-cutoff-is-deleted"),
+        pytest.param(60, 1, id="past-the-margin-is-deleted"),
+    ],
+)
+def test_the_margin_should_decide_a_row_by_its_expiry(
+    client, db_session, seconds_past_the_margin, expected_deleted
+):
     tokens = _signup(client)
     jti = _jti(tokens["refresh_token"])
     now = _now()
-    _set_expiry(db_session, jti, now - timedelta(seconds=REFRESH_SWEEP_EXPIRY_MARGIN_SECONDS + 60))
+    _set_expiry(
+        db_session,
+        jti,
+        now - timedelta(seconds=REFRESH_SWEEP_EXPIRY_MARGIN_SECONDS + seconds_past_the_margin),
+    )
 
     deleted = sweep_expired_refresh_tokens(db_session, now=now)
 
-    assert deleted == 1
-    assert not _row_exists(db_session, jti)
+    assert deleted == expected_deleted
+    assert _row_exists(db_session, jti) is (expected_deleted == 0)
 
 
 def test_sweeping_an_expired_rotated_row_should_delete_it_and_keep_the_winner(client, db_session):
@@ -223,48 +239,6 @@ def test_sweeping_should_not_disarm_replay_detection_for_an_unexpired_rotated_ro
     assert _row_exists(db_session, _jti(original))
     assert client.post("/auth/refresh", json={"refresh_token": original}).status_code == 401
     assert client.post("/auth/refresh", json={"refresh_token": winner}).status_code == 401
-
-
-def test_a_row_inside_the_margin_should_be_kept(client, db_session):
-    tokens = _signup(client)
-    jti = _jti(tokens["refresh_token"])
-    now = _now()
-    _set_expiry(db_session, jti, now - timedelta(seconds=REFRESH_SWEEP_EXPIRY_MARGIN_SECONDS - 60))
-
-    deleted = sweep_expired_refresh_tokens(db_session, now=now)
-
-    assert deleted == 0
-    assert _row_exists(db_session, jti)
-
-
-def test_a_row_past_the_margin_should_be_deleted(client, db_session):
-    tokens = _signup(client)
-    jti = _jti(tokens["refresh_token"])
-    now = _now()
-    _set_expiry(db_session, jti, now - timedelta(seconds=REFRESH_SWEEP_EXPIRY_MARGIN_SECONDS + 60))
-
-    deleted = sweep_expired_refresh_tokens(db_session, now=now)
-
-    assert deleted == 1
-    assert not _row_exists(db_session, jti)
-
-
-def test_a_row_sitting_exactly_on_the_cutoff_should_be_deleted(client, db_session):
-    """Pins the comparison as <=, not <.
-
-    The two tests above straddle the boundary by a minute each and pass either
-    way. Only a row whose expires_at equals the cutoff to the microsecond tells
-    the two operators apart.
-    """
-    tokens = _signup(client)
-    jti = _jti(tokens["refresh_token"])
-    now = _now()
-    _set_expiry(db_session, jti, now - timedelta(seconds=REFRESH_SWEEP_EXPIRY_MARGIN_SECONDS))
-
-    deleted = sweep_expired_refresh_tokens(db_session, now=now)
-
-    assert deleted == 1
-    assert not _row_exists(db_session, jti)
 
 
 def test_the_sweep_should_not_be_scoped_to_one_user(client, db_session):
@@ -399,7 +373,9 @@ def test_logging_in_should_carry_the_sweep_with_it(client, db_session):
     assert not _row_exists(db_session, planted[0])
 
 
-def test_a_failing_sweep_should_not_take_the_signup_down_with_it(client, db_session, monkeypatch):
+def test_a_failing_sweep_should_not_take_the_signup_down_with_it(
+    client, db_session, monkeypatch, caplog
+):
     """The savepoint is load-bearing. In PostgreSQL one failed statement aborts
     the whole transaction, so without it a broken sweep would roll back the
     account, the church and the refresh token the request had just created — a
@@ -411,16 +387,28 @@ def test_a_failing_sweep_should_not_take_the_signup_down_with_it(client, db_sess
     it emits the SAVEPOINT — so surviving the rollback is the thing being
     checked, not merely that they were still pending.
     """
+    calls = []
 
-    def _explode(*_args, **_kwargs):
-        raise SQLAlchemyError("sweep exploded")
+    def _explode(session, **_kwargs):
+        # A statement the database actually rejects, not a bare `raise`. Only a
+        # real failure puts the transaction into the aborted state the savepoint
+        # exists to contain; raising in Python leaves it healthy, and this test
+        # then passes with begin_nested() deleted — which is exactly how it read
+        # before, pinning nothing.
+        calls.append(True)
+        session.execute(text("DELETE FROM no_such_table"))
 
     monkeypatch.setattr(token_sweep, "sweep_expired_refresh_tokens", _explode)
 
-    response = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
+    with caplog.at_level(logging.WARNING, logger="app.services.token_sweep"):
+        response = client.post("/auth/signup", json=SIGNUP_PAYLOAD)
 
+    assert calls, "the sweep never ran, so this proves nothing about failing sweeps"
     assert response.status_code == 201, response.text
     assert _row_exists(db_session, _jti(response.json()["tokens"]["refresh_token"]))
+    # A sweep that dies every interval otherwise returns the same 0 as one with
+    # nothing to do, and the table quietly grows as if the feature were absent.
+    assert "refresh token sweep failed" in caplog.text
 
 
 def test_an_expired_refresh_jwt_should_be_refused_before_the_database_is_read(client, db_session):
@@ -474,13 +462,18 @@ def test_a_sweep_that_deleted_rows_should_report_the_count_in_the_log(client, db
     query for it and no metric. The count printed here is what answers that
     afterwards, so it is part of the feature rather than decoration, and the
     number is asserted rather than merely that something was logged.
+
+    Pinned at WARNING, not INFO: nothing in this app configures logging, so the
+    root logger sits where uvicorn leaves it and an INFO line never reaches the
+    container log — utils/email.py carries the same note for the same reason.
+    Reading it at INFO here would pass while production saw nothing.
     """
     tokens = _signup(client)
     stale = _now() - timedelta(seconds=REFRESH_SWEEP_EXPIRY_MARGIN_SECONDS + 60)
     _plant(db_session, _user_id(tokens["access_token"]), stale, count=2)
     token_sweep.reset()
 
-    with caplog.at_level(logging.INFO, logger="app.services.token_sweep"):
+    with caplog.at_level(logging.WARNING, logger="app.services.token_sweep"):
         assert maybe_sweep_expired_refresh_tokens(db_session, clock=100.0) == 2
 
     assert "swept 2 expired refresh tokens" in caplog.text
@@ -491,7 +484,7 @@ def test_a_sweep_that_deleted_nothing_should_stay_quiet(client, db_session, capl
     _signup(client)
     token_sweep.reset()
 
-    with caplog.at_level(logging.INFO, logger="app.services.token_sweep"):
+    with caplog.at_level(logging.WARNING, logger="app.services.token_sweep"):
         assert maybe_sweep_expired_refresh_tokens(db_session, clock=100.0) == 0
 
     assert "swept" not in caplog.text

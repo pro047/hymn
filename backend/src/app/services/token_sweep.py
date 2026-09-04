@@ -1,10 +1,11 @@
 """Time-bounded cleanup of expired refresh_tokens rows.
 
-Nothing else in this app deletes a row by age (see the design doc's grep in
-.pipeline/token-sweep-b/DESIGN.md §1.1). Rows accumulate at up to one per
-login/signup/refresh forever, capped only by REFRESH_TOKEN_EXPIRES_IN_SECONDS
-(30 days) worth of activity. This module deletes the ones old enough that
-nothing can legitimately need them any more.
+This is the only place in the app that deletes a row by age. The other nine
+deletes under src/app all key on an id or a user_id, so re-check that with
+`git grep -n "delete(" src/app` before adding a second one here. Rows
+accumulate at up to one per login/signup/refresh forever, capped only by
+REFRESH_TOKEN_EXPIRES_IN_SECONDS (30 days) worth of activity. This module
+deletes the ones old enough that nothing can legitimately need them any more.
 
 Rule: delete WHERE expires_at <= now - margin. Rotated (rotated_at set) rows
 are not treated differently — a rotated row's expires_at is unchanged from
@@ -27,13 +28,13 @@ one of them.
 import logging
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.models import RefreshToken
+from app.models import RefreshToken, naive_utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +52,6 @@ _lock = threading.Lock()
 _last_swept_at: float | None = None
 
 
-def _naive_utc_now() -> datetime:
-    """UTC now, tz-naive — the shape every DateTime column in this app stores."""
-    return datetime.now(UTC).replace(tzinfo=None)
-
-
 def sweep_expired_refresh_tokens(
     session: Session,
     *,
@@ -69,10 +65,19 @@ def sweep_expired_refresh_tokens(
     as revoke_all_refresh_tokens. `now` is naive UTC (the column's own kind);
     None builds it internally.
     """
-    now = _naive_utc_now() if now is None else now
+    now = naive_utc_now() if now is None else now
     cutoff = now - timedelta(seconds=REFRESH_SWEEP_EXPIRY_MARGIN_SECONDS)
     candidate_ids = select(RefreshToken.id).where(RefreshToken.expires_at <= cutoff).limit(limit)
-    result = session.execute(delete(RefreshToken).where(RefreshToken.id.in_(candidate_ids)))
+    # synchronize_session=False like every other bulk write in this service:
+    # the default ("auto") cannot evaluate an IN-subquery in Python, so it falls
+    # back to "fetch", appends RETURNING id and matches the returned ids against
+    # the identity map. That map only ever holds the caller's user and the row
+    # it just added, neither of which is a candidate, so the work is always
+    # wasted — up to a thousand ids fetched and dropped.
+    result = session.execute(
+        delete(RefreshToken).where(RefreshToken.id.in_(candidate_ids)),
+        execution_options={"synchronize_session": False},
+    )
     return result.rowcount
 
 
@@ -104,14 +109,29 @@ def maybe_sweep_expired_refresh_tokens(
             return 0
         _last_swept_at = clock
 
+    # Flushed here, deliberately outside the try. begin_nested() flushes the
+    # caller's pending work before it emits the SAVEPOINT, so leaving that
+    # inside would file the caller's own INSERT failing under "the sweep
+    # failed": issue_token_bundle would return a signed token for a row that
+    # never landed, and the caller's commit would die later on a
+    # PendingRollbackError naming none of it.
+    session.flush()
+
     try:
         with session.begin_nested():
             deleted = sweep_expired_refresh_tokens(session, now=now)
     except SQLAlchemyError:
+        # Logged, not silent: a sweep that fails every interval returns the same
+        # 0 as one that found nothing, so without this line the table resumes
+        # growing exactly as it did before the feature existed and nothing says
+        # so. WARNING for the reason utils/email.py records — nothing here
+        # configures logging, so the root logger sits at WARNING and INFO never
+        # reaches the container log.
+        logger.warning("refresh token sweep failed", exc_info=True)
         return 0
 
     if deleted:
-        logger.info("swept %d expired refresh tokens", deleted)
+        logger.warning("swept %d expired refresh tokens", deleted)
     return deleted
 
 
