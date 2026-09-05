@@ -110,11 +110,7 @@ done
 # worktree 에 따라오지 않는다. 설치 없이 돌리면 첫 TEST_CMD 에서 죽고,
 # 원인이 파이프라인 문제처럼 보인다.
 if [ -z "${SETUP_CMD:-}" ]; then
-  # 루트 락파일만 보는 탐지는 이 저장소(backend/+frontend/ 모노리포)가 사각지대다
-  # — 기본 TEST_CMD 사건과 같은 원인. 하위 디렉토리 조합을 먼저 본다.
-  if [ -f "$WT/backend/requirements.txt" ] && [ -f "$WT/frontend/pnpm-lock.yaml" ]; then
-    SETUP_CMD="(cd backend && python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt) && (cd frontend && pnpm install --frozen-lockfile)"
-  elif [ -f "$WT/pubspec.yaml" ];     then SETUP_CMD="flutter pub get"
+  if   [ -f "$WT/pubspec.yaml" ];     then SETUP_CMD="flutter pub get"
   elif [ -f "$WT/package-lock.json" ]; then SETUP_CMD="npm ci"
   elif [ -f "$WT/pnpm-lock.yaml" ];    then SETUP_CMD="pnpm install --frozen-lockfile"
   elif [ -f "$WT/yarn.lock" ];         then SETUP_CMD="yarn install --frozen-lockfile"
