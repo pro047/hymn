@@ -14,6 +14,18 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+def naive_utc_now() -> dt.datetime:
+    """UTC now, tz-naive — the shape every DateTime column below stores.
+
+    Lives here rather than in a service because more than one of them compares
+    against these columns, and a second copy of the expression is how the
+    writer and the reader of a timestamp drift apart: make the columns
+    timezone-aware and a stale copy keeps producing naive values that no longer
+    compare.
+    """
+    return dt.datetime.now(dt.UTC).replace(tzinfo=None)
+
+
 # l/1 and o/0 are left out: the code is read off one screen and typed into
 # another by a person, and those are the pairs that get transcribed wrong.
 # 32 symbols over 8 places is ~1.1e12 codes, so guessing one is not a way in.

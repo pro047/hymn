@@ -277,7 +277,7 @@ echo "=== 모델 교체 감시 ==="
 setup
 env FAKE_SCENARIO=model_swap AUTO=1 TEST_CMD="true" \
   ./orchestrate.sh feat >/dev/null 2>&1
-if grep -q '요청 claude-fable-5 → 실제 claude-opus-4-8' .pipeline/feat/MODEL_LOG.md 2>/dev/null; then
+if grep -q '요청 claude-fable-5-1 → 실제 claude-opus-4-8' .pipeline/feat/MODEL_LOG.md 2>/dev/null; then
   green "  PASS  다른 모델이 돌면 MODEL_LOG 에 기록된다"; PASS=$((PASS+1))
 else
   red   "  FAIL  모델 교체가 기록되지 않음"
@@ -330,10 +330,10 @@ d="$(cat .pipeline/feat/DESIGN.args 2>/dev/null)"
 j="$(cat .pipeline/feat/JUDGE.args  2>/dev/null)"
 i="$(cat .pipeline/feat/IMPL.args   2>/dev/null)"
 v="$(cat .pipeline/feat/VERIFY.args 2>/dev/null)"
-if [ "$d" = "model=claude-fable-5 turns=40 budget=5" ] \
-   && [ "$j" = "model=claude-fable-5 turns=40 budget=5" ] \
+if [ "$d" = "model=claude-fable-5-1 turns=40 budget=5" ] \
+   && [ "$j" = "model=claude-fable-5-1 turns=40 budget=5" ] \
    && [ "$i" = "model=claude-sonnet-5 turns=80 budget=8" ] \
-   && [ "$v" = "model=claude-fable-5 turns=40 budget=5" ]; then
+   && [ "$v" = "model=claude-fable-5-1 turns=40 budget=5" ]; then
   green "  PASS  단계별 모델·턴·예산이 각각 전달된다"; PASS=$((PASS+1))
 else
   red   "  FAIL  상한 전달 어긋남"

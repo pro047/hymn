@@ -38,11 +38,11 @@ TEST_CMD="${TEST_CMD:-(cd backend && .venv/bin/python -m pytest -q) && (cd front
 #
 # FALLBACK_* 은 가용성 폴백(529 과부하 등) 전용이다.
 # 안전 분류기에 의한 모델 교체는 이걸로 막을 수 없다 — MODEL_LOG.md 로 감시한다.
-MODEL_DESIGN="${MODEL_DESIGN:-claude-fable-5}"
+MODEL_DESIGN="${MODEL_DESIGN:-claude-fable-5-1}"
 # 판단 검증은 설계를 반박하는 일이라 verify 와 같은 적대적 추론이다. 상위 모델.
-MODEL_JUDGE="${MODEL_JUDGE:-claude-fable-5}"
+MODEL_JUDGE="${MODEL_JUDGE:-claude-fable-5-1}"
 MODEL_IMPL="${MODEL_IMPL:-claude-sonnet-5}"
-MODEL_VERIFY="${MODEL_VERIFY:-claude-fable-5}"
+MODEL_VERIFY="${MODEL_VERIFY:-claude-fable-5-1}"
 
 # 폴백은 티어를 내리지 않는다. 구현 주 모델이 이미 중간 티어라 아래로 갈 곳이 없고,
 # 과부하 때 하위 티어로 떨어뜨리면 산출물 품질이 조용히 무너진다 — 그래서 위로 올린다.
