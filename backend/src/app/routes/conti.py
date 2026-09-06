@@ -13,10 +13,12 @@ from app.services.conti import (
     ContiOrderItem,
     ContiOrderMismatch,
     build_week_conti_pdf,
-    list_week_entries,
+    list_week_pages,
     set_week_order,
 )
+from app.services.conti_pdf import slot_ratio
 from app.services.song import normalize_week_date
+from app.utils.s3 import presign_get
 
 router = APIRouter()
 
@@ -74,19 +76,24 @@ def get_week_conti(
     early has not made an error.
     """
     week_of = normalize_week_date(week_of)
-    try:
-        entries = list_week_entries(session, church_id=user.church_id, week_of=week_of)
-    except ContiEmpty:
-        entries = []
+    pages = list_week_pages(session, church_id=user.church_id, week_of=week_of)
     return ContiResponse(
         week_of=week_of,
-        items=[
-            {
-                "score_id": entry.score_id,
-                "title": entry.title,
-                "starts_new_page": entry.starts_new_page,
-            }
-            for entry in entries
+        slot_ratio=slot_ratio(),
+        pages=[
+            [
+                {
+                    "score_id": entry.score_id,
+                    "title": entry.title,
+                    "starts_new_page": entry.starts_new_page,
+                    # Signed here rather than handed the raw key: the browser
+                    # draws the real sheet in the preview, and the bucket is
+                    # not public.
+                    "image_url": presign_get(entry.file_uri) if entry.file_uri else None,
+                }
+                for entry in page
+            ]
+            for page in pages
         ],
     )
 

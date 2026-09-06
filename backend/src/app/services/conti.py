@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.deps import ObjectReader
 from app.models import Score, SetItem, Song
-from app.services.conti_pdf import render_conti_pdf
+from app.services.conti_pdf import chunk_pages, render_conti_pdf
 from app.services.song import ensure_week
 from app.utils.s3 import ObjectNotReadable
 
@@ -279,3 +279,21 @@ def set_week_order(
             set_item.week_date = week.date
             set_item.order_no = position
             set_item.starts_new_page = item.starts_new_page
+
+
+def list_week_pages(
+    session: Session, *, church_id: str, week_of: date
+) -> list[list[ContiEntry]]:
+    """This week's songs already grouped into the pages the PDF will make.
+
+    The split is computed here, not in the browser: chunk_pages is the
+    renderer's own rule, and a second copy of it in JS would drift from what
+    the PDF actually does — which is exactly what the preview exists to show.
+    An empty week is an empty list, not ContiEmpty; the editing screen has to
+    render "nothing filed yet".
+    """
+    try:
+        entries = list_week_entries(session, church_id=church_id, week_of=week_of)
+    except ContiEmpty:
+        return []
+    return chunk_pages(entries, [entry.starts_new_page for entry in entries])

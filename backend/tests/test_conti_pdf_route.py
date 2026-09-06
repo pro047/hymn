@@ -765,6 +765,15 @@ def _get_conti(client, headers: dict, week: str):
     return client.get(f"/weeks/{week}/conti", headers=headers)
 
 
+def _conti_items(response) -> list[dict]:
+    """The week flattened back to running order.
+
+    The API groups by page because that is what the preview draws; a test
+    that cares about order, not layout, flattens it here rather than
+    indexing into pages."""
+    return [item for page in response.json()["pages"] for item in page]
+
+
 def _patch_order(client, headers: dict, week: str, items: list[dict]):
     return client.patch(f"/weeks/{week}/conti/order", headers=headers, json={"items": items})
 
@@ -780,7 +789,7 @@ def test_breaks_all_off_should_render_exactly_as_before(client, reader):
     # Act — an explicit all-false order changes nothing
     items = [
         {"score_id": item["score_id"], "starts_new_page": False}
-        for item in _get_conti(client, headers, _week(0)).json()["items"]
+        for item in _conti_items(_get_conti(client, headers, _week(0)))
     ]
     assert _patch_order(client, headers, _week(0), items).status_code == 200
 
@@ -793,7 +802,7 @@ def test_a_break_should_move_a_song_to_the_next_page(client, reader):
     # Arrange
     headers = _register(client)
     _seed_week(client, reader, headers, _week(0), 5)
-    items = _get_conti(client, headers, _week(0)).json()["items"]
+    items = _conti_items(_get_conti(client, headers, _week(0)))
     assert _declared_page_count(_get_pdf(client, headers, _week(0)).content) == 3
 
     # Act — break before the 2nd song
@@ -816,14 +825,14 @@ def test_reordering_should_change_the_page_a_song_lands_on(client, reader):
     # Arrange
     headers = _register(client)
     _seed_week(client, reader, headers, _week(0), 4)
-    items = _get_conti(client, headers, _week(0)).json()["items"]
+    items = _conti_items(_get_conti(client, headers, _week(0)))
 
     # Act — reverse the week
     reversed_items = [{"score_id": item["score_id"], "starts_new_page": False} for item in items[::-1]]
     response = _patch_order(client, headers, _week(0), reversed_items)
 
     # Assert — the response reflects the new order, and so does the PDF
-    assert [item["score_id"] for item in response.json()["items"]] == [
+    assert [item["score_id"] for item in _conti_items(response)] == [
         item["score_id"] for item in reversed_items
     ]
     page = _pdf_page_images(_get_pdf(client, headers, _week(0)).content)[0]
@@ -836,7 +845,7 @@ def test_a_partial_order_should_400_and_change_nothing(client, reader):
     # Arrange
     headers = _register(client)
     _seed_week(client, reader, headers, _week(0), 3)
-    items = _get_conti(client, headers, _week(0)).json()["items"]
+    items = _conti_items(_get_conti(client, headers, _week(0)))
     before = _get_pdf(client, headers, _week(0)).content
 
     # Act — drop the last song
@@ -856,7 +865,7 @@ def test_an_order_naming_another_weeks_song_should_400(client, reader):
     headers = _register(client)
     _seed_week(client, reader, headers, _week(0), 2)
     other = _add_song(client, reader, headers, title="다른주차곡", week=_week(1))
-    items = _get_conti(client, headers, _week(0)).json()["items"]
+    items = _conti_items(_get_conti(client, headers, _week(0)))
 
     # Act
     payload = [{"score_id": items[0]["score_id"], "starts_new_page": False},
@@ -872,7 +881,7 @@ def test_another_church_should_not_be_able_to_reorder_this_week(client, reader):
     # Arrange
     headers = _register(client)
     _seed_week(client, reader, headers, _week(0), 2)
-    items = _get_conti(client, headers, _week(0)).json()["items"]
+    items = _conti_items(_get_conti(client, headers, _week(0)))
     intruder = _register(client, OTHER_SIGNUP)
 
     # Act — the intruder's own week holds none of these songs
@@ -895,7 +904,7 @@ def test_an_empty_week_should_be_200_with_no_items(client):
 
     # Assert
     assert response.status_code == 200, response.text
-    assert response.json()["items"] == []
+    assert _conti_items(response) == []
     assert _get_pdf(client, headers, _week(0)).status_code == 404
 
 
@@ -924,7 +933,7 @@ def test_a_midweek_date_should_resolve_to_that_weeks_sunday(client, reader):
     pdf = _get_pdf(client, headers, _midweek(0))
 
     # Assert — same answer as the Sunday date, not an empty week
-    assert len(conti.json()["items"]) == 3, conti.text
+    assert len(_conti_items(conti)) == 3, conti.text
     assert conti.json()["week_of"] == _week(0)
     assert pdf.status_code == 200, pdf.text
 
@@ -936,7 +945,7 @@ def test_a_midweek_date_should_be_reorderable(client, reader):
     # Arrange
     headers = _register(client)
     _seed_week(client, reader, headers, _week(0), 3)
-    items = _get_conti(client, headers, _week(0)).json()["items"]
+    items = _conti_items(_get_conti(client, headers, _week(0)))
 
     # Act — reorder through the midweek date
     payload = [{"score_id": i["score_id"], "starts_new_page": False} for i in items[::-1]]
@@ -944,7 +953,7 @@ def test_a_midweek_date_should_be_reorderable(client, reader):
 
     # Assert
     assert response.status_code == 200, response.text
-    assert [i["score_id"] for i in response.json()["items"]] == [i["score_id"] for i in payload]
+    assert [i["score_id"] for i in _conti_items(response)] == [i["score_id"] for i in payload]
 
 
 def test_an_image_over_the_pixel_cap_should_502(client, reader, monkeypatch):
@@ -986,3 +995,66 @@ def test_an_image_under_the_pixel_cap_should_render(client, reader, monkeypatch)
 
     # Act & Assert
     assert _get_pdf(client, headers, _week(0)).status_code == 200
+
+
+def test_the_conti_should_come_back_grouped_into_pdf_pages(client, reader):
+    """The preview draws pages, so the API hands it pages. Grouping here and
+    not in the browser is what keeps the preview honest: chunk_pages is the
+    renderer's own rule, and a copy of it in JS would drift."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 5)
+
+    # Act
+    body = _get_conti(client, headers, _week(0)).json()
+
+    # Assert — same shape the PDF makes: [2, 2, 1]
+    assert [len(page) for page in body["pages"]] == [2, 2, 1]
+    assert _declared_page_count(_get_pdf(client, headers, _week(0)).content) == 3
+
+
+def test_a_page_break_should_show_in_the_conti_grouping(client, reader):
+    """Whatever moves a song in the PDF has to move it in the preview too,
+    or the leader is editing against a picture that lies."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 5)
+    items = _conti_items(_get_conti(client, headers, _week(0)))
+
+    # Act — break before the 2nd song
+    _patch_order(
+        client, headers, _week(0),
+        [{"score_id": item["score_id"], "starts_new_page": index == 1} for index, item in enumerate(items)],
+    )
+
+    # Assert — grouping and PDF agree
+    body = _get_conti(client, headers, _week(0)).json()
+    assert [len(page) for page in body["pages"]] == [1, 2, 2]
+    assert _declared_page_count(_get_pdf(client, headers, _week(0)).content) == 3
+
+
+def test_each_conti_item_should_carry_a_signed_image_url(client, reader):
+    """The preview shows the real sheet, and the bucket is not public."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 2)
+
+    # Act
+    items = _conti_items(_get_conti(client, headers, _week(0)))
+
+    # Assert
+    assert all(item["image_url"] for item in items)
+    assert all("X-Amz-Signature" in item["image_url"] for item in items)
+
+
+def test_the_conti_should_report_the_slot_shape(client, reader):
+    """So the preview box matches the PDF slot without a second copy of the
+    page arithmetic in CSS."""
+    # Arrange
+    from app.services.conti_pdf import slot_ratio
+
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 1)
+
+    # Act & Assert
+    assert _get_conti(client, headers, _week(0)).json()["slot_ratio"] == pytest.approx(slot_ratio())

@@ -32,11 +32,20 @@ class ContiItemResponse(BaseModel):
     score_id: str
     title: str
     starts_new_page: bool
+    image_url: str | None
 
 
 class ContiResponse(BaseModel):
+    """A week's conti, already grouped into the pages the PDF will produce.
+
+    Grouped server-side on purpose: the split rule lives in the renderer
+    (services/conti_pdf.chunk_pages), and a second copy of it in the browser
+    would drift from the PDF the preview is supposed to be previewing.
+    """
+
     week_of: date
-    items: list[ContiItemResponse]
+    slot_ratio: float
+    pages: list[list[ContiItemResponse]]
 
 
 class ContiOrderItemRequest(BaseModel):

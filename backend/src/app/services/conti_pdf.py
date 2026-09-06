@@ -46,6 +46,18 @@ def slot_boxes(dpi: int = PAGE_DPI) -> list[tuple[int, int, int, int]]:
     return [(left_x, margin, slot_w, slot_h), (right_x, margin, slot_w, slot_h)]
 
 
+def slot_ratio(dpi: int = PAGE_DPI) -> float:
+    """A slot's width divided by its height.
+
+    Exposed so the preview screen can draw a box of the same shape without
+    reimplementing the page arithmetic: a second copy of these numbers in CSS
+    would drift from the renderer, and the whole point of the preview is that
+    it shows what the PDF will do.
+    """
+    _, _, slot_w, slot_h = slot_boxes(dpi)[0]
+    return slot_w / slot_h
+
+
 def fit_within(src: tuple[int, int], box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
     """Scale src to fit inside box keeping aspect ratio, centered (letterbox)."""
     src_w, src_h = src
