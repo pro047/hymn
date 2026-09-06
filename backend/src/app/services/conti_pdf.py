@@ -58,15 +58,49 @@ def fit_within(src: tuple[int, int], box: tuple[int, int, int, int]) -> tuple[in
     return x, y, w, h
 
 
-def chunk_pages[T](items: Sequence[T], per_page: int = SLOTS_PER_PAGE) -> list[list[T]]:
-    return [list(items[i : i + per_page]) for i in range(0, len(items), per_page)]
+def chunk_pages[T](
+    items: Sequence[T],
+    breaks: Sequence[bool] | None = None,
+    per_page: int = SLOTS_PER_PAGE,
+) -> list[list[T]]:
+    """Cut items into pages, either where a break is asked for or where the
+    page fills up.
+
+    `breaks[i]` means "start a new page at items[i]". A break on the first
+    item does nothing — it is already the start of one. With breaks all False
+    (or omitted) this is exactly the old fixed chunking, which is what keeps
+    the rendering identical for every week nobody has edited.
+
+    strict=True on the zip: a breaks list of the wrong length is a caller
+    bug, and letting zip stop at the shorter one would silently drop songs
+    off the end of the conti.
+    """
+    if breaks is None:
+        breaks = [False] * len(items)
+
+    pages: list[list[T]] = []
+    current: list[T] = []
+    for item, starts_new in zip(items, breaks, strict=True):
+        if current and (starts_new or len(current) == per_page):
+            pages.append(current)
+            current = []
+        current.append(item)
+    if current:
+        pages.append(current)
+    return pages
 
 
-def render_conti_pdf(images: Sequence[Image.Image]) -> bytes:
+def render_conti_pdf(
+    images: Sequence[Image.Image], breaks: Sequence[bool] | None = None
+) -> bytes:
     """Images, in placement order, to PDF bytes.
 
-    strict=False on the zip below: the last page can hold one image against
-    two slot boxes, and that is not a caller error.
+    `breaks` marks where a page is cut; see chunk_pages. Omitting it keeps
+    the fixed two-per-page chunking.
+
+    strict=False on the zip below: a page can hold one image against two slot
+    boxes — that is the last page, and now also any page the leader cut
+    short on purpose. Not a caller error.
     """
     if not images:
         # The route cannot reach this (list_week_entries raises ContiEmpty on
@@ -77,7 +111,7 @@ def render_conti_pdf(images: Sequence[Image.Image]) -> bytes:
     page_w, page_h = page_size_px()
     boxes = slot_boxes()
     pages: list[Image.Image] = []
-    for page_images in chunk_pages(images, SLOTS_PER_PAGE):
+    for page_images in chunk_pages(images, breaks, SLOTS_PER_PAGE):
         canvas = Image.new("RGB", (page_w, page_h), "white")
         for image, box in zip(page_images, boxes, strict=False):
             x, y, w, h = fit_within((image.width, image.height), box)

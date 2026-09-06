@@ -2,7 +2,17 @@ import datetime as dt
 import secrets
 import uuid
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    String,
+    UniqueConstraint,
+    false,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -245,8 +255,19 @@ class SetItem(Base):
     week_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     order_no: Mapped[int] = mapped_column(nullable=False)
     score_id: Mapped[str] = mapped_column(ForeignKey("scores.id", ondelete="CASCADE"), nullable=False)
+    # Unused: nothing reads or writes these, and all 160 production rows are
+    # NULL (measured 2026-09-06). Kept for now on purpose — deploy runs
+    # `alembic upgrade head` before swapping containers, so dropping them in
+    # the same release would make the still-running old image SELECT columns
+    # that no longer exist, and a rollback to that image would 500 for good.
+    # Drop them in a later release, once no deployed image names them.
     key: Mapped[str | None] = mapped_column(String(32), nullable=True)
     memo: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Where the conti PDF cuts a page. order_no stays the only source of
+    # sequence; this is a mark on top of it, so the two cannot disagree.
+    starts_new_page: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
     week: Mapped["Week"] = relationship(back_populates="set_items")

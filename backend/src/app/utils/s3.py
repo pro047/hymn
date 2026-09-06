@@ -110,13 +110,23 @@ def get_object_bytes(key: str, max_bytes: int = MAX_OBJECT_BYTES) -> bytes:
     except (ClientError, BotoCoreError) as exc:
         raise ObjectNotReadable(key) from exc
 
+    body = response["Body"]
     size = response.get("ContentLength")
-    if size is not None and size > max_bytes:
-        raise ObjectTooLarge(f"{key}: {size} bytes exceeds the {max_bytes} byte limit")
+    # A missing ContentLength is refused rather than read: the point of the
+    # cap is that nothing unbounded reaches memory, and "the server did not
+    # say how big it is" is not a reason to trust it.
+    if size is None or size > max_bytes:
+        # close() returns the pooled urllib3 connection. Without it the pool
+        # (10 by default) only frees on GC, so repeated oversized reads stall
+        # later S3 calls waiting for a slot.
+        body.close()
+        raise ObjectTooLarge(f"{key}: {size} bytes against a {max_bytes} byte limit")
     try:
-        return response["Body"].read()
+        return body.read()
     except (ClientError, BotoCoreError) as exc:
         raise ObjectNotReadable(key) from exc
+    finally:
+        body.close()
 
 
 def rewrite_presigned_url(url: str) -> str:

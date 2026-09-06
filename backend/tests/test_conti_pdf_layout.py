@@ -342,3 +342,21 @@ def test_rendering_no_images_should_raise_rather_than_index_error():
     # Act & Assert
     with pytest.raises(ValueError):
         render_conti_pdf([])
+
+
+def test_chunk_pages_should_reject_a_breaks_list_of_the_wrong_length():
+    """zip's default would stop at the shorter sequence and silently drop
+    songs off the end of the conti — the kind of quiet failure this feature
+    exists to avoid."""
+    # Act & Assert
+    with pytest.raises(ValueError):
+        chunk_pages([1, 2, 3], [False, True])
+
+
+def test_chunk_pages_should_cut_where_a_break_asks():
+    # Act & Assert — a break on the first item is a no-op, it already starts one
+    assert chunk_pages([1, 2, 3, 4, 5], [True, False, False, False, False]) == [[1, 2], [3, 4], [5]]
+    assert chunk_pages([1, 2, 3, 4, 5], [False, True, False, False, False]) == [[1], [2, 3], [4, 5]]
+    assert chunk_pages([1, 2, 3], [False, True, True]) == [[1], [2], [3]]
+    # A break on an item that already starts a page changes nothing
+    assert chunk_pages([1, 2, 3, 4], [False, False, True, False]) == [[1, 2], [3, 4]]

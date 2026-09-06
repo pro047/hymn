@@ -90,6 +90,15 @@ PASSWORD_RESET_REQUEST_LIMIT = "5/hour"
 # unauthenticated route, which is worth capping on its own.
 PASSWORD_RESET_CONFIRM_LIMIT = "10/minute"
 SIGNUP_LIMIT = "5/minute"
+# The most expensive endpoint in the app: N synchronous S3 GETs, N LANCZOS
+# resizes and a JPEG-in-PDF encode per call, on a shared 2 GiB t4g.small.
+# 10/minute is far above real use (a leader builds a week's conti once) and
+# still keeps one authenticated member from looping the box into the ground.
+CONTI_PDF_LIMIT = "10/minute"
+# Cheap by comparison — a read and a small write — but on the same host, so
+# they get the same ceiling the other authenticated writes use.
+CONTI_READ_LIMIT = "60/minute"
+CONTI_ORDER_LIMIT = "30/minute"
 REFRESH_LIMIT = "20/minute"
 LOGOUT_LIMIT = "20/minute"
 ME_LIMIT = "60/minute"

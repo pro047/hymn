@@ -1,4 +1,3 @@
-from datetime import timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +19,7 @@ from app.services.song import (
     attach_usage,
     get_or_reuse_song,
     has_usage_in_week,
+    normalize_week_date,
     rename_song,
     replace_song_file,
 )
@@ -28,10 +28,6 @@ from app.utils.s3 import object_url, presign_get, presign_put
 
 router = APIRouter()
 
-def _normalize_week_date(week_of):
-    if not week_of:
-        return week_of
-    return week_of - timedelta(days=(week_of.weekday() + 1) % 7)
 
 def _download_url(file_uri: str | None) -> str | None:
     if not file_uri:
@@ -95,7 +91,7 @@ def create_score(
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    normalized_week_of = _normalize_week_date(payload.week_of)
+    normalized_week_of = normalize_week_date(payload.week_of)
     # From the token, never the body. The old route took church_id or a free
     # text church_name and created the church if the name was unknown, with no
     # authentication at all: anyone could file scores under any congregation.
@@ -276,7 +272,7 @@ def update_score(
         # for; other weeks' snapshots are untouched, same as the file case.
         score.title = song.title
     if payload.week_of is not None:
-        normalized_week_of = _normalize_week_date(payload.week_of)
+        normalized_week_of = normalize_week_date(payload.week_of)
         if normalized_week_of != score.week_of:
             attach_usage(session, score, normalized_week_of)
     if payload.file_uri is not None:

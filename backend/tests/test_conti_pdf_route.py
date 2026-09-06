@@ -681,12 +681,15 @@ def test_an_object_over_the_size_cap_should_be_refused_before_its_body_is_read(m
     # Arrange
     from app.utils import s3 as s3_module
 
-    read_calls = []
+    read_calls, closed = [], []
 
     class _Body:
         def read(self):
             read_calls.append(1)
             return b"x" * 999
+
+        def close(self):
+            closed.append(1)
 
     class _Client:
         def get_object(self, **kwargs):
@@ -694,10 +697,11 @@ def test_an_object_over_the_size_cap_should_be_refused_before_its_body_is_read(m
 
     monkeypatch.setattr(s3_module, "s3_client", _Client())
 
-    # Act & Assert — refused, and the body was never pulled
+    # Act & Assert — refused, body never pulled, pooled connection released
     with pytest.raises(s3_module.ObjectTooLarge):
         s3_module.get_object_bytes("scores/x/big.png")
     assert read_calls == []
+    assert closed == [1]
 
 
 def test_an_object_within_the_size_cap_should_be_read(monkeypatch):
@@ -706,9 +710,14 @@ def test_an_object_within_the_size_cap_should_be_read(monkeypatch):
     # Arrange
     from app.utils import s3 as s3_module
 
+    closed = []
+
     class _Body:
         def read(self):
             return b"payload"
+
+        def close(self):
+            closed.append(1)
 
     class _Client:
         def get_object(self, **kwargs):
@@ -716,5 +725,264 @@ def test_an_object_within_the_size_cap_should_be_read(monkeypatch):
 
     monkeypatch.setattr(s3_module, "s3_client", _Client())
 
-    # Act & Assert
+    # Act & Assert — read, and the connection released afterwards
     assert s3_module.get_object_bytes("scores/x/ok.png") == b"payload"
+    assert closed == [1]
+
+
+def test_an_object_with_no_content_length_should_be_refused(monkeypatch):
+    """A cap that can be skipped by omitting a header is not a cap. The
+    server not saying how big an object is is not a reason to trust it."""
+    # Arrange
+    from app.utils import s3 as s3_module
+
+    read_calls = []
+
+    class _Body:
+        def read(self):
+            read_calls.append(1)
+            return b"x"
+
+        def close(self):
+            pass
+
+    class _Client:
+        def get_object(self, **kwargs):
+            return {"Body": _Body()}
+
+    monkeypatch.setattr(s3_module, "s3_client", _Client())
+
+    # Act & Assert
+    with pytest.raises(s3_module.ObjectTooLarge):
+        s3_module.get_object_bytes("scores/x/unknown.png")
+    assert read_calls == []
+
+
+# --- page breaks and the conti order API -----------------------------------
+
+
+def _get_conti(client, headers: dict, week: str):
+    return client.get(f"/weeks/{week}/conti", headers=headers)
+
+
+def _patch_order(client, headers: dict, week: str, items: list[dict]):
+    return client.patch(f"/weeks/{week}/conti/order", headers=headers, json={"items": items})
+
+
+def test_breaks_all_off_should_render_exactly_as_before(client, reader):
+    """The safety net for the whole feature: DEFAULT false means every
+    production week renders byte-for-byte as it did before the migration."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 5)
+    before = _get_pdf(client, headers, _week(0)).content
+
+    # Act — an explicit all-false order changes nothing
+    items = [
+        {"score_id": item["score_id"], "starts_new_page": False}
+        for item in _get_conti(client, headers, _week(0)).json()["items"]
+    ]
+    assert _patch_order(client, headers, _week(0), items).status_code == 200
+
+    # Assert
+    assert _get_pdf(client, headers, _week(0)).content == before
+
+
+def test_a_break_should_move_a_song_to_the_next_page(client, reader):
+    """5 songs chunk to [2,2,1]; breaking at the second gives [1,2,2]."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 5)
+    items = _get_conti(client, headers, _week(0)).json()["items"]
+    assert _declared_page_count(_get_pdf(client, headers, _week(0)).content) == 3
+
+    # Act — break before the 2nd song
+    payload = [
+        {"score_id": item["score_id"], "starts_new_page": index == 1}
+        for index, item in enumerate(items)
+    ]
+    _patch_order(client, headers, _week(0), payload)
+
+    # Assert — still 3 pages, but the first now holds one song
+    pdf = _get_pdf(client, headers, _week(0)).content
+    assert _declared_page_count(pdf) == 3
+    page = _pdf_page_images(pdf)[0]
+    _assert_color(page, _slot_center(0), PALETTE[0])
+    _assert_color(page, _slot_center(1), (255, 255, 255))
+
+
+def test_reordering_should_change_the_page_a_song_lands_on(client, reader):
+    """Order comes from the submitted list, not from numbers the client sends."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 4)
+    items = _get_conti(client, headers, _week(0)).json()["items"]
+
+    # Act — reverse the week
+    reversed_items = [{"score_id": item["score_id"], "starts_new_page": False} for item in items[::-1]]
+    response = _patch_order(client, headers, _week(0), reversed_items)
+
+    # Assert — the response reflects the new order, and so does the PDF
+    assert [item["score_id"] for item in response.json()["items"]] == [
+        item["score_id"] for item in reversed_items
+    ]
+    page = _pdf_page_images(_get_pdf(client, headers, _week(0)).content)[0]
+    _assert_color(page, _slot_center(0), PALETTE[3])
+
+
+def test_a_partial_order_should_400_and_change_nothing(client, reader):
+    """A list that leaves songs out makes their position undefined; filing
+    them at the end would silently reorder a conti nobody touched."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 3)
+    items = _get_conti(client, headers, _week(0)).json()["items"]
+    before = _get_pdf(client, headers, _week(0)).content
+
+    # Act — drop the last song
+    response = _patch_order(
+        client, headers, _week(0), [{"score_id": i["score_id"], "starts_new_page": False} for i in items[:2]]
+    )
+
+    # Assert
+    assert response.status_code == 400, response.text
+    assert _get_pdf(client, headers, _week(0)).content == before
+
+
+def test_an_order_naming_another_weeks_song_should_400(client, reader):
+    """The set must match this week exactly — a foreign score_id is not a
+    silent no-op."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 2)
+    other = _add_song(client, reader, headers, title="다른주차곡", week=_week(1))
+    items = _get_conti(client, headers, _week(0)).json()["items"]
+
+    # Act
+    payload = [{"score_id": items[0]["score_id"], "starts_new_page": False},
+               {"score_id": other["score_id"], "starts_new_page": False}]
+    response = _patch_order(client, headers, _week(0), payload)
+
+    # Assert
+    assert response.status_code == 400, response.text
+
+
+def test_another_church_should_not_be_able_to_reorder_this_week(client, reader):
+    """Church scoping on the write path, not just the read path."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 2)
+    items = _get_conti(client, headers, _week(0)).json()["items"]
+    intruder = _register(client, OTHER_SIGNUP)
+
+    # Act — the intruder's own week holds none of these songs
+    response = _patch_order(
+        client, intruder, _week(0), [{"score_id": i["score_id"], "starts_new_page": False} for i in items]
+    )
+
+    # Assert
+    assert response.status_code == 400, response.text
+
+
+def test_an_empty_week_should_be_200_with_no_items(client):
+    """The editing screen has to render "nothing filed yet"; only the PDF
+    route treats an empty week as 404."""
+    # Arrange
+    headers = _register(client)
+
+    # Act
+    response = _get_conti(client, headers, _week(0))
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
+    assert _get_pdf(client, headers, _week(0)).status_code == 404
+
+
+def test_the_conti_routes_should_require_authentication(client):
+    # Act & Assert
+    assert _get_conti(client, {}, _week(0)).status_code == 401
+    assert client.patch(f"/weeks/{_week(0)}/conti/order", json={"items": []}).status_code in (401, 422)
+
+
+def _midweek(n: int) -> str:
+    """The Wednesday inside the n-th week from this one — a date a client can
+    plausibly send, but never a date a Score is filed under."""
+    return (THIS_WEEK + timedelta(days=7 * n + 3)).isoformat()
+
+
+def test_a_midweek_date_should_resolve_to_that_weeks_sunday(client, reader):
+    """Every write path snaps week_of to the week's Sunday
+    (services/song.normalize_week_date), so a read that compares the raw date
+    asks about a week that cannot exist: the songs are there, under Sunday."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 3)
+
+    # Act
+    conti = _get_conti(client, headers, _midweek(0))
+    pdf = _get_pdf(client, headers, _midweek(0))
+
+    # Assert — same answer as the Sunday date, not an empty week
+    assert len(conti.json()["items"]) == 3, conti.text
+    assert conti.json()["week_of"] == _week(0)
+    assert pdf.status_code == 200, pdf.text
+
+
+def test_a_midweek_date_should_be_reorderable(client, reader):
+    """The PATCH is where an unnormalized date is worst: week_score_ids comes
+    back empty, so the set comparison can never match and every request 400s
+    no matter what the client sends."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 3)
+    items = _get_conti(client, headers, _week(0)).json()["items"]
+
+    # Act — reorder through the midweek date
+    payload = [{"score_id": i["score_id"], "starts_new_page": False} for i in items[::-1]]
+    response = _patch_order(client, headers, _midweek(0), payload)
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert [i["score_id"] for i in response.json()["items"]] == [i["score_id"] for i in payload]
+
+
+def test_an_image_over_the_pixel_cap_should_502(client, reader, monkeypatch):
+    """MAX_OBJECT_BYTES caps the compressed file, not what it decodes to: a
+    small PNG can expand to hundreds of MB as RGB, and flattening alpha makes
+    two more copies of it on a 2 GiB host.
+
+    The cap is lowered for the test rather than building a real 40M-pixel
+    image: the point under test is that the check refuses before load(), and
+    decoding an actual bomb here would cost the suite what the cap exists to
+    save.
+    """
+    # Arrange
+    from app.services import conti as conti_service
+
+    monkeypatch.setattr(conti_service, "MAX_IMAGE_PIXELS", 10_000)
+    headers = _register(client)
+    song = _add_song(client, reader, headers, title="거대곡", week=_week(0))
+    reader.serve(song["key"], _png(RED, size=(200, 200)))  # 40,000 px
+
+    # Act
+    response = _get_pdf(client, headers, _week(0))
+
+    # Assert
+    assert response.status_code == 502, response.text
+    assert "거대곡" in response.json()["detail"]
+
+
+def test_an_image_under_the_pixel_cap_should_render(client, reader, monkeypatch):
+    """The cap must not shave real sheets: production's largest image is
+    1080x1080 (1.2M px) against a 40M limit."""
+    # Arrange
+    from app.services import conti as conti_service
+
+    monkeypatch.setattr(conti_service, "MAX_IMAGE_PIXELS", 10_000)
+    headers = _register(client)
+    song = _add_song(client, reader, headers, title="보통곡", week=_week(0))
+    reader.serve(song["key"], _png(RED, size=(90, 90)))  # 8,100 px
+
+    # Act & Assert
+    assert _get_pdf(client, headers, _week(0)).status_code == 200

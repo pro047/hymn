@@ -101,7 +101,21 @@ def rename_song(session: Session, song: Song, new_title: str) -> None:
     song.title_key = new_key
 
 
-def _ensure_week(session: Session, week_of: dt.date) -> Week:
+def normalize_week_date(week_of: dt.date | None) -> dt.date | None:
+    """Snap a date back to the Sunday that starts its week.
+
+    Every write path files a Score under the normalized date, so every read
+    path has to normalize too or it asks about a week that cannot exist in
+    the table. This lives here rather than in a router because three routers
+    now need it, and a private function imported sideways out of one of them
+    is the pattern deps.py already warns about.
+    """
+    if not week_of:
+        return week_of
+    return week_of - dt.timedelta(days=(week_of.weekday() + 1) % 7)
+
+
+def ensure_week(session: Session, week_of: dt.date) -> Week:
     week = session.query(Week).filter(Week.date == week_of).first()
     if not week:
         week = Week(date=week_of)
@@ -118,7 +132,7 @@ def attach_usage(session: Session, score: Score, week_of: dt.date) -> None:
     set-membership side, the same division of labor the routes used before.
     """
     score.week_of = week_of
-    week = _ensure_week(session, week_of)
+    week = ensure_week(session, week_of)
     items = session.query(SetItem).filter(SetItem.score_id == score.id).all()
     order_no = (
         session.query(func.coalesce(func.max(SetItem.order_no), 0))
