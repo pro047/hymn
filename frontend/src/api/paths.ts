@@ -30,4 +30,11 @@ export const API_PATHS = {
   authPasswordResetConfirm: `${API_BASE}/auth/password-reset/confirm`,
   authRefresh: `${API_BASE}/auth/refresh`,
   authLogout: `${API_BASE}/auth/logout`,
+  // week_of is a path segment. The server normalizes it to the Sunday of that
+  // week (routes/conti.py:43,78,110), so it is not normalized here too —
+  // only encoded, leaving format validation to the server.
+  weekConti: (weekOf: string) => `${API_BASE}/weeks/${encodeURIComponent(weekOf)}/conti`,
+  weekContiOrder: (weekOf: string) =>
+    `${API_BASE}/weeks/${encodeURIComponent(weekOf)}/conti/order`,
+  weekPdf: (weekOf: string) => `${API_BASE}/weeks/${encodeURIComponent(weekOf)}/pdf`,
 };

@@ -278,7 +278,12 @@ def set_week_order(
             set_item.week_id = week.id
             set_item.week_date = week.date
             set_item.order_no = position
-            set_item.starts_new_page = item.starts_new_page
+            # The first song's flag is forced off, not stored as sent:
+            # chunk_pages ignores a break there (it already starts a page), so
+            # keeping it would leave a value that changes nothing, is invisible
+            # on screen, and cannot be cleared — moving a broken-before song to
+            # the front is exactly how a leader lands in that state.
+            set_item.starts_new_page = item.starts_new_page and position > 1
 
 
 def list_week_pages(

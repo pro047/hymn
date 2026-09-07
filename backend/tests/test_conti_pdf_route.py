@@ -1058,3 +1058,49 @@ def test_the_conti_should_report_the_slot_shape(client, reader):
 
     # Act & Assert
     assert _get_conti(client, headers, _week(0)).json()["slot_ratio"] == pytest.approx(slot_ratio())
+
+
+def test_a_break_on_the_first_song_should_be_stored_as_off(client, reader, db_session):
+    """chunk_pages ignores a break on the first song, so storing one leaves a
+    value that changes nothing, shows nowhere, and cannot be cleared. Moving a
+    broken-before song to the front is how a leader gets there."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 3)
+    items = _conti_items(_get_conti(client, headers, _week(0)))
+    # break before the 3rd song
+    _patch_order(
+        client, headers, _week(0),
+        [{"score_id": i["score_id"], "starts_new_page": n == 2} for n, i in enumerate(items)],
+    )
+
+    # Act — move that song to the front, carrying its flag
+    moved = [items[2], items[0], items[1]]
+    response = _patch_order(
+        client, headers, _week(0),
+        [{"score_id": i["score_id"], "starts_new_page": i["score_id"] == items[2]["score_id"]}
+         for i in moved],
+    )
+
+    # Assert — off, not merely ignored
+    assert response.status_code == 200, response.text
+    assert [i["starts_new_page"] for i in _conti_items(response)] == [False, False, False]
+
+
+def test_a_break_on_a_later_song_should_be_kept(client, reader):
+    """The normalization is only about position 1 — it must not swallow a
+    break the leader actually asked for."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 3)
+    items = _conti_items(_get_conti(client, headers, _week(0)))
+
+    # Act
+    response = _patch_order(
+        client, headers, _week(0),
+        [{"score_id": i["score_id"], "starts_new_page": n == 1} for n, i in enumerate(items)],
+    )
+
+    # Assert
+    assert [i["starts_new_page"] for i in _conti_items(response)] == [False, True, False]
+    assert [len(page) for page in response.json()["pages"]] == [1, 2]
