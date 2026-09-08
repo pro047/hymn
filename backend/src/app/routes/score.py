@@ -1,4 +1,3 @@
-from datetime import timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,32 +19,22 @@ from app.services.song import (
     attach_usage,
     get_or_reuse_song,
     has_usage_in_week,
+    normalize_week_date,
     rename_song,
     replace_song_file,
 )
 from app.utils.files import extension_from_input
-from app.utils.s3 import object_url, presign_get, presign_put
+from app.utils.s3 import object_url, presign_put, presign_score_download
 
 router = APIRouter()
-
-def _normalize_week_date(week_of):
-    if not week_of:
-        return week_of
-    return week_of - timedelta(days=(week_of.weekday() + 1) % 7)
-
-def _download_url(file_uri: str | None) -> str | None:
-    if not file_uri:
-        return None
-    if file_uri.startswith("scores/"):
-        return presign_get(file_uri)
-    return None
 
 
 def _reject_foreign_object_key(file_uri: str, church_id: str) -> None:
     """Refuses a storage key that is not this church's, or returns.
 
     file_uri is written straight through from the request body on the `local`
-    branch, and _download_url signs anything under the scores/ prefix. Together
+    branch, and presign_score_download signs anything under the scores/ prefix.
+    Together
     those made the route a signing oracle: file a score whose file_uri is
     another church's key and the server hands back a presigned GET for it. That
     survives scoping the read routes, because the URL is minted on demand from
@@ -95,7 +84,7 @@ def create_score(
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    normalized_week_of = _normalize_week_date(payload.week_of)
+    normalized_week_of = normalize_week_date(payload.week_of)
     # From the token, never the body. The old route took church_id or a free
     # text church_name and created the church if the name was unknown, with no
     # authentication at all: anyone could file scores under any congregation.
@@ -152,7 +141,7 @@ def create_score(
         return {
             "score_id": score.id,
             "upload_url": presign_put(candidate_file_uri, 900) if created else None,
-            "download_url": _download_url(file_uri),
+            "download_url": presign_score_download(file_uri),
             "s3_key": file_uri,
             "reused_song": not created,
         }
@@ -184,7 +173,7 @@ def list_scores(session: Session = Depends(get_session)):
             title=s.song.title,
             file_url=s.song.file_url,
             file_uri=s.song.file_uri,
-            download_url=_download_url(s.song.file_uri),
+            download_url=presign_score_download(s.song.file_uri),
             created_at=s.created_at,
             song_id=s.song_id,
         )
@@ -219,7 +208,7 @@ def get_score(
         title=song.title,
         file_url=song.file_url,
         file_uri=song.file_uri,
-        download_url=_download_url(song.file_uri),
+        download_url=presign_score_download(song.file_uri),
         created_at=score.created_at,
         song_id=score.song_id,
     )
@@ -242,7 +231,7 @@ def create_score_file_upload(
     place would keep the old extension when the type changes, let any cache
     keyed on the unchanged URL keep serving the old image, and destroy the
     original before the new bytes are known to be good. The superseded object is
-    left in the bucket: nothing references it, and _download_url signs only the
+    left in the bucket: nothing references it, and presign_score_download signs only the
     key stored on the row.
 
     Two paths leave an object nothing points at, and neither is cleaned up here.
@@ -276,7 +265,7 @@ def update_score(
         # for; other weeks' snapshots are untouched, same as the file case.
         score.title = song.title
     if payload.week_of is not None:
-        normalized_week_of = _normalize_week_date(payload.week_of)
+        normalized_week_of = normalize_week_date(payload.week_of)
         if normalized_week_of != score.week_of:
             attach_usage(session, score, normalized_week_of)
     if payload.file_uri is not None:
@@ -287,7 +276,7 @@ def update_score(
         # else (create_score does the same at the s3 branch) and every client
         # reads it as `download_url ?? file_url`. Storing the bare key survives
         # only because the gate above forces the scores/ prefix, which is
-        # exactly what makes _download_url sign it and hide the fallback.
+        # exactly what makes presign_score_download sign it and hide the fallback.
         file_url = object_url(payload.file_uri)
         replace_song_file(session, song, file_url=file_url, file_uri=payload.file_uri)
         score.file_url = file_url
@@ -304,7 +293,7 @@ def update_score(
         title=song.title,
         file_url=song.file_url,
         file_uri=song.file_uri,
-        download_url=_download_url(song.file_uri),
+        download_url=presign_score_download(song.file_uri),
         created_at=score.created_at,
         song_id=score.song_id,
     )

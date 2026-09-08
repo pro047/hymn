@@ -14,6 +14,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 
 import StageCard from "./stage-card";
 
@@ -26,16 +27,19 @@ function renderCard(overrides = {}) {
   const onUpdate = vi.fn();
   const onDelete = vi.fn();
   render(
-    <StageCard
-      scores={SCORES}
-      weekOf="2026-08-23"
-      onUpdate={onUpdate}
-      onDelete={onDelete}
-      savedScoreIds={new Set()}
-      pendingSaveScoreId={null}
-      onToggleSave={null}
-      {...overrides}
-    />
+    // The card links to the conti editor, so it needs a router above it.
+    <MemoryRouter>
+      <StageCard
+        scores={SCORES}
+        weekOf="2026-08-23"
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        savedScoreIds={new Set()}
+        pendingSaveScoreId={null}
+        onToggleSave={null}
+        {...overrides}
+      />
+    </MemoryRouter>
   );
   return { onUpdate, onDelete };
 }
@@ -81,6 +85,27 @@ it("돌아오는 일요일 주차를 표시해야 한다", () => {
 
   // Assert
   expect(screen.getByText(/2026-08-23/)).toBeTruthy();
+});
+
+it("콘티 편집은 그 주차의 편집 화면을 가리켜야 한다", () => {
+  // Arrange & Act — a link, not a button, so the 6-button assertion above
+  // still holds and the leader can open the editor in a new tab.
+  renderCard();
+
+  // Assert — the week travels in the URL; a link to a bare /conti would land
+  // on the catch-all route and bounce home with no error.
+  expect(screen.getByRole("link", { name: "콘티 편집" }).getAttribute("href")).toBe(
+    "/conti/2026-08-23"
+  );
+});
+
+it("악보가 없어도 콘티 편집으로 갈 수 있어야 한다", () => {
+  // Arrange & Act — an empty week is where a leader most wants the editor;
+  // the conti screen answers 200 with "아직 등록된 곡이 없습니다.", not an error.
+  renderCard({ scores: [] });
+
+  // Assert
+  expect(screen.getByRole("link", { name: "콘티 편집" })).toBeTruthy();
 });
 
 it("악보가 없으면 빈 상태를 안내해야 한다", () => {

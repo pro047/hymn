@@ -8,6 +8,7 @@ from slowapi.errors import RateLimitExceeded
 from app.rate_limit import limiter, rate_limit_handler
 from app.routes.auth import PASSWORD_RESET_ENABLED, password_reset_router
 from app.routes.auth import router as auth_router
+from app.routes.conti import router as conti_router
 from app.routes.saved_score import router as saved_score_router
 from app.routes.score import router as score_router
 from app.utils.email import require_deliverable_transport
@@ -42,12 +43,19 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
+    # allow_headers is about the *request*; a cross-origin reader sees only
+    # the CORS-safelisted response headers unless they are named here. The
+    # conti PDF route sends the week's normalized name in Content-Disposition
+    # (routes/conti.py) and the browser silently drops it without this, so the
+    # download quietly fell back to the client's own guess at the filename.
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(score_router)
 app.include_router(auth_router)
 app.include_router(saved_score_router)
+app.include_router(conti_router)
 if PASSWORD_RESET_ENABLED:
     # Before the mount, not after: if the transport cannot deliver in this
     # environment the route must not come into existence at all.

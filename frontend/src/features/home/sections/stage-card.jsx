@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
@@ -21,7 +23,12 @@ export default function StageCard({
           when the endpoints exist, not before. */}
       <CardHeader>
         <CardTitle>콘티</CardTitle>
-        <p className="mt-1 text-xs text-stone-500">{weekOf} (돌아오는 일요일)</p>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <p className="text-xs text-stone-500">{weekOf} (돌아오는 일요일)</p>
+          <Button variant="outline" size="sm" type="button" asChild>
+            <Link to={`/conti/${weekOf}`}>콘티 편집</Link>
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-2">
         {stageScores.length === 0 ? (

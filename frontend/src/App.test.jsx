@@ -50,6 +50,37 @@ describe("라우팅", () => {
     // LoginPage is what /login renders; its submit button names the screen.
     expect(screen.getByRole("button", { name: "로그인" })).toBeTruthy();
   });
+
+  it("로그인 상태에서 /conti/:week은 그 주차의 콘티 화면을 보여줘야 한다", async () => {
+    localStorage.setItem("hymn_access_token", "token");
+    // 200, unlike the 401 stub the tests above share: a 401 here takes the
+    // refresh path, finds no refresh token, and endSession() clears the very
+    // token this test just wrote — the screen would then be gone for the
+    // wrong reason and the assertion below would read as a routing failure.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ week_of: "2026-09-13", slot_ratio: 0.75, pages: [] }),
+        })
+      )
+    );
+
+    renderAt("/conti/2026-09-13");
+
+    // The week comes from the URL parameter, so this also pins that the route
+    // is parameterised — the catch-all would have redirected a plain "/conti".
+    expect(await screen.findByRole("heading", { name: "2026-09-13 콘티" })).toBeTruthy();
+  });
+
+  it("로그아웃 상태에서 /conti/:week은 로그인으로 보내야 한다", () => {
+    renderAt("/conti/2026-09-13");
+
+    expect(screen.queryByRole("heading", { name: "2026-09-13 콘티" })).toBeNull();
+    expect(screen.getByRole("button", { name: "로그인" })).toBeTruthy();
+  });
 });
 
 describe("헤더", () => {

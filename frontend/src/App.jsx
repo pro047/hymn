@@ -7,6 +7,7 @@ import { Button } from "./components/ui/button";
 import { isAuthenticated } from "./lib/auth-storage";
 import AccountPage from "./pages/account-page";
 import ChurchPage from "./pages/church-page";
+import ContiPage from "./pages/conti-page";
 import ForgotPasswordPage from "./pages/forgot-password-page";
 import HomePage from "./pages/home-page";
 import LoginPage from "./pages/login-page";
@@ -80,6 +81,13 @@ function ProtectedAccountPage() {
   return <AccountPage />;
 }
 
+function ProtectedContiPage() {
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" replace />;
+  }
+  return <ContiPage />;
+}
+
 function LoginRoute() {
   if (isAuthenticated()) {
     return <Navigate to="/" replace />;
@@ -108,6 +116,7 @@ function App() {
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/church" element={<ProtectedChurchPage />} />
       <Route path="/account" element={<ProtectedAccountPage />} />
+      <Route path="/conti/:week" element={<ProtectedContiPage />} />
       <Route path="/" element={<ProtectedHomePage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

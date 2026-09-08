@@ -1,5 +1,4 @@
 import datetime as dt
-from datetime import timedelta
 from typing import Literal
 from uuid import uuid4
 
@@ -17,25 +16,13 @@ from app.schemas.saved_score import (
     SavedScoreUploadResponse,
     SavedScoreUseResponse,
 )
-from app.services.song import attach_usage, get_or_reuse_song
+from app.services.song import attach_usage, get_or_reuse_song, normalize_week_date
 from app.utils.files import extension_from_input
-from app.utils.s3 import object_url, presign_get, presign_put
+from app.utils.s3 import object_url, presign_get, presign_put, presign_score_download
 
 router = APIRouter(prefix="/me/saved-scores", tags=["saved-scores"])
 
 
-def _normalize_week_date(week_of):
-    if not week_of:
-        return week_of
-    return week_of - timedelta(days=(week_of.weekday() + 1) % 7)
-
-
-def _download_url(file_uri: str | None) -> str | None:
-    if not file_uri:
-        return None
-    if file_uri.startswith("scores/"):
-        return presign_get(file_uri)
-    return None
 
 
 def _get_saved_score(session: Session, user_id: str, score_id: str) -> SavedScore | None:
@@ -81,7 +68,7 @@ def list_saved_scores(
             week_of=score.week_of,
             file_url=song.file_url,
             file_uri=song.file_uri,
-            download_url=_download_url(song.file_uri),
+            download_url=presign_score_download(song.file_uri),
             saved_at=saved.created_at,
             last_used_at=saved.last_used_at,
             use_count=saved.use_count,
@@ -189,7 +176,7 @@ def apply_saved_score(
     if not score or score.church_id != user.church_id:
         raise HTTPException(status_code=404, detail="Score not found")
 
-    normalized_week_of = _normalize_week_date(payload.week_of)
+    normalized_week_of = normalize_week_date(payload.week_of)
     attach_usage(session, score, normalized_week_of)
 
     saved.use_count += 1

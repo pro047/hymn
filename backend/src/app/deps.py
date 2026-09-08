@@ -5,6 +5,8 @@ router wanting it had to import from a sibling router. It is the same check for
 every protected route, so it belongs beside the session dependency instead.
 """
 
+from collections.abc import Callable
+
 from fastapi import Depends, Header, HTTPException
 from jose import JWTError
 from sqlalchemy.orm import Session
@@ -12,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db import get_session
 from app.models import User
 from app.services.auth import decode_token, parse_bearer_token
+from app.utils.s3 import get_object_bytes
 
 # Rendered straight to the user by the client, like the auth router's messages.
 # One wording for every way a token can fail: the caller can only sign in again
@@ -50,3 +53,16 @@ def get_current_user(
     if claims.get("tv", 0) != user.token_version:
         raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
     return user
+
+
+ObjectReader = Callable[[str], bytes]
+
+
+def get_object_reader() -> ObjectReader:
+    """How this request reads an S3 object's bytes.
+
+    Production resolves to app.utils.s3.get_object_bytes; a test overrides it
+    with app.dependency_overrides[get_object_reader], the same seam
+    get_session already uses, so no test ever opens a real S3 connection.
+    """
+    return get_object_bytes
