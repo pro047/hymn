@@ -151,7 +151,7 @@ def build_week_conti_pdf(
     images: list[Image.Image] = []
     for entry in entries:
         key = entry.file_uri
-        # Same prefix _download_url signs on read (routes/score.py:39-40).
+        # Same prefix presign_score_download signs on read (utils/s3.py).
         # Not the tighter scores/{church_id}/ that writes use: 60 of the 85
         # production songs still carry keys minted before ece1e92, whose
         # literal placeholder segment makes them scores/.../{uuid}.{ext}.

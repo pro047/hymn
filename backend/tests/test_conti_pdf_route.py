@@ -1104,3 +1104,94 @@ def test_a_break_on_a_later_song_should_be_kept(client, reader):
     # Assert
     assert [i["starts_new_page"] for i in _conti_items(response)] == [False, True, False]
     assert [len(page) for page in response.json()["pages"]] == [1, 2]
+
+
+# --- code review 2026-09-08 --------------------------------------------------
+
+
+def test_moving_a_score_to_another_week_should_not_carry_its_page_break(client, reader, db_session):
+    """A break says where *that* week's conti was cut. attach_usage re-files the
+    same SetItem under a new week at the end of the order, next to songs nobody
+    rearranged — carrying the flag would cut a page there with nothing on
+    screen explaining it, and set_week_order only clears a stale flag for
+    position 1, so it would survive until someone reordered that week."""
+    # Arrange — two songs in week 0, a break on the second
+    headers = _register(client)
+    first, second = _seed_week(client, reader, headers, _week(0), 2)
+    _patch_order(
+        client, headers, _week(0),
+        [
+            {"score_id": first["score_id"], "starts_new_page": False},
+            {"score_id": second["score_id"], "starts_new_page": True},
+        ],
+    )
+    _add_song(client, reader, headers, title="다음주곡", week=_week(1))
+
+    # Act — re-file the broken song under week 1
+    response = client.patch(
+        f"/scores/{second['score_id']}",
+        json={"week_of": _week(1)},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+    # Assert — it arrives with the break cleared, so week 1 is one page
+    items = _conti_items(_get_conti(client, headers, _week(1)))
+    moved = [item for item in items if item["score_id"] == second["score_id"]]
+    assert len(moved) == 1
+    assert moved[0]["starts_new_page"] is False
+    assert (
+        db_session.query(SetItem)
+        .filter(SetItem.score_id == second["score_id"], SetItem.starts_new_page.is_(True))
+        .count()
+        == 0
+    )
+
+
+def test_a_song_whose_key_is_not_ours_should_have_no_image_url(client, reader, db_session):
+    """Every other read path answers None for a key this app did not mint
+    (utils/s3.presign_score_download); the conti preview signed the column
+    as-is. A signed URL for such a key draws a broken image, and the screen
+    reads "has a file" and offers a PDF button that can only 502 — the PDF
+    path refuses the same key with ContiFileUnreadable."""
+    # Arrange — one normal song and one carrying a legacy full URL
+    headers = _register(client)
+    good, legacy = _seed_week(client, reader, headers, _week(0), 2)
+    song = (
+        db_session.query(Song)
+        .join(Score, Score.song_id == Song.id)
+        .filter(Score.id == legacy["score_id"])
+        .one()
+    )
+    song.file_uri = "https://old-bucket.example.com/legacy/sheet.png"
+    db_session.commit()
+
+    # Act
+    items = _conti_items(_get_conti(client, headers, _week(0)))
+    by_id = {item["score_id"]: item for item in items}
+
+    # Assert — the good one still signs, the legacy one is reported as fileless
+    assert by_id[good["score_id"]]["image_url"] is not None
+    assert by_id[legacy["score_id"]]["image_url"] is None
+
+
+def test_the_pdf_filename_header_should_be_readable_cross_origin(client, reader):
+    """The client reads the week's normalized name out of Content-Disposition.
+    A cross-origin reader sees only the CORS-safelisted response headers unless
+    the header is named in expose_headers, so without it the browser drops the
+    name and the download silently falls back to the client's own guess."""
+    # Arrange
+    headers = _register(client)
+    _seed_week(client, reader, headers, _week(0), 2)
+
+    # Act — a real cross-origin GET from the deployed frontend
+    response = client.get(
+        f"/weeks/{_week(0)}/pdf",
+        headers={**headers, "Origin": "https://www.score-hymn.com"},
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert "Content-Disposition" in response.headers
+    exposed = response.headers.get("access-control-expose-headers", "")
+    assert "Content-Disposition" in exposed

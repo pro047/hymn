@@ -43,7 +43,13 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
+    # allow_headers is about the *request*; a cross-origin reader sees only
+    # the CORS-safelisted response headers unless they are named here. The
+    # conti PDF route sends the week's normalized name in Content-Disposition
+    # (routes/conti.py) and the browser silently drops it without this, so the
+    # download quietly fell back to the client's own guess at the filename.
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(score_router)

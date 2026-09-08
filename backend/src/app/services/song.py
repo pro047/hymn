@@ -146,6 +146,15 @@ def attach_usage(session: Session, score: Score, week_of: dt.date) -> None:
             item.week_id = week.id
             item.week_date = week.date
             item.order_no = order_no
+            # The break does not travel with the song. It describes where a
+            # page was cut in the week it was set in — the leader arranged
+            # *that* conti — and this row is being filed at the end of a
+            # different week, next to songs nobody rearranged. Carried over,
+            # it would cut a page in the new week's preview and PDF with
+            # nothing on screen explaining why, and set_week_order only clears
+            # a stale flag for position 1, so it would survive until someone
+            # reordered that week.
+            item.starts_new_page = False
     else:
         session.add(
             SetItem(

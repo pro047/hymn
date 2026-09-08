@@ -54,6 +54,26 @@ def presign_get(key: str, expires: int = 900) -> str:
     return rewrite_presigned_url(url)
 
 
+def presign_score_download(file_uri: str | None) -> str | None:
+    """A signed GET for a score's own file, or None if there is nothing to sign.
+
+    None covers two cases the callers cannot tell apart and should not have to:
+    no file at all, and a key this app did not mint. Rows written before
+    ece1e92 carry keys shaped `scores/.../{uuid}`, and others hold a full URL
+    or a path outside the bucket entirely. Signing one of those hands the
+    browser a URL that 404s — or points somewhere it should not — so every
+    read path answers None and lets the screen say "no file" instead of
+    drawing a broken image.
+
+    This is the single copy on purpose: it lived as `_download_url` in two
+    route modules and a third was about to appear in the conti route, where
+    its absence let an unsignable key through as a non-null image_url.
+    """
+    if not file_uri or not file_uri.startswith("scores/"):
+        return None
+    return presign_get(file_uri)
+
+
 def object_url(key: str) -> str:
     """Build a stable object URL for the given key."""
     if not S3_BUCKET:

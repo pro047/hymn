@@ -18,7 +18,7 @@ from app.services.conti import (
 )
 from app.services.conti_pdf import slot_ratio
 from app.services.song import normalize_week_date
-from app.utils.s3 import presign_get
+from app.utils.s3 import presign_score_download
 
 router = APIRouter()
 
@@ -88,8 +88,11 @@ def get_week_conti(
                     "starts_new_page": entry.starts_new_page,
                     # Signed here rather than handed the raw key: the browser
                     # draws the real sheet in the preview, and the bucket is
-                    # not public.
-                    "image_url": presign_get(entry.file_uri) if entry.file_uri else None,
+                    # not public. Same guard as every other read path — a key
+                    # this app did not mint answers None, so the screen says
+                    # "no file" instead of drawing a broken image and offering
+                    # a PDF button that can only 502.
+                    "image_url": presign_score_download(entry.file_uri),
                 }
                 for entry in page
             ]

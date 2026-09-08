@@ -18,19 +18,11 @@ from app.schemas.saved_score import (
 )
 from app.services.song import attach_usage, get_or_reuse_song, normalize_week_date
 from app.utils.files import extension_from_input
-from app.utils.s3 import object_url, presign_get, presign_put
+from app.utils.s3 import object_url, presign_get, presign_put, presign_score_download
 
 router = APIRouter(prefix="/me/saved-scores", tags=["saved-scores"])
 
 
-
-
-def _download_url(file_uri: str | None) -> str | None:
-    if not file_uri:
-        return None
-    if file_uri.startswith("scores/"):
-        return presign_get(file_uri)
-    return None
 
 
 def _get_saved_score(session: Session, user_id: str, score_id: str) -> SavedScore | None:
@@ -76,7 +68,7 @@ def list_saved_scores(
             week_of=score.week_of,
             file_url=song.file_url,
             file_uri=song.file_uri,
-            download_url=_download_url(song.file_uri),
+            download_url=presign_score_download(song.file_uri),
             saved_at=saved.created_at,
             last_used_at=saved.last_used_at,
             use_count=saved.use_count,
