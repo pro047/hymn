@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../../../api/client";
 import { API_PATHS } from "../../../api/paths";
 import { alertMessageOf, readApiError, toFormError } from "../../../lib/api-error";
-import { flattenPages, moveItem, toOrderPayload, togglePageBreak } from "../../../lib/conti-order";
+import { moveInGrid, splitPageAt, toOrderPayload, withPageBreaks } from "../../../lib/conti-order";
 import { saveBlobAsFile } from "../../../lib/download";
 
 const NETWORK_ERROR_MESSAGE = "네트워크 오류로 요청에 실패했습니다.";
@@ -24,7 +24,14 @@ export function useConti(weekOfParam) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState("");
 
-  const items = flattenPages(pages ?? []);
+  // The week the screen is on right now, readable from a response that was
+  // sent for an earlier one. The GET effect can use its own `active` flag
+  // because its cleanup runs on the way out; a PATCH has no cleanup to hang
+  // that on, so it compares against this instead.
+  const currentWeekRef = useRef(weekOfParam);
+  useEffect(() => {
+    currentWeekRef.current = weekOfParam;
+  }, [weekOfParam]);
 
   useEffect(() => {
     let active = true;
@@ -67,16 +74,12 @@ export function useConti(weekOfParam) {
   // page breaks (chunk_pages) and a client-computed layout could show the
   // wrong split for a moment.
   //
-  // Reordering and breaking a page share this one path: both are edits to the
-  // same list, and the server answers both with the whole conti. Two copies of
-  // the save would be two places for the no-op check and the error handling to
-  // drift apart.
+  // Dragging and the up/down buttons share this one path: both are the same
+  // edit — a song lands in a box — and the server answers both with the whole
+  // conti. Two copies of the save would be two places for the error handling
+  // to drift apart.
   const save = useCallback(
     async (next) => {
-      // Same reference means nothing moved (moveItem/togglePageBreak return the
-      // input unchanged for a no-op), so the network is never touched.
-      if (next === items) return;
-
       setIsSaving(true);
       setError("");
       try {
@@ -85,6 +88,12 @@ export function useConti(weekOfParam) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ items: toOrderPayload(next) }),
         });
+        // A response for a week the screen has already left is dropped rather
+        // than painted: the GET for the new week may well have landed first,
+        // and this would repaint the old week's conti under the new week's
+        // URL. The next drag would then PATCH the new week with the old
+        // week's score_ids and take a 400 (ContiOrderMismatch).
+        if (currentWeekRef.current !== weekOfParam) return;
         if (!response.ok) {
           const apiError = await readApiError(response, "순서를 저장하지 못했습니다.", []);
           setError(alertMessageOf(apiError));
@@ -95,31 +104,45 @@ export function useConti(weekOfParam) {
         setSlotRatio(data.slot_ratio);
         setPages(data.pages);
       } catch {
+        if (currentWeekRef.current !== weekOfParam) return;
         setError(alertMessageOf(toFormError(NETWORK_ERROR_MESSAGE)));
       } finally {
         setIsSaving(false);
       }
     },
-    [items, weekOfParam]
+    [weekOfParam]
   );
 
-  const moveSong = useCallback(
+  // `from` and `to` are slot positions ({page, slot}), not list indexes: the
+  // layout is what the leader edits, and the page breaks are read back out of
+  // it by withPageBreaks rather than carried on the songs.
+  const moveSlot = useCallback(
     async (from, to) => {
       // Guarded as well as disabled in the UI: a second edit started before the
-      // first response lands would be computed from the pre-edit list, and
+      // first response lands would be computed from the pre-edit layout, and
       // whichever response arrived last would win.
-      if (isSaving) return;
-      await save(moveItem(items, from, to));
+      if (isSaving || !pages) return;
+      const next = moveInGrid(pages, from, to);
+      // Same reference means nothing moved, so the network is never touched.
+      if (next === pages) return;
+      await save(withPageBreaks(next));
     },
-    [items, isSaving, save]
+    [pages, isSaving, save]
   );
 
-  const toggleBreak = useCallback(
-    async (index) => {
-      if (isSaving) return;
-      await save(togglePageBreak(items, index));
+  // The scissors between two songs of one page. Dragging cannot say this —
+  // it moves a song, and this moves only the boundary — and on a week whose
+  // pages are all full there is no blank box to drag into at all.
+  const splitPage = useCallback(
+    async (position) => {
+      if (isSaving || !pages) return;
+      const next = splitPageAt(pages, position);
+      // null means there is nothing to cut here; the control is not drawn in
+      // that case, so this is the guard, not the common path.
+      if (!next) return;
+      await save(next);
     },
-    [items, isSaving, save]
+    [pages, isSaving, save]
   );
 
   const downloadPdf = useCallback(async () => {
@@ -149,14 +172,13 @@ export function useConti(weekOfParam) {
   return {
     weekOf,
     pages,
-    items,
     slotRatio,
     isLoading,
     isSaving,
     isDownloading,
     error,
-    moveSong,
-    toggleBreak,
+    moveSlot,
+    splitPage,
     downloadPdf,
   };
 }

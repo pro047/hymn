@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 
 import ContiPage from "./conti-page";
 import { saveBlobAsFile } from "../lib/download";
@@ -47,11 +47,31 @@ const THREE_SONGS = contiOf([[A, B], [C]]);
 const C_WITH_FILE = { ...C, image_url: "https://cdn.test/c.png" };
 const THREE_SONGS_ALL_WITH_FILES = contiOf([[A, B], [C_WITH_FILE]]);
 
-// C carries starts_new_page: true, so the scissors above page 2 reads
-// "해제". Turning one *on* needs a page whose first song has it off — which is
-// what an automatic split (two songs filled the page) looks like.
+// Two songs filled page 1 and 소망 spilled over: the split nobody asked for,
+// so no song carries a break. Dropping into page 2's blank is what turns one
+// on, and this is the layout that has one to turn on.
 const C_BREAK_OFF = { ...C_WITH_FILE, starts_new_page: false };
 const THREE_SONGS_NO_BREAK = contiOf([[A, B], [C_BREAK_OFF]]);
+
+// The mirror image: page 1 was cut short on purpose, so 믿음 carries the break
+// that made page 2 start. Dragging it back into page 1's blank is what clears
+// that break — there is no button for it any more.
+const B_BREAK_ON = { ...B, starts_new_page: true };
+const SPLIT_AFTER_FIRST = contiOf([[A], [B_BREAK_ON, C_BREAK_OFF]]);
+
+// An even song count, which is the case dragging alone cannot edit: every page
+// is full, so padSlots emits no blank anywhere and there is no box to drop
+// into. The scissors is the only way to split this week.
+const D = {
+  score_id: "d",
+  title: "사랑",
+  starts_new_page: false,
+  image_url: "https://cdn.test/d.png",
+};
+const FOUR_SONGS = contiOf([
+  [A, B],
+  [C_BREAK_OFF, D],
+]);
 
 const PDF_BLOB = new Blob(["%PDF-1.4"], { type: "application/pdf" });
 
@@ -113,6 +133,33 @@ const renderConti = (path = "/conti/2026-09-13") =>
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/conti/:week" element={<ContiPage />} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+/** Moves the route to another week from inside the router, as a link would. */
+function WeekNav({ to }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate(`/conti/${to}`)}>
+      주차이동
+    </button>
+  );
+}
+
+const renderContiWithWeekNav = (to) =>
+  render(
+    <MemoryRouter initialEntries={["/conti/2026-09-13"]}>
+      <Routes>
+        <Route
+          path="/conti/:week"
+          element={
+            <>
+              <WeekNav to={to} />
+              <ContiPage />
+            </>
+          }
+        />
       </Routes>
     </MemoryRouter>
   );
@@ -243,25 +290,51 @@ describe("순서 변경", () => {
     expect(slotNames()).toEqual(["은혜", "빈 칸"]);
   });
 
+  it("아래로는 빈 칸을 건너뛰고 다음 곡과 맞바꿔야 한다", async () => {
+    // Arrange — page 1 holds 은혜 alone, so the box right after it is a blank.
+    // Stepping into that blank would put 은혜 back where it already is: a
+    // button that looks available and sends nothing.
+    const calls = mockApi({ conti: { body: SPLIT_AFTER_FIRST } });
+    renderConti();
+    await waitForLoaded();
+    expect(slotNames()).toEqual(["은혜", "빈 칸", "믿음", "소망"]);
+
+    // Act
+    fireEvent.click(screen.getByRole("button", { name: "은혜 아래로" }));
+
+    // Assert — 은혜 and 믿음 traded boxes, so 은혜 now starts page 2.
+    await waitFor(() => expect(patchCalls(calls)).toHaveLength(1));
+    expect(patchCalls(calls)[0].body).toEqual({
+      items: [
+        { score_id: "b", starts_new_page: false },
+        { score_id: "a", starts_new_page: true },
+        { score_id: "c", starts_new_page: false },
+      ],
+    });
+  });
+
   it("아래로를 누르면 그 주차 곡 전체를 바뀐 순서로 보내야 한다", async () => {
     // Arrange
     const calls = mockApi();
     renderConti();
     await waitForLoaded();
 
-    // Act — 믿음 is index 1 of [은혜, 믿음, 소망]
+    // Act — 믿음 sits in page 1 slot 2; the song after it is 소망, alone on
+    // page 2. The two trade boxes.
     fireEvent.click(screen.getByRole("button", { name: "믿음 아래로" }));
 
-    // Assert — every song exactly once, 소망's break relayed untouched. A
-    // partial list is a 400 from the server (ContiOrderMismatch).
+    // Assert — every song exactly once, and the breaks are recomputed from
+    // where the songs ended up: 소망 joined page 1 so its break is gone, and
+    // 믿음 now starts page 2 so it has one. A partial list is a 400 from the
+    // server (ContiOrderMismatch).
     await waitFor(() => expect(patchCalls(calls)).toHaveLength(1));
     const [patch] = patchCalls(calls);
     expect(patch.url.endsWith("/weeks/2026-09-13/conti/order")).toBe(true);
     expect(patch.body).toEqual({
       items: [
         { score_id: "a", starts_new_page: false },
-        { score_id: "c", starts_new_page: true },
-        { score_id: "b", starts_new_page: false },
+        { score_id: "c", starts_new_page: false },
+        { score_id: "b", starts_new_page: true },
       ],
     });
   });
@@ -298,20 +371,89 @@ describe("순서 변경", () => {
     expect(patchCalls(calls)[1].body.items.map((item) => item.score_id)).toEqual(["c", "a", "b"]);
   });
 
-  it("끌어다 놓으면 끼워 넣기여야 하고 자리 맞바꾸기가 아니어야 한다", async () => {
-    // Arrange
+  it("곡 위에 끌어다 놓으면 자리를 맞바꿔야 한다", async () => {
+    // Arrange — 은혜 and 믿음 fill page 1; 소망 is alone on page 2.
     const calls = mockApi();
     renderConti();
     await waitForLoaded();
 
-    // Act — drag 소망 (index 2) onto 은혜 (index 0)
+    // Act — drag 소망 onto 은혜
     fireEvent.dragStart(slot("소망"));
     fireEvent.dragOver(slot("은혜"));
     fireEvent.drop(slot("은혜"));
 
-    // Assert — a swap would send [c, b, a]
+    // Assert — an insert would send [c, a, b] and push 믿음 onto page 2,
+    // moving a song nobody dragged. The swap leaves 믿음 where it was, so
+    // both pages keep their size and the layout stays reproducible.
     await waitFor(() => expect(patchCalls(calls)).toHaveLength(1));
-    expect(patchCalls(calls)[0].body.items.map((item) => item.score_id)).toEqual(["c", "a", "b"]);
+    expect(patchCalls(calls)[0].body.items.map((item) => item.score_id)).toEqual(["c", "b", "a"]);
+  });
+
+  it("빈 칸에 끌어다 놓으면 그 쪽으로 옮기고 나누기를 켜야 한다", async () => {
+    // Arrange — the automatic split: 은혜·믿음 on page 1, 소망 spilled onto
+    // page 2, nobody carrying a break.
+    const calls = mockApi({ conti: { body: THREE_SONGS_NO_BREAK } });
+    renderConti();
+    await waitForLoaded();
+
+    // Act — drop 믿음 into page 2's blank
+    fireEvent.dragStart(slot("믿음"));
+    fireEvent.dragOver(slot("빈 칸"));
+    fireEvent.drop(slot("빈 칸"));
+
+    // Assert — [은혜] [소망, 믿음]. Only a break on 소망 reproduces a page
+    // holding one song, and chunk_pages would otherwise glue 은혜 and 소망
+    // back together — so this flag is the whole reason the layout survives.
+    await waitFor(() => expect(patchCalls(calls)).toHaveLength(1));
+    expect(patchCalls(calls)[0].body).toEqual({
+      items: [
+        { score_id: "a", starts_new_page: false },
+        { score_id: "c", starts_new_page: true },
+        { score_id: "b", starts_new_page: false },
+      ],
+    });
+  });
+
+  it("앞 쪽 빈 칸으로 끌어오면 나누기가 꺼져야 한다", async () => {
+    // Arrange — page 1 was cut short on purpose, so 믿음 carries the break.
+    // There is no button to clear it; dragging is the only way.
+    const calls = mockApi({ conti: { body: SPLIT_AFTER_FIRST } });
+    renderConti();
+    await waitForLoaded();
+
+    // Act — drop 믿음 into page 1's blank
+    fireEvent.dragStart(slot("믿음"));
+    fireEvent.dragOver(slot("빈 칸"));
+    fireEvent.drop(slot("빈 칸"));
+
+    // Assert — [은혜, 믿음] [소망]: 믿음 stopped starting a page, so its break
+    // is gone, and 소망 now starts one. A relayed flag would send true for
+    // 믿음 and split the page the leader just closed.
+    await waitFor(() => expect(patchCalls(calls)).toHaveLength(1));
+    expect(patchCalls(calls)[0].body).toEqual({
+      items: [
+        { score_id: "a", starts_new_page: false },
+        { score_id: "b", starts_new_page: false },
+        { score_id: "c", starts_new_page: true },
+      ],
+    });
+  });
+
+  it("자기 쪽의 빈 칸에 놓으면 아무 요청도 보내지 않아야 한다", async () => {
+    // Arrange — 소망 is alone on page 2, and the blank beside it is its own
+    // page's. Moving there changes neither the order nor the pages.
+    const calls = mockApi();
+    renderConti();
+    await waitForLoaded();
+
+    // Act
+    fireEvent.dragStart(slot("소망"));
+    fireEvent.dragOver(slot("빈 칸"));
+    fireEvent.drop(slot("빈 칸"));
+
+    // Assert — synchronous on purpose: apiFetch calls fetch before its first
+    // await, so a request, if sent, would already be in the log.
+    expect(patchCalls(calls)).toHaveLength(0);
   });
 
   it("같은 이동이면 드래그와 버튼이 같은 요청을 보내야 한다", async () => {
@@ -357,7 +499,7 @@ describe("순서 변경", () => {
 
   it("끌기 없이 놓기만 일어나면 아무 요청도 보내지 않아야 한다", async () => {
     // Arrange — a drop whose drag started outside the preview (or a second drop
-    // after the index was consumed) has no source index to move.
+    // after the position was consumed) has no source box to move.
     const calls = mockApi();
     renderConti();
     await waitForLoaded();
@@ -370,7 +512,7 @@ describe("순서 변경", () => {
 
     // Assert — exactly one move: the third drop finds the ref already cleared.
     await waitFor(() => expect(patchCalls(calls)).toHaveLength(1));
-    expect(patchCalls(calls)[0].body.items.map((item) => item.score_id)).toEqual(["c", "a", "b"]);
+    expect(patchCalls(calls)[0].body.items.map((item) => item.score_id)).toEqual(["c", "b", "a"]);
   });
 
   it("저장에 실패하면 서버 문구를 보이고 순서는 그대로여야 한다", async () => {
@@ -526,7 +668,10 @@ describe("PDF 내려받기", () => {
 
   it("PDF가 실패하면 문구를 보이고 진행 표시를 풀어야 한다", async () => {
     // Arrange
-    mockApi({ conti: { body: THREE_SONGS_ALL_WITH_FILES }, pdf: { status: 502, body: { detail: "PDF를 만들지 못했습니다." } } });
+    mockApi({
+      conti: { body: THREE_SONGS_ALL_WITH_FILES },
+      pdf: { status: 502, body: { detail: "PDF를 만들지 못했습니다." } },
+    });
     renderConti();
     await waitForLoaded();
 
@@ -588,7 +733,6 @@ describe("불러오기 실패", () => {
   });
 });
 
-
 // --- code review 2026-09-07: findings pinned here --------------------------
 
 describe("코드리뷰 반영", () => {
@@ -642,7 +786,9 @@ describe("코드리뷰 반영", () => {
     // reproducing it.
     mockApi({
       conti: { body: THREE_SONGS_ALL_WITH_FILES },
-      pdf: { headers: { "Content-Disposition": 'attachment; filename="conti-named-by-server.pdf"' } },
+      pdf: {
+        headers: { "Content-Disposition": 'attachment; filename="conti-named-by-server.pdf"' },
+      },
     });
     renderConti("/conti/2026-09-09");
     await waitForLoaded();
@@ -655,77 +801,85 @@ describe("코드리뷰 반영", () => {
     expect(saveBlobAsFile.mock.calls[0][1]).toBe("conti-named-by-server.pdf");
   });
 
-  it("쪽 사이의 가위가 그 쪽 첫 곡의 나누기를 켜야 한다", async () => {
-    // Arrange — a break is stored on the song that starts a page
-    // (chunk_pages), so the control between pages edits the lower page's
-    // first song.
-    const calls = mockApi({ conti: { body: THREE_SONGS_NO_BREAK } });
-    renderConti();
-    await waitForLoaded();
-
-    // Act — C starts page 2 because A and B filled page 1, not because anyone
-    // asked; pressing the scissors is what makes that split explicit.
-    fireEvent.click(screen.getByRole("button", { name: "소망 앞에서 나누기" }));
-
-    // Assert
-    await waitFor(() => expect(patchCalls(calls).length).toBe(1));
-    const sent = patchCalls(calls)[0].body.items;
-    expect(sent.map((item) => item.starts_new_page)).toEqual([false, false, true]);
-    expect(sent.map((item) => item.score_id)).toEqual(["a", "b", "c"]);
-  });
-
-  it("이미 켜진 나누기는 해제로 보여야 한다", async () => {
-    // Arrange — C already carries starts_new_page: true
-    mockApi({ conti: { body: contiOf([[A, B], [C_WITH_FILE]]) } });
-    renderConti();
-    await waitForLoaded();
-
-    // Act & Assert
-    expect(screen.getByRole("button", { name: "소망 앞 나누기 해제" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "소망 앞에서 나누기" })).toBeNull();
-  });
-
-  it("첫 곡에는 가위가 없고 나머지 곡에는 있어야 한다", async () => {
-    // Arrange — chunk_pages ignores a break on the first item, so a control
-    // there would do nothing when pressed. Every other song can start a page,
-    // including one sitting in the middle of a page — that is the only way to
-    // reach a layout like [A] [B, C].
+  it("가위는 쪽 안의 곡 사이에만 있고 쪽 사이·첫 곡 앞에는 없어야 한다", async () => {
+    // Arrange — [은혜, 믿음] [소망]. The only seam inside a page is 은혜|믿음.
+    // 소망 opens page 2, so there is nothing to cut in front of it; closing
+    // that split back up is what dragging it into page 1's blank does.
     mockApi({ conti: { body: THREE_SONGS_NO_BREAK } });
     renderConti();
     await waitForLoaded();
 
     // Act & Assert
-    expect(screen.getAllByRole("button", { name: /나누기/ }).length).toBe(2);
+    expect(
+      screen.getAllByRole("button", { name: /나누기/ }).map((b) => b.getAttribute("aria-label"))
+    ).toEqual(["믿음 앞에서 나누기"]);
     expect(screen.queryByRole("button", { name: /은혜 앞/ })).toBeNull();
-    expect(screen.getByRole("button", { name: "믿음 앞에서 나누기" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "소망 앞에서 나누기" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /소망 앞/ })).toBeNull();
   });
 
-  it("쪽 안쪽 곡 앞에서도 나눌 수 있어야 한다", async () => {
-    // Arrange — B is the second slot of page 1, not a page boundary. Without a
-    // control here the layout [은혜] [믿음, 소망] cannot be made at all.
-    const calls = mockApi({ conti: { body: THREE_SONGS_NO_BREAK } });
+  it("쪽이 전부 꽉 찬 주차도 가위로 나눌 수 있어야 한다", async () => {
+    // Arrange — 4 songs, so every page is full and padSlots emits no blank at
+    // all. Dragging can only swap here; without the scissors this week could
+    // never be split. This is the case the code review found unreachable.
+    const calls = mockApi({ conti: { body: FOUR_SONGS } });
     renderConti();
+    await waitForLoaded();
+    expect(screen.queryAllByRole("group", { name: "빈 칸" })).toEqual([]);
+
+    // Act — cut in front of 믿음
+    fireEvent.click(screen.getByRole("button", { name: "믿음 앞에서 나누기" }));
+
+    // Assert — one seam added, the running order untouched. 소망's flag stays
+    // false: page 2 started there because page 1 filled up, not because anyone
+    // asked, and freezing that in would answer [은혜][믿음][소망,사랑] — two
+    // cuts for one click.
+    await waitFor(() => expect(patchCalls(calls)).toHaveLength(1));
+    expect(patchCalls(calls)[0].body).toEqual({
+      items: [
+        { score_id: "a", starts_new_page: false },
+        { score_id: "b", starts_new_page: true },
+        { score_id: "c", starts_new_page: false },
+        { score_id: "d", starts_new_page: false },
+      ],
+    });
+  });
+
+  it("주차를 옮긴 뒤 도착한 이전 주차의 응답을 그리지 않아야 한다", async () => {
+    // Arrange — the PATCH for week A is held open, the route moves to week B,
+    // B's GET lands first, and only then does A's PATCH answer. Without a
+    // guard that late response repaints week A's conti under week B's URL,
+    // and the next drag would PATCH B with A's score_ids for a 400.
+    let answerPatch;
+    const heldPatch = new Promise((resolve) => {
+      answerPatch = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input, init = {}) => {
+        const url = String(input);
+        if ((init.method ?? "GET") === "PATCH") return heldPatch;
+        if (url.includes("2026-09-20")) return replyOf({ body: contiOf([[D]], "2026-09-20") });
+        return replyOf({ body: THREE_SONGS });
+      })
+    );
+    renderContiWithWeekNav("2026-09-20");
     await waitForLoaded();
 
     // Act
-    fireEvent.click(screen.getByRole("button", { name: "믿음 앞에서 나누기" }));
+    fireEvent.click(screen.getByRole("button", { name: "믿음 아래로" }));
+    fireEvent.click(screen.getByRole("button", { name: "주차이동" }));
+    await screen.findByRole("group", { name: "사랑" });
+    answerPatch(await replyOf({ body: THREE_SONGS }));
 
-    // Assert
-    await waitFor(() => expect(patchCalls(calls).length).toBe(1));
-    expect(patchCalls(calls)[0].body.items.map((i) => i.starts_new_page)).toEqual([
-      false,
-      true,
-      false,
-    ]);
+    // Assert — week B stays on screen. 은혜 belongs to week A and must not
+    // come back.
+    await waitFor(() => expect(slotNames()).toEqual(["사랑", "빈 칸"]));
+    expect(screen.queryByRole("group", { name: "은혜" })).toBeNull();
   });
 
   it("저장 중에는 가위가 잠겨야 한다", async () => {
     // Arrange
-    mockApi({
-      conti: { body: THREE_SONGS_ALL_WITH_FILES },
-      order: { pending: true },
-    });
+    mockApi({ conti: { body: FOUR_SONGS }, order: { pending: true } });
     renderConti();
     await waitForLoaded();
 
@@ -734,9 +888,31 @@ describe("코드리뷰 반영", () => {
 
     // Assert
     await waitFor(() =>
-      expect(
-        screen.getAllByRole("button", { name: /나누기/ }).every((b) => b.disabled)
-      ).toBe(true)
+      expect(screen.getAllByRole("button", { name: /나누기/ }).every((b) => b.disabled)).toBe(true)
     );
+  });
+
+  it("저장 중에는 빈 칸이 드롭을 받지 않아야 한다", async () => {
+    // Arrange — the buttons are disabled during a save, and the drop path has
+    // to close with them: a second edit computed from the pre-save layout
+    // would land after the first response and win.
+    const calls = mockApi({
+      conti: { body: THREE_SONGS_NO_BREAK },
+      order: { pending: true },
+    });
+    renderConti();
+    await waitForLoaded();
+
+    // Act — start a save, then try to drop into the blank while it is in
+    // flight. dragStart is fired first so the source is set either way.
+    fireEvent.dragStart(slot("믿음"));
+    fireEvent.click(screen.getByRole("button", { name: "은혜 아래로" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "은혜 아래로" }).disabled).toBe(true)
+    );
+    fireEvent.drop(slot("빈 칸"));
+
+    // Assert — still just the one PATCH the button started.
+    expect(patchCalls(calls)).toHaveLength(1);
   });
 });

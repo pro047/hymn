@@ -15,8 +15,8 @@ export default function ContiPage() {
     isSaving,
     isDownloading,
     error,
-    moveSong,
-    toggleBreak,
+    moveSlot,
+    splitPage,
     downloadPdf,
   } = useConti(week);
 
@@ -76,8 +76,8 @@ export default function ContiPage() {
             pages={pages ?? []}
             slotRatio={slotRatio}
             isSaving={isSaving}
-            onReorder={moveSong}
-            onToggleBreak={toggleBreak}
+            onMove={moveSlot}
+            onSplit={splitPage}
           />
         )}
       </div>

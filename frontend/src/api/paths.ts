@@ -34,7 +34,6 @@ export const API_PATHS = {
   // week (routes/conti.py:43,78,110), so it is not normalized here too —
   // only encoded, leaving format validation to the server.
   weekConti: (weekOf: string) => `${API_BASE}/weeks/${encodeURIComponent(weekOf)}/conti`,
-  weekContiOrder: (weekOf: string) =>
-    `${API_BASE}/weeks/${encodeURIComponent(weekOf)}/conti/order`,
+  weekContiOrder: (weekOf: string) => `${API_BASE}/weeks/${encodeURIComponent(weekOf)}/conti/order`,
   weekPdf: (weekOf: string) => `${API_BASE}/weeks/${encodeURIComponent(weekOf)}/pdf`,
 };
