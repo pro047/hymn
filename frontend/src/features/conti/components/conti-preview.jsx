@@ -8,6 +8,12 @@ import ContiSlot from "./conti-slot";
 // rather than "this seam"; between pages there would be nothing to cut, since
 // that page already starts there — closing a split back up is what dragging a
 // song into a blank box does.
+// Drawn as a dashed seam with a chip on it, not a bare glyph: at
+// text-stone-300 the ✂ alone was invisible until hovered, and on a full week
+// the scissors is the *only* way to split — padSlots emits a blank just on the
+// short last page, so every earlier page can be cut here or not at all.
+// The dashed line borrows the blank slot's border-dashed, which already reads
+// as "a place, not a thing" on this screen.
 function PageBreakControl({ title, disabled, onSplit }) {
   return (
     <button
@@ -15,9 +21,18 @@ function PageBreakControl({ title, disabled, onSplit }) {
       disabled={disabled}
       aria-label={`${title} 앞에서 나누기`}
       onClick={onSplit}
-      className="self-center rounded px-1 py-6 text-xs text-stone-300 transition-colors hover:text-stone-900 disabled:pointer-events-none disabled:opacity-40"
+      className="group relative flex w-6 shrink-0 items-center justify-center disabled:pointer-events-none disabled:opacity-40"
     >
-      ✂
+      <span
+        aria-hidden="true"
+        className="absolute inset-y-3 left-1/2 w-px -translate-x-1/2 border-l border-dashed border-stone-300 transition-colors group-hover:border-stone-500"
+      />
+      <span
+        aria-hidden="true"
+        className="relative flex h-6 w-6 items-center justify-center rounded-full border border-stone-300 bg-white text-xs leading-none text-stone-600 transition-colors group-hover:border-stone-500 group-hover:bg-stone-100 group-hover:text-stone-900"
+      >
+        ✂
+      </span>
     </button>
   );
 }
