@@ -131,6 +131,19 @@ def attach_usage(session: Session, score: Score, week_of: dt.date) -> None:
     week_of (see _normalize_week_date in the routers) — this only handles the
     set-membership side, the same division of labor the routes used before.
     """
+    # Nor does the edited sheet, for the same reason as the page break below:
+    # it was drawn for the service this row used to be filed under, and the
+    # markings on it ("3부", a repeat someone agreed on that morning) describe
+    # that Sunday. Left in place it would show up on a week nobody drew it
+    # for, and nothing on screen would say why.
+    #
+    # Only when the week actually changes, and the check lives here rather
+    # than in the callers because they do not agree: update_score already
+    # guards this call, apply_saved_score calls it every time, and re-applying
+    # a score to the week it is already on would otherwise throw the edit away
+    # without moving anything.
+    if score.week_of != week_of:
+        score.edited_file_uri = None
     score.week_of = week_of
     week = ensure_week(session, week_of)
     items = session.query(SetItem).filter(SetItem.score_id == score.id).all()

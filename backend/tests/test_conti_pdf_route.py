@@ -27,6 +27,7 @@ from PIL import Image
 from app.deps import get_object_reader
 from app.main import app
 from app.models import Score, SetItem, Song
+from app.services.song import attach_usage
 from app.utils.s3 import ObjectNotReadable
 
 PAGE_W, PAGE_H = 1754, 1240
@@ -1321,3 +1322,57 @@ def test_replacing_a_week_file_should_drop_that_week_edit(client, reader, db_ses
     assert db_session.get(Score, song["score_id"]).edited_file_uri is None
     (item,) = _conti_items(_get_conti(client, headers, _week(0)))
     assert signed["s3_key"] in unquote(item["image_url"])
+
+
+def test_moving_a_song_to_another_week_should_drop_the_edit(client, reader, db_session):
+    """The edit describes the service it was drawn for, like the page break.
+
+    attach_usage already clears starts_new_page for exactly this reason: the
+    row is being filed at the end of a different week, next to songs nobody
+    rearranged. Markings agreed on one Sunday morning are no more portable
+    than the page cut was.
+    """
+    # Arrange
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    edited_key = _edit_sheet(db_session, reader, song["score_id"], GREEN)
+
+    # Act — move the usage to the following week
+    response = client.patch(
+        f"/scores/{song['score_id']}",
+        json={"week_of": _week(1)},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+    # Assert — the new week shows the song's own sheet again
+    db_session.expire_all()
+    assert db_session.get(Score, song["score_id"]).edited_file_uri is None
+    (item,) = _conti_items(_get_conti(client, headers, _week(1)))
+    assert song["key"] in unquote(item["image_url"])
+    assert edited_key not in unquote(item["image_url"])
+
+
+def test_refiling_a_song_to_the_same_week_should_keep_the_edit(client, reader, db_session):
+    """Only a move discards it.
+
+    apply_saved_score re-files a score every time it is tapped, without
+    checking whether the week changed, so a leader who edits a sheet and then
+    taps 적용 again for the same Sunday would lose the drawing with nothing
+    having moved.
+    """
+    # Arrange
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    edited_key = _edit_sheet(db_session, reader, song["score_id"], GREEN)
+
+    # Act — attach_usage runs, but for the week the score is already on
+    score = db_session.get(Score, song["score_id"])
+    attach_usage(db_session, score, date.fromisoformat(_week(0)))
+    db_session.commit()
+
+    # Assert
+    db_session.expire_all()
+    assert db_session.get(Score, song["score_id"]).edited_file_uri == edited_key
+    (item,) = _conti_items(_get_conti(client, headers, _week(0)))
+    assert edited_key in unquote(item["image_url"])
