@@ -185,6 +185,10 @@ class Score(Base):
     week_of: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     file_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Not part of that snapshot: what this one week *displays*, once a leader
+    # has edited the sheet for it. Kept apart from file_uri above so the
+    # filing record above stays a record. NULL means "show the song's file".
+    edited_file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(
         Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft"
     )

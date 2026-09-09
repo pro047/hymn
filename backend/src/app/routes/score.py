@@ -281,6 +281,13 @@ def update_score(
         replace_song_file(session, song, file_url=file_url, file_uri=payload.file_uri)
         score.file_url = file_url
         score.file_uri = payload.file_uri
+        # An edit was drawn on the sheet being replaced, so it cannot survive
+        # the replacement: conti reads coalesce(edited_file_uri, song file),
+        # and leaving it set would keep drawing the old sheet while the upload
+        # looked like it had done nothing. Only this usage's edit is dropped —
+        # other weeks' edits are their own finished sheets, and this route was
+        # never asked about them.
+        score.edited_file_uri = None
 
     session.commit()
     session.refresh(score)
