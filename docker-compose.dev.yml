@@ -7,6 +7,11 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/src:/app/src
+      # alembic too, or a migration written on the host is invisible in here
+      # and `alembic upgrade head` reports "already at head" while the model
+      # (which *is* mounted, above) already names the new column -- every
+      # query on that table then fails against a database that never got it.
+      - ./backend/alembic:/app/alembic
     env_file:
       - .env.dev
     # A presigned URL is signed over the Host header, so the name the backend
