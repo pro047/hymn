@@ -3,6 +3,7 @@ import secrets
 import uuid
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -189,6 +191,14 @@ class Score(Base):
     # has edited the sheet for it. Kept apart from file_uri above so the
     # filing record above stays a record. NULL means "show the song's file".
     edited_file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # The same edit in the shape the editor reopens: the objects drawn on top
+    # of the song's own file, rather than the flattened result above. Written
+    # and cleared with edited_file_uri, never on its own -- a row that had one
+    # without the other would be a sheet nobody could take the marks back off.
+    # Stored opaquely; the shape is the editor's (see routes/score.py).
+    edit_doc: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
     status: Mapped[str] = mapped_column(
         Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft"
     )

@@ -9,11 +9,15 @@ from app.models import Score, User
 from app.schemas.score import (
     ScoreCreate,
     ScoreCreateResponse,
+    ScoreEditRequest,
+    ScoreEditResponse,
+    ScoreEditUploadResponse,
     ScoreFileUploadRequest,
     ScoreFileUploadResponse,
     ScoreResponse,
     ScoreUpdate,
 )
+from app.services.score_edit import clear_edit, save_edit
 from app.services.song import (
     SongTitleTaken,
     attach_usage,
@@ -246,6 +250,112 @@ def create_score_file_upload(
     return {"upload_url": presign_put(key, 900), "s3_key": key}
 
 
+@router.get("/scores/{score_id}/edit", response_model=ScoreEditResponse)
+def get_score_edit(
+    score_id: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """What the editor needs to open this week's sheet.
+
+    _writable_score_or_error, not _own_score_or_404: this is the read the edit
+    screen opens with, and a member who could load it only to be refused on
+    save would have drawn for nothing.
+
+    source_image_url is the song's file, not the edited one. The document is
+    replayed over it, so the edited sheet would put every earlier marking on
+    the canvas twice — once painted into the background, once as the object
+    that painted it.
+    """
+    score = _writable_score_or_error(session, score_id, user)
+    return ScoreEditResponse(
+        edited_file_uri=score.edited_file_uri,
+        edit_doc=score.edit_doc,
+        source_image_url=presign_score_download(score.song.file_uri),
+    )
+
+
+@router.post("/scores/{score_id}/edited-file", response_model=ScoreEditUploadResponse)
+def create_score_edit_upload(
+    score_id: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """A presigned PUT for the flattened sheet the editor is about to produce.
+
+    The same three-step shape as replacing a score's file (sign, upload, then
+    write the key): an upload that fails leaves the week showing the sheet it
+    already had.
+
+    The key is minted here rather than accepted from the request, which is what
+    keeps this from becoming a signing oracle — the caller never gets to name
+    an object. PUT /scores/{id}/edit checks the key it is handed anyway, since
+    that route cannot tell a key this one minted from one the caller invented.
+
+    Always .png: the editor flattens a canvas, and a canvas has transparent
+    pixels wherever nothing was drawn. JPEG would fill those with black.
+    """
+    score = _writable_score_or_error(session, score_id, user)
+    key = f"scores/{score.church_id}/{uuid4()}.png"
+    return {"upload_url": presign_put(key, 900), "s3_key": key}
+
+
+@router.put("/scores/{score_id}/edit", response_model=ScoreEditResponse)
+def save_score_edit(
+    score_id: str,
+    payload: ScoreEditRequest,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Records a finished edit against this one week.
+
+    PUT, not PATCH: the request carries the whole edit, and applying half of
+    one is not a thing the editor can ask for.
+
+    The key goes through the same gate every other written key does. Without
+    it, a caller could name another church's object here and have the server
+    hand back signed GETs for it through conti — the read side signs anything
+    under scores/, for reasons documented in build_week_conti_pdf.
+    """
+    score = _writable_score_or_error(session, score_id, user)
+    _reject_foreign_object_key(payload.edited_file_uri, score.church_id)
+    save_edit(score, edited_file_uri=payload.edited_file_uri, edit_doc=payload.edit_doc)
+    session.commit()
+    session.refresh(score)
+    return ScoreEditResponse(
+        edited_file_uri=score.edited_file_uri,
+        edit_doc=score.edit_doc,
+        source_image_url=presign_score_download(score.song.file_uri),
+    )
+
+
+@router.delete("/scores/{score_id}/edit", response_model=ScoreEditResponse)
+def delete_score_edit(
+    score_id: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Takes this week back to the song's own sheet.
+
+    The only way back to unedited: saving an empty canvas would still flatten
+    to a picture, and the week would go on showing that copy rather than the
+    song's file as it changes.
+
+    200 with the cleared state rather than 204, and clearing an unedited score
+    is not an error — the screen wants the same body either way, and a leader
+    pressing "원본으로" twice has not done anything wrong.
+    """
+    score = _writable_score_or_error(session, score_id, user)
+    clear_edit(score)
+    session.commit()
+    session.refresh(score)
+    return ScoreEditResponse(
+        edited_file_uri=None,
+        edit_doc=None,
+        source_image_url=presign_score_download(score.song.file_uri),
+    )
+
+
 @router.patch("/scores/{score_id}", response_model=ScoreResponse)
 def update_score(
     score_id: str,
@@ -287,7 +397,7 @@ def update_score(
         # looked like it had done nothing. Only this usage's edit is dropped —
         # other weeks' edits are their own finished sheets, and this route was
         # never asked about them.
-        score.edited_file_uri = None
+        clear_edit(score)
 
     session.commit()
     session.refresh(score)

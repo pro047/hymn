@@ -6,6 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Score, SetItem, Song, Week
+from app.services.score_edit import clear_edit
 
 
 class SongTitleTaken(Exception):
@@ -143,7 +144,7 @@ def attach_usage(session: Session, score: Score, week_of: dt.date) -> None:
     # a score to the week it is already on would otherwise throw the edit away
     # without moving anything.
     if score.week_of != week_of:
-        score.edited_file_uri = None
+        clear_edit(score)
     score.week_of = week_of
     week = ensure_week(session, week_of)
     items = session.query(SetItem).filter(SetItem.score_id == score.id).all()
