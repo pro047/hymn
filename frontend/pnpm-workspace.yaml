@@ -1,4 +1,9 @@
 allowBuilds:
+  # fabric pulls node-canvas in as an optional dependency. Built, not skipped:
+  # jsdom hands back null from getContext("2d") without it, so every test that
+  # mounts the editor would throw before it could assert anything.
+  canvas: true
   esbuild: true
 onlyBuiltDependencies:
   - esbuild
+  - canvas

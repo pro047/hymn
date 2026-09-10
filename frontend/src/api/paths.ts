@@ -6,6 +6,14 @@ export const API_PATHS = {
   // Signs a PUT for a replacement file. Writes nothing — the score moves onto
   // the new key only when the PATCH above follows a successful upload.
   scoreFile: (scoreId: string) => `${API_BASE}/scores/${scoreId}/file`,
+  // Reads what the editor opens with, writes a finished edit, and deletes one.
+  // The GET hands back the *song's* image to draw on, not the edited sheet:
+  // the edited one already has these markings painted in, so reopening it
+  // would show every one of them twice.
+  scoreEdit: (scoreId: string) => `${API_BASE}/scores/${scoreId}/edit`,
+  // Signs a PUT for the flattened canvas. Like scoreFile, it writes nothing —
+  // the week moves onto the new sheet only when the PUT above follows.
+  scoreEditedFile: (scoreId: string) => `${API_BASE}/scores/${scoreId}/edited-file`,
   savedScores: `${API_BASE}/me/saved-scores`,
   savedScoreUpload: `${API_BASE}/me/saved-scores/upload`,
   savedScore: (scoreId: string) => `${API_BASE}/me/saved-scores/${scoreId}`,

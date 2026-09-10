@@ -46,7 +46,7 @@ function PageBreakControl({ title, disabled, onSplit }) {
 // box, and the breaks are then read back out of the layout
 // (lib/conti-order.withPageBreaks) — nobody sets them by hand. The scissors
 // does the one thing that leaves every song where it is: it moves a boundary.
-export default function ContiPreview({ pages, slotRatio, isSaving, onMove, onSplit }) {
+export default function ContiPreview({ pages, slotRatio, isSaving, onMove, onSplit, onEdit }) {
   const dragFromRef = useRef(null);
 
   // Songs only, blanks skipped: this is what the up/down buttons step through,
@@ -132,6 +132,7 @@ export default function ContiPreview({ pages, slotRatio, isSaving, onMove, onSpl
                       // and did nothing.
                       onMoveUp={() => onMove(position, positions[songIndex - 1])}
                       onMoveDown={() => onMove(position, positions[songIndex + 1])}
+                      onEdit={() => onEdit(item)}
                       onDragStart={handleDragStart(position)}
                       onDragOver={handleDragOver}
                       onDragEnd={handleDragEnd}

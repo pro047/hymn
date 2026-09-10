@@ -12,6 +12,7 @@ export default function ContiSlot({
   slotRatio,
   onMoveUp,
   onMoveDown,
+  onEdit,
   onDragStart,
   onDragOver,
   onDrop,
@@ -72,6 +73,22 @@ export default function ContiSlot({
           >
             아래로
           </Button>
+          {/* Only when there is a sheet to draw on. image_url is null both for
+              a song with no file and for one whose key predates the current
+              scheme (presign_score_download answers None for those), and the
+              editor would open onto nothing in either case. */}
+          {item.image_url ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              aria-label={`${item.title} 편집`}
+              onClick={onEdit}
+            >
+              편집
+            </Button>
+          ) : null}
         </div>
       </div>
       <div className="flex flex-1 items-center justify-center overflow-hidden">

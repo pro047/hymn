@@ -33,6 +33,15 @@ export function useConti(weekOfParam) {
     currentWeekRef.current = weekOfParam;
   }, [weekOfParam]);
 
+  // Every response that carries a whole conti lands here — the initial GET,
+  // the reorder PATCH, and refresh below. Three copies of "which three fields
+  // does a conti response set" would be three places to forget one.
+  const applyConti = useCallback((data) => {
+    setWeekOf(data.week_of);
+    setSlotRatio(data.slot_ratio);
+    setPages(data.pages);
+  }, []);
+
   useEffect(() => {
     let active = true;
     setIsLoading(true);
@@ -52,10 +61,7 @@ export function useConti(weekOfParam) {
           setError(alertMessageOf(apiError));
           return;
         }
-        const data = await response.json();
-        setWeekOf(data.week_of);
-        setSlotRatio(data.slot_ratio);
-        setPages(data.pages);
+        applyConti(await response.json());
         setError("");
       })
       .catch(() => {
@@ -67,7 +73,7 @@ export function useConti(weekOfParam) {
     return () => {
       active = false;
     };
-  }, [weekOfParam]);
+  }, [weekOfParam, applyConti]);
 
   // No optimistic update: `next` only builds the PATCH body. The screen keeps
   // rendering the last `pages` the server sent, because reordering also moves
@@ -99,10 +105,7 @@ export function useConti(weekOfParam) {
           setError(alertMessageOf(apiError));
           return;
         }
-        const data = await response.json();
-        setWeekOf(data.week_of);
-        setSlotRatio(data.slot_ratio);
-        setPages(data.pages);
+        applyConti(await response.json());
       } catch {
         if (currentWeekRef.current !== weekOfParam) return;
         setError(alertMessageOf(toFormError(NETWORK_ERROR_MESSAGE)));
@@ -110,7 +113,7 @@ export function useConti(weekOfParam) {
         setIsSaving(false);
       }
     },
-    [weekOfParam]
+    [weekOfParam, applyConti]
   );
 
   // `from` and `to` are slot positions ({page, slot}), not list indexes: the
@@ -144,6 +147,25 @@ export function useConti(weekOfParam) {
     },
     [pages, isSaving, save]
   );
+
+  /** Re-reads the week after something outside this hook changed a sheet.
+   *
+   * Deliberately does not blank `pages` the way the mount effect does: this
+   * runs on the week already on screen, and clearing it would flash the whole
+   * conti away to redraw one song. A failure leaves the previous conti up and
+   * says nothing — the caller has already reported whatever went wrong, and
+   * the songs on screen are still the songs in the week.
+   */
+  const refresh = useCallback(async () => {
+    try {
+      const response = await apiFetch(API_PATHS.weekConti(weekOfParam));
+      if (currentWeekRef.current !== weekOfParam) return;
+      if (!response.ok) return;
+      applyConti(await response.json());
+    } catch {
+      // Same reason: nothing to add to what the caller already said.
+    }
+  }, [weekOfParam, applyConti]);
 
   const downloadPdf = useCallback(async () => {
     setIsDownloading(true);
@@ -180,5 +202,6 @@ export function useConti(weekOfParam) {
     moveSlot,
     splitPage,
     downloadPdf,
+    refresh,
   };
 }
