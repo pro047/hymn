@@ -390,6 +390,76 @@ def test_clearing_an_unedited_score_should_not_be_an_error(client):
     assert client.delete(f"/scores/{score_id}/edit", headers=leader).status_code == 200
 
 
+def test_reopening_after_another_week_replaced_the_file_should_keep_the_drawn_sheet(
+    client, db_session
+):
+    """The week the file was not replaced from keeps its own sheet.
+
+    The markings were placed against the sheet that was there when they were
+    drawn. Handing back the song's new file would replay them onto a page they
+    were never positioned for — nothing looks wrong until this screen opens,
+    because the conti goes on drawing the flattened picture, and saving from
+    the reopened editor bakes the misplacement in.
+    """
+    # Arrange — one song used by two weeks, edited on the first.
+    leader = _found_church(client)
+    edited_id = _create_score(client, leader)
+    other_id = _create_score(client, leader, {**NEW_SCORE, "week_of": NEXT_WEEK.isoformat()})
+    drawn_on = client.get(f"/scores/{edited_id}", headers=leader).json()["file_uri"]
+    _save_edit(client, leader, edited_id)
+
+    # Act — the *other* week swaps the song's file.
+    replacement = client.post(
+        f"/scores/{other_id}/file",
+        json={"filename": "rescan.png", "content_type": "image/png"},
+        headers=leader,
+    ).json()["s3_key"]
+    patched = client.patch(
+        f"/scores/{other_id}", json={"file_uri": replacement}, headers=leader
+    )
+    assert patched.status_code == 200, patched.text
+
+    # Assert
+    db_session.expire_all()
+    assert db_session.get(Score, edited_id).song.file_uri == replacement
+    body = client.get(f"/scores/{edited_id}/edit", headers=leader).json()
+    assert drawn_on in body["source_image_url"]
+    assert replacement not in body["source_image_url"]
+    # And the edit itself is untouched — the other week was not asked about it.
+    assert body["edit_doc"] == EDIT_DOC
+
+
+def test_a_week_that_has_never_been_edited_should_open_on_the_songs_own_file(client):
+    """NULL means "the song's file", which is what every row held before the
+    column existed and what an unedited week means now."""
+    # Arrange
+    leader = _found_church(client)
+    score_id = _create_score(client, leader)
+    song_key = client.get(f"/scores/{score_id}", headers=leader).json()["file_uri"]
+
+    # Act
+    body = client.get(f"/scores/{score_id}/edit", headers=leader).json()
+
+    # Assert
+    assert song_key in body["source_image_url"]
+
+
+def test_clearing_an_edit_should_forget_the_sheet_it_was_drawn_on(client, db_session):
+    """The three columns move together. A source left behind would pin the
+    next edit to a sheet the leader never chose."""
+    # Arrange
+    leader = _found_church(client)
+    score_id = _create_score(client, leader)
+    _save_edit(client, leader, score_id)
+
+    # Act
+    client.delete(f"/scores/{score_id}/edit", headers=leader)
+
+    # Assert
+    db_session.expire_all()
+    assert db_session.get(Score, score_id).edit_source_uri is None
+
+
 def test_replacing_the_songs_file_should_drop_the_document_too(client, db_session):
     """The picture being cleared here is already covered elsewhere; what this
     fixes is that the *document* goes with it. A document left behind would be

@@ -250,6 +250,26 @@ def create_score_file_upload(
     return {"upload_url": presign_put(key, 900), "s3_key": key}
 
 
+def _edit_state_of(score: Score) -> ScoreEditResponse:
+    """This week's edit, and the sheet to lay it over.
+
+    The source is the one the edit was drawn against, falling back to the
+    song's own file for a week that has never been edited — and for every row
+    that predates the column. Handing back the song's current file instead
+    would replay saved markings onto a sheet they were never placed on, as
+    soon as any other week replaced it: the conti keeps drawing the flattened
+    picture correctly, so nothing looks wrong until this screen opens.
+
+    Signed on every read rather than stored: a presigned URL expires, and one
+    written into a row outlives its own credential.
+    """
+    return ScoreEditResponse(
+        edited_file_uri=score.edited_file_uri,
+        edit_doc=score.edit_doc,
+        source_image_url=presign_score_download(score.edit_source_uri or score.song.file_uri),
+    )
+
+
 @router.get("/scores/{score_id}/edit", response_model=ScoreEditResponse)
 def get_score_edit(
     score_id: str,
@@ -268,11 +288,7 @@ def get_score_edit(
     that painted it.
     """
     score = _writable_score_or_error(session, score_id, user)
-    return ScoreEditResponse(
-        edited_file_uri=score.edited_file_uri,
-        edit_doc=score.edit_doc,
-        source_image_url=presign_score_download(score.song.file_uri),
-    )
+    return _edit_state_of(score)
 
 
 @router.post("/scores/{score_id}/edited-file", response_model=ScoreEditUploadResponse)
@@ -319,14 +335,18 @@ def save_score_edit(
     """
     score = _writable_score_or_error(session, score_id, user)
     _reject_foreign_object_key(payload.edited_file_uri, score.church_id)
-    save_edit(score, edited_file_uri=payload.edited_file_uri, edit_doc=payload.edit_doc)
+    save_edit(
+        score,
+        edited_file_uri=payload.edited_file_uri,
+        edit_doc=payload.edit_doc,
+        # The song's file as it stands now, which is the sheet the editor was
+        # handed when it opened. Reading it here rather than trusting the
+        # request keeps the record honest with no second source to reconcile.
+        source_file_uri=score.song.file_uri,
+    )
     session.commit()
     session.refresh(score)
-    return ScoreEditResponse(
-        edited_file_uri=score.edited_file_uri,
-        edit_doc=score.edit_doc,
-        source_image_url=presign_score_download(score.song.file_uri),
-    )
+    return _edit_state_of(score)
 
 
 @router.delete("/scores/{score_id}/edit", response_model=ScoreEditResponse)
@@ -349,11 +369,7 @@ def delete_score_edit(
     clear_edit(score)
     session.commit()
     session.refresh(score)
-    return ScoreEditResponse(
-        edited_file_uri=None,
-        edit_doc=None,
-        source_image_url=presign_score_download(score.song.file_uri),
-    )
+    return _edit_state_of(score)
 
 
 @router.patch("/scores/{score_id}", response_model=ScoreResponse)

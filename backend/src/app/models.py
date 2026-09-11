@@ -199,6 +199,11 @@ class Score(Base):
     edit_doc: Mapped[dict | None] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), nullable=True
     )
+    # What that edit was drawn over. Reopening on the song's current file
+    # instead would replay the markings onto a sheet they were never placed
+    # against, the moment any other week replaced it. NULL means "the song's
+    # own file", which is true of every edit made before this column existed.
+    edit_source_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(
         Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft"
     )
