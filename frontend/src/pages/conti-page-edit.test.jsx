@@ -22,10 +22,12 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import ContiPage from "./conti-page";
 
-// A real 120x80 png, small enough to inline and big enough that the display
-// zoom is not degenerate.
+// A real 120x170 png. Portrait on purpose: every score in production is, and
+// a landscape stand-in cannot tell "fit the whole sheet" apart from "fit the
+// width" — the two agree on a wide image and disagree on a tall one, which is
+// exactly the bug this file failed to catch the first time.
 const SHEET_PNG =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAABQCAIAAABd+SbeAAAAyElEQVR4nO3QQQ0AIBDAMMC/Ye6FCvZqDSzZnrmL/07QwOiO0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YvRoP0eoDjU+1w60AAAAASUVORK5CYII=";
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAACqCAIAAADp8ByhAAABh0lEQVR4nO3QQQ0AIBDAMMC/Ye6FCvZqDSzZnrmL/07QwOiO0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmJ0xOiI0RGjI0ZHjI4YHTE6YnTE6IjREaMjRkeMjhgdMTpidMToiNERoyNGR4yOGB0xOmL0ajyxCgRBKhPUbwAAAABJRU5ErkJggg==";
 
 const WITH_FILE = {
   score_id: "a",
@@ -97,6 +99,9 @@ function mockApi({
             : init.body
               ? { blobSize: init.body.size, blobType: init.body.type }
               : null,
+        // Kept whole as well, so a test can read the png's own header rather
+        // than trust what the app said it uploaded.
+        blob: typeof init.body === "string" ? null : (init.body ?? null),
       });
 
       let reply;
@@ -127,6 +132,17 @@ const renderConti = () =>
 async function openEditor(title = "은혜") {
   fireEvent.click(await screen.findByRole("button", { name: `${title} 편집` }));
   await waitFor(() => expect(screen.getByRole("button", { name: "저장" }).disabled).toBe(false));
+}
+
+/** A png's declared size, read out of its IHDR chunk.
+ *
+ * Bytes 16..23 of every png are width then height, big-endian. Decoding the
+ * image would need a canvas; this needs only the header, and it answers the
+ * one question the zoom can get wrong.
+ */
+async function sizeOfPng(blob) {
+  const header = new DataView(await blob.arrayBuffer());
+  return { width: header.getUint32(16), height: header.getUint32(20) };
 }
 
 const callsTo = (calls, suffix, method) =>
@@ -327,6 +343,106 @@ describe("원본으로 되돌리기", () => {
     fireEvent.click(screen.getByRole("button", { name: "지우기" }));
 
     await waitFor(() => expect(callsTo(calls, "/scores/a/edit", "DELETE")).toHaveLength(1));
+  });
+});
+
+describe("보기 크기", () => {
+  /** jsdom lays nothing out, so clientWidth is 0 on every element and the hook
+   * would fall back to its stand-in box. Giving the box a size is what makes
+   * "does the sheet fit it" a question with an answer here.
+   *
+   * Element.prototype, not HTMLElement's: that is where jsdom defines these,
+   * and restoring a descriptor read off the wrong prototype throws. */
+  function withBox(width, height) {
+    const original = {
+      width: Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth"),
+      height: Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight"),
+    };
+    Object.defineProperty(Element.prototype, "clientWidth", {
+      configurable: true,
+      get: () => width,
+    });
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    return () => {
+      Object.defineProperty(Element.prototype, "clientWidth", original.width);
+      Object.defineProperty(Element.prototype, "clientHeight", original.height);
+    };
+  }
+
+  const drawnSize = () => {
+    // The lower canvas is the one fabric sizes; the upper one mirrors it.
+    const canvas = document.querySelector("canvas");
+    return { width: canvas.width, height: canvas.height };
+  };
+
+  it("악보 전체가 편집 상자 안에 들어가야 한다", async () => {
+    // The bug this replaces: the sheet was drawn at a fixed 900px wide
+    // whatever the box was, so a portrait score opened several screens tall
+    // and there was no way to reach the rest of it.
+    const restore = withBox(800, 600);
+    try {
+      renderConti();
+      await openEditor();
+
+      const { width, height } = drawnSize();
+      expect(width).toBeLessThanOrEqual(800);
+      expect(height).toBeLessThanOrEqual(600);
+      // And not shrunk to nothing: "fits" has to mean it fills what it can.
+      expect(width === 800 || height === 600).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("확대하면 커지고 맞춤을 누르면 되돌아와야 한다", async () => {
+    const restore = withBox(800, 600);
+    try {
+      renderConti();
+      await openEditor();
+      const fitted = drawnSize();
+
+      fireEvent.click(screen.getByRole("button", { name: "확대" }));
+      const enlarged = drawnSize();
+      expect(enlarged.width).toBeGreaterThan(fitted.width);
+
+      fireEvent.click(screen.getByRole("button", { name: "맞춤" }));
+      expect(drawnSize()).toEqual(fitted);
+    } finally {
+      restore();
+    }
+  });
+
+  it("맞춤 상태에서는 더 축소할 수 없어야 한다", async () => {
+    // Smaller than the whole sheet is not a view anyone asked for, and it is
+    // the state the button would otherwise strand a leader in.
+    renderConti();
+    await openEditor();
+
+    expect(screen.getByRole("button", { name: "축소" }).disabled).toBe(true);
+  });
+
+  it("확대해도 저장본은 악보 자체 해상도여야 한다", async () => {
+    // The zoom is a view, not a resampling. Saving what the screen shows
+    // would write an interpolated sheet over the original.
+    const restore = withBox(800, 600);
+    try {
+      const calls = mockApi();
+      renderConti();
+      await openEditor();
+      fireEvent.click(screen.getByRole("button", { name: "확대" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+      await waitFor(() => expect(callsTo(calls, "/scores/a/edit", "PUT")).toHaveLength(1));
+
+      const uploaded = calls.find((call) => call.url.startsWith("https://s3.test/"));
+      const png = await sizeOfPng(uploaded.blob);
+      expect(png).toEqual({ width: 120, height: 170 });
+    } finally {
+      restore();
+    }
   });
 });
 

@@ -41,10 +41,16 @@ export default function ScoreEditorDialog({
   onClose,
 }) {
   const canvasRef = useRef(null);
+  const containerRef = useRef(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const {
     isReady,
     loadFailed,
+    canZoomIn,
+    canZoomOut,
+    zoomIn,
+    zoomOut,
+    zoomToFit,
     mode,
     setMode,
     color,
@@ -52,7 +58,7 @@ export default function ScoreEditorDialog({
     hasSelection,
     deleteSelected,
     exportSheet,
-  } = useFabricSheet({ canvasRef, sourceImageUrl, editDoc });
+  } = useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDoc });
 
   const busy = isLoading || isSaving;
 
@@ -139,9 +145,51 @@ export default function ScoreEditorDialog({
           >
             선택 지우기
           </Button>
+
+          {/* Zoom is on the right, away from the tools: it changes what can be
+              seen, not what a click does, and grouping it with the brushes
+              read as a fourth tool. */}
+          <span className="ml-auto flex items-center gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-label="축소"
+              disabled={!isReady || !canZoomOut || busy}
+              onClick={zoomOut}
+            >
+              −
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!isReady || busy}
+              onClick={zoomToFit}
+            >
+              맞춤
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-label="확대"
+              disabled={!isReady || !canZoomIn || busy}
+              onClick={zoomIn}
+            >
+              +
+            </Button>
+          </span>
         </div>
 
-        <div className="overflow-auto rounded-xl border border-stone-200 bg-stone-50 p-2">
+        {/* A bounded scroll box, not a section that grows with the sheet. The
+            fit above is measured against this element, and while a tool is
+            active a drag draws rather than scrolls — so if this could grow,
+            an enlarged sheet would have no way to be reached at all. */}
+        <div
+          ref={containerRef}
+          className="flex h-[62vh] items-start justify-center overflow-auto rounded-xl border border-stone-200 bg-stone-50 p-2"
+        >
           {isLoading ? <p className="p-4 text-sm text-stone-500">악보를 불러오는 중…</p> : null}
           {loadFailed ? (
             <p className="p-4 text-sm text-red-600">악보 이미지를 불러오지 못했습니다.</p>

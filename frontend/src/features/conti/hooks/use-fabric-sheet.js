@@ -1,14 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** How wide the sheet is drawn on screen, whatever the image's own width is.
+/** Used only when the box has not been laid out yet.
  *
- * Production's scores have a median width of 538px (85 songs, measured
- * 2026-09-06), which is small enough that drawing on them at natural size is
- * fiddly. The canvas is zoomed to this instead and the export undoes the zoom,
- * so what gets written back is always the image's own resolution — enlarging
- * on screen costs nothing in the saved file.
+ * jsdom has no layout at all, so clientWidth is 0 there and every zoom
+ * computed from it would be too. A real browser hits this only on the frame
+ * before the dialog is measured.
  */
-const DISPLAY_WIDTH = 900;
+const FALLBACK_BOX = { width: 880, height: 620 };
+
+/** How far in and out the buttons go, and by how much each press moves.
+ *
+ * Capped rather than open-ended: past 4x a 538px scan is mostly interpolation,
+ * and below the fit the sheet is too small to write on. 1 is always reachable
+ * because the steps are multiplicative from it.
+ */
+const ZOOM_STEP = 1.25;
+const MIN_SCALE = 1;
+const MAX_SCALE = 4;
 
 export const BRUSH_WIDTH = 3;
 export const TEXT_SIZE = 24;
@@ -24,9 +32,15 @@ export const TEXT_SIZE = 24;
  * later changes: the canvas *is* the working copy from then on, and re-seeding
  * from a prop would throw away whatever had been drawn since.
  */
-export function useFabricSheet({ canvasRef, sourceImageUrl, editDoc }) {
+export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDoc }) {
   const fabricRef = useRef(null);
+  const imageRef = useRef(null);
+  // The zoom that makes the whole sheet fit the box, and the multiple of it
+  // the buttons are currently on. They are kept apart so that "맞춤" is a
+  // value to return to rather than a measurement to redo.
+  const fitZoomRef = useRef(1);
   const zoomRef = useRef(1);
+  const [scale, setScale] = useState(1);
   const [isReady, setIsReady] = useState(false);
   const [mode, setMode] = useState("draw");
   const [color, setColor] = useState("#dc2626");
@@ -41,6 +55,32 @@ export function useFabricSheet({ canvasRef, sourceImageUrl, editDoc }) {
   useEffect(() => {
     seedRef.current = editDoc;
   }, [editDoc]);
+
+  /** The drawing area's size right now, or a stand-in before it has one. */
+  const boxSize = useCallback(() => {
+    const box = containerRef?.current;
+    return {
+      width: box?.clientWidth || FALLBACK_BOX.width,
+      height: box?.clientHeight || FALLBACK_BOX.height,
+    };
+  }, [containerRef]);
+
+  /** Puts the canvas on `fit x next` without rebuilding it.
+   *
+   * Both the element's size and the viewport transform, because they answer
+   * different questions: the element decides how much room the scroll box has
+   * to give, the transform decides where a click lands in the image.
+   */
+  const applyScale = useCallback((canvas, next) => {
+    const image = imageRef.current;
+    if (!canvas || !image) return;
+    const zoom = fitZoomRef.current * next;
+    zoomRef.current = zoom;
+    canvas.setDimensions({ width: image.width * zoom, height: image.height * zoom });
+    canvas.setZoom(zoom);
+    canvas.requestRenderAll();
+    setScale(next);
+  }, []);
 
   useEffect(() => {
     const element = canvasRef.current;
@@ -66,13 +106,17 @@ export function useFabricSheet({ canvasRef, sourceImageUrl, editDoc }) {
         canvas = new Canvas(element, { selection: true, preserveObjectStacking: true });
         fabricRef.current = canvas;
 
-        const zoom = DISPLAY_WIDTH / image.width;
-        zoomRef.current = zoom;
-        canvas.setDimensions({ width: image.width * zoom, height: image.height * zoom });
+        imageRef.current = image;
+        // Contained, not fitted to the width: scores are portrait, and a sheet
+        // sized to the box's width runs several screens tall — which is what
+        // the first version did, and why it opened mid-page with no way to
+        // reach the rest of it.
+        const box = boxSize();
+        fitZoomRef.current = Math.min(box.width / image.width, box.height / image.height);
         // The objects keep the image's own coordinates; only the view is
         // scaled. That is what lets a sheet drawn on one screen reopen
         // correctly on another, and what makes the export a plain 1/zoom.
-        canvas.setZoom(zoom);
+        applyScale(canvas, 1);
 
         // Replayed before the background is attached, because loadFromJSON
         // replaces the whole canvas — including its background — with what
@@ -101,6 +145,7 @@ export function useFabricSheet({ canvasRef, sourceImageUrl, editDoc }) {
     return () => {
       cancelled = true;
       fabricRef.current = null;
+      imageRef.current = null;
       setIsReady(false);
       // StrictMode mounts twice in development, so this runs against a canvas
       // that may still be mid-load; dispose() on an already-disposed canvas
@@ -108,7 +153,7 @@ export function useFabricSheet({ canvasRef, sourceImageUrl, editDoc }) {
       // to tell the user about at that point.
       canvas?.dispose().catch(() => {});
     };
-  }, [canvasRef, sourceImageUrl]);
+  }, [canvasRef, sourceImageUrl, boxSize, applyScale]);
 
   // Mode and colour are applied to the live canvas rather than baked in at
   // creation: switching either must not rebuild the canvas, which would drop
@@ -158,6 +203,18 @@ export function useFabricSheet({ canvasRef, sourceImageUrl, editDoc }) {
     };
   }, [mode, color, isReady]);
 
+  const zoomBy = useCallback(
+    (factor) => {
+      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * factor));
+      applyScale(fabricRef.current, next);
+    },
+    [scale, applyScale]
+  );
+
+  const zoomIn = useCallback(() => zoomBy(ZOOM_STEP), [zoomBy]);
+  const zoomOut = useCallback(() => zoomBy(1 / ZOOM_STEP), [zoomBy]);
+  const zoomToFit = useCallback(() => applyScale(fabricRef.current, 1), [applyScale]);
+
   const deleteSelected = useCallback(() => {
     const canvas = fabricRef.current;
     if (!canvas) return;
@@ -194,6 +251,12 @@ export function useFabricSheet({ canvasRef, sourceImageUrl, editDoc }) {
   return {
     isReady,
     loadFailed,
+    scale,
+    canZoomIn: scale < MAX_SCALE,
+    canZoomOut: scale > MIN_SCALE,
+    zoomIn,
+    zoomOut,
+    zoomToFit,
     mode,
     setMode,
     color,
