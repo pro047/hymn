@@ -125,7 +125,19 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
         // an image fetched without CORS is tainted — toDataURL on it throws a
         // SecurityError, which is the last step of saving. The bucket allows
         // this origin already (infra/modules/s3_bucket, allowed_origins).
-        const image = await FabricImage.fromURL(sourceImageUrl, { crossOrigin: "anonymous" });
+        // originX/originY, and they are not the default: fabric 7 places every
+        // object by its *centre*, so a background at left:0 top:0 hangs half
+        // off the top and half off the left — the canvas then shows only the
+        // sheet's bottom-right quarter, at the correct scale, which reads as
+        // "the image is cropped" rather than as "the origin is wrong".
+        // Three arguments, and the split matters: the second bag is how to
+        // *fetch* the image and the third is what the object becomes. Passing
+        // originX in the second one is accepted and silently dropped.
+        const image = await FabricImage.fromURL(
+          sourceImageUrl,
+          { crossOrigin: "anonymous" },
+          { originX: "left", originY: "top", left: 0, top: 0 }
+        );
         if (cancelled) return;
 
         canvas = new Canvas(element, { selection: true, preserveObjectStacking: true });

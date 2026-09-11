@@ -52,6 +52,24 @@ const SEEDED_DOC = {
   objects: [{ type: "IText", text: "3부", left: 10, top: 12, fontSize: 24, fill: "#dc2626" }],
 };
 
+// The same 120x170 sheet with each quarter a different flat colour: top-left
+// red, top-right green, bottom-left blue, bottom-right yellow.
+//
+// A size-only assertion cannot tell a whole sheet from a quarter of one blown
+// up to the same dimensions, which is exactly the bug that got through — the
+// background sat at left:0 top:0 while fabric 7 places objects by their
+// centre, so three quarters of every sheet hung off the canvas and the export
+// still measured 120x170. These colours make the difference readable.
+const QUADRANT_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAACqCAIAAADp8ByhAAABlElEQVR4nO3dwQ3AMAzEMKf775xuwcKoOMFB8N/nzj5n4ejn6wF/UWik0EihkUIjhUYKjRQaKTRSaKTQSKGRQiOFRgqNFBopNFJopNBIoZFCI4VGCo0UGik0Umik0EihkUIjhUYKjRQaKTRSaKTQSKGRQiOFRgqNFBopNFJopNBIoZFCI4VGCo0UGik0Umik0EihkUIjhUYKjRQaKTRSaKTQSKGRQiOFRgqNFBopNFJopNBIoZFCI4VGCo0UGik0Umik0EihkUIjhUYKjRQaKTRSaKTQSKGRM7PvU+69Z7bpopFCI4VGCo0UGik0Umik0EihkUIjhUYKjRQaKTRSaKTQSKGRQiOFRgqNFBopNFJopNBIoZFCI4VGCo0UGik0Umik0EihkUIjhUYKjRQaKTRSaKTQSKGRQiOFRgqNFBopNFJopNBIoZFCI4VGCo0UGik0Umik0EihkUIjhUYKjRQaKTRSaKTQSKGRQiOFRgqNFBopNFJopNBIoZFCI4VGCo0UGik0Umik0EihkUIjhUYKPcYL6uQGUIPRpDYAAAAASUVORK5CYII=";
+
+const QUADRANTS = [
+  { name: "왼쪽 위", at: [0.25, 0.25], rgb: [255, 0, 0] },
+  { name: "오른쪽 위", at: [0.75, 0.25], rgb: [0, 255, 0] },
+  { name: "왼쪽 아래", at: [0.25, 0.75], rgb: [0, 0, 255] },
+  { name: "오른쪽 아래", at: [0.75, 0.75], rgb: [255, 255, 0] },
+];
+
 const SIGNED = {
   upload_url: "https://s3.test/put?sig=abc",
   s3_key: "scores/church-1/edited-1.png",
@@ -143,6 +161,39 @@ async function openEditor(title = "은혜") {
 async function sizeOfPng(blob) {
   const header = new DataView(await blob.arrayBuffer());
   return { width: header.getUint32(16), height: header.getUint32(20) };
+}
+
+/** The colours a png actually carries at four sample points.
+ *
+ * Decoded through a real canvas — node-canvas is installed for exactly this
+ * kind of check (pnpm-workspace.yaml) — because the question here is what the
+ * pixels are, and nothing short of decoding them answers it.
+ */
+async function quadrantColorsOf(blob) {
+  const dataUrl = `data:image/png;base64,${btoa(
+    String.fromCharCode(...new Uint8Array(await blob.arrayBuffer()))
+  )}`;
+  const image = new Image();
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
+  const surface = document.createElement("canvas");
+  surface.width = image.naturalWidth;
+  surface.height = image.naturalHeight;
+  const context = surface.getContext("2d");
+  context.drawImage(image, 0, 0);
+  return QUADRANTS.map((quadrant) => {
+    const [fx, fy] = quadrant.at;
+    const pixel = context.getImageData(
+      Math.floor(image.naturalWidth * fx),
+      Math.floor(image.naturalHeight * fy),
+      1,
+      1
+    ).data;
+    return { name: quadrant.name, rgb: [pixel[0], pixel[1], pixel[2]] };
+  });
 }
 
 const callsTo = (calls, suffix, method) =>
@@ -275,6 +326,29 @@ describe("저장", () => {
     const doc = callsTo(calls, "/scores/a/edit", "PUT")[0].body.edit_doc;
     expect(doc.backgroundImage).toBeUndefined();
     expect(JSON.stringify(doc)).not.toContain("data:image/png");
+  });
+
+  it("악보 전체를 저장해야 한다 — 일부만 담기지 않아야 한다", async () => {
+    // The assertion the size-only ones could not make. Each quarter of the
+    // source is a different colour, so a background hanging off the canvas
+    // (fabric 7 places objects by their centre, not their corner) shows up
+    // here as the wrong colour in three of the four samples — while the png's
+    // dimensions stay exactly right.
+    const calls = mockApi({
+      edit: {
+        body: { edited_file_uri: null, edit_doc: null, source_image_url: QUADRANT_PNG },
+      },
+    });
+    renderConti();
+    await openEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(callsTo(calls, "/scores/a/edit", "PUT")).toHaveLength(1));
+
+    const uploaded = calls.find((call) => call.url.startsWith("https://s3.test/"));
+    expect(await quadrantColorsOf(uploaded.blob)).toEqual(
+      QUADRANTS.map((quadrant) => ({ name: quadrant.name, rgb: quadrant.rgb }))
+    );
   });
 
   it("업로드가 실패하면 편집본을 기록하지 않아야 한다", async () => {
