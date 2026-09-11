@@ -46,6 +46,7 @@ export default function ScoreEditorDialog({
   const {
     isReady,
     loadFailed,
+    zoomPercent,
     canZoomIn,
     canZoomOut,
     zoomIn,
@@ -169,6 +170,12 @@ export default function ScoreEditorDialog({
             >
               맞춤
             </Button>
+            {/* Against the file's own size, so 100% means "as sharp as this
+                scan gets". Most scores are under 600px wide, so the fit on a
+                full-height box is well under that. */}
+            <span className="w-12 text-right text-xs tabular-nums text-stone-500">
+              {isReady ? `${zoomPercent}%` : ""}
+            </span>
             <Button
               type="button"
               size="sm"
@@ -188,7 +195,7 @@ export default function ScoreEditorDialog({
             an enlarged sheet would have no way to be reached at all. */}
         <div
           ref={containerRef}
-          className="flex h-[62vh] items-start justify-center overflow-auto rounded-xl border border-stone-200 bg-stone-50 p-2"
+          className="flex h-[62vh] items-start justify-center overflow-auto rounded-xl border border-stone-200 bg-stone-50"
         >
           {isLoading ? <p className="p-4 text-sm text-stone-500">악보를 불러오는 중…</p> : null}
           {loadFailed ? (

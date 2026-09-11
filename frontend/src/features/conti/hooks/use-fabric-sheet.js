@@ -41,6 +41,10 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const fitZoomRef = useRef(1);
   const zoomRef = useRef(1);
   const [scale, setScale] = useState(1);
+  // The observer below needs the current scale but must not be torn down and
+  // rebuilt every time it changes — a resubscribe on each zoom press would
+  // fire an extra measurement mid-gesture.
+  const scaleRef = useRef(1);
   const [isReady, setIsReady] = useState(false);
   const [mode, setMode] = useState("draw");
   const [color, setColor] = useState("#dc2626");
@@ -59,11 +63,31 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   /** The drawing area's size right now, or a stand-in before it has one. */
   const boxSize = useCallback(() => {
     const box = containerRef?.current;
+    // clientWidth counts padding, which the sheet cannot be drawn in, so the
+    // measured element carries none — see the dialog. Subtracting a computed
+    // padding instead would be a second place for the two to disagree, and
+    // one that no test can see: jsdom loads no stylesheet, so every computed
+    // padding there is the empty string.
     return {
       width: box?.clientWidth || FALLBACK_BOX.width,
       height: box?.clientHeight || FALLBACK_BOX.height,
     };
   }, [containerRef]);
+
+  /** The zoom at which the whole sheet fits the box, for the box's size now.
+   *
+   * Recomputed rather than remembered because the box changes size — the
+   * window resizes, and on the first frames it may not have been laid out at
+   * all. A fit measured once, at whatever moment the image happened to
+   * finish loading, is wrong for every size but that one.
+   */
+  const fitZoomFor = useCallback(
+    (image) => {
+      const box = boxSize();
+      return Math.min(box.width / image.width, box.height / image.height);
+    },
+    [boxSize]
+  );
 
   /** Puts the canvas on `fit x next` without rebuilding it.
    *
@@ -79,6 +103,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     canvas.setDimensions({ width: image.width * zoom, height: image.height * zoom });
     canvas.setZoom(zoom);
     canvas.requestRenderAll();
+    scaleRef.current = next;
     setScale(next);
   }, []);
 
@@ -111,8 +136,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
         // sized to the box's width runs several screens tall — which is what
         // the first version did, and why it opened mid-page with no way to
         // reach the rest of it.
-        const box = boxSize();
-        fitZoomRef.current = Math.min(box.width / image.width, box.height / image.height);
+        fitZoomRef.current = fitZoomFor(image);
         // The objects keep the image's own coordinates; only the view is
         // scaled. That is what lets a sheet drawn on one screen reopen
         // correctly on another, and what makes the export a plain 1/zoom.
@@ -153,7 +177,27 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
       // to tell the user about at that point.
       canvas?.dispose().catch(() => {});
     };
-  }, [canvasRef, sourceImageUrl, boxSize, applyScale]);
+  }, [canvasRef, sourceImageUrl, fitZoomFor, applyScale]);
+
+  // Re-fits whenever the box changes size, which is also what corrects a fit
+  // computed before the dialog had been laid out. The observer fires once on
+  // observe() with the real size, so the sheet lands right even if the
+  // measurement above happened too early to be worth anything.
+  useEffect(() => {
+    const box = containerRef?.current;
+    if (!box || !isReady || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => {
+      const canvas = fabricRef.current;
+      const image = imageRef.current;
+      if (!canvas || !image) return;
+      fitZoomRef.current = fitZoomFor(image);
+      // The leader's own zoom is kept: a window resize should move the sheet
+      // with the box, not undo the enlarging they just did.
+      applyScale(canvas, scaleRef.current);
+    });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [containerRef, isReady, fitZoomFor, applyScale]);
 
   // Mode and colour are applied to the live canvas rather than baked in at
   // creation: switching either must not rebuild the canvas, which would drop
@@ -252,6 +296,10 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     isReady,
     loadFailed,
     scale,
+    // Against the sheet's own pixels, not against the fit: "this is half the
+    // size the file is" is the number that says whether reading it will be
+    // hard, and it is also the one that makes a wrong fit visible.
+    zoomPercent: Math.round(fitZoomRef.current * scale * 100),
     canZoomIn: scale < MAX_SCALE,
     canZoomOut: scale > MIN_SCALE,
     zoomIn,

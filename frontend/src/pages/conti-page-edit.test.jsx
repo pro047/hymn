@@ -17,7 +17,7 @@
  * feature can leak a key or store an expiring URL.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import ContiPage from "./conti-page";
@@ -372,6 +372,24 @@ describe("보기 크기", () => {
     };
   }
 
+  /** A stand-in ResizeObserver that records a callback only once the box is
+   * actually observed.
+   *
+   * Recording in the constructor instead would let a hook that builds an
+   * observer and never points it at anything pass this file — which is what
+   * the first version of these tests did.
+   */
+  const makeResizeObserver = (observers) =>
+    class {
+      constructor(callback) {
+        this.callback = callback;
+      }
+      observe() {
+        observers.push(this.callback);
+      }
+      disconnect() {}
+    };
+
   const drawnSize = () => {
     // The lower canvas is the one fabric sizes; the upper one mirrors it.
     const canvas = document.querySelector("canvas");
@@ -410,6 +428,60 @@ describe("보기 크기", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "맞춤" }));
       expect(drawnSize()).toEqual(fitted);
+    } finally {
+      restore();
+    }
+  });
+
+  it("상자를 나중에 재도 악보가 상자를 채워야 한다", async () => {
+    /** jsdom ships no ResizeObserver, so the re-fit path has none to fire.
+     * This stand-in records the callback and lets the test say "the box has
+     * been laid out now" — which is the moment a real browser delivers and
+     * the moment the first measurement can have been too early for. */
+    const observers = [];
+    vi.stubGlobal("ResizeObserver", makeResizeObserver(observers));
+    // Opens with no measurable box at all — the fit falls back to a stand-in,
+    // which is exactly the wrong answer this is here to correct.
+    let restore = withBox(0, 0);
+    try {
+      renderConti();
+      await openEditor();
+      restore();
+      restore = withBox(800, 600);
+
+      await act(async () => {
+        observers.forEach((callback) => callback());
+      });
+
+      const { width, height } = drawnSize();
+      expect(width).toBeLessThanOrEqual(800);
+      expect(height).toBeLessThanOrEqual(600);
+      expect(width === 800 || height === 600).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("상자 크기가 변해도 확대해둔 배율을 유지해야 한다", async () => {
+    // A window resize should carry the sheet along, not undo the enlarging a
+    // leader just did to write in a tight bar.
+    const observers = [];
+    vi.stubGlobal("ResizeObserver", makeResizeObserver(observers));
+    const restore = withBox(800, 600);
+    try {
+      renderConti();
+      await openEditor();
+      fireEvent.click(screen.getByRole("button", { name: "확대" }));
+      const enlarged = drawnSize();
+
+      await act(async () => {
+        observers.forEach((callback) => callback());
+      });
+
+      // Same box, so re-fitting at the same scale must land on the same size.
+      expect(drawnSize()).toEqual(enlarged);
+      // And not back at the fit, which is what dropping the scale would give.
+      expect(screen.getByRole("button", { name: "축소" }).disabled).toBe(false);
     } finally {
       restore();
     }
