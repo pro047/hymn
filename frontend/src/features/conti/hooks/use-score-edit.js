@@ -104,7 +104,12 @@ export function useScoreEdit(scoreId) {
       try {
         const issued = await apiFetch(API_PATHS.scoreEditedFile(scoreId), { method: "POST" });
         if (!issued.ok) {
-          throw new Error("업로드 주소를 받지 못했습니다.");
+          // Through readApiError like every other call here. This route
+          // answers 403 to a member editing somebody else's upload
+          // (_writable_score_or_error), and a fixed "주소를 받지 못했습니다"
+          // would replace that reason with one that explains nothing.
+          const apiError = await readApiError(issued, "업로드 주소를 받지 못했습니다.", []);
+          throw new Error(alertMessageOf(apiError));
         }
         const { upload_url: uploadUrl, s3_key: s3Key } = await issued.json();
 

@@ -351,6 +351,49 @@ describe("저장", () => {
     );
   });
 
+  it("이미지를 만들지 못하면 조용히 끝나지 않아야 한다", async () => {
+    // toDataURL throws SecurityError on a canvas that has drawn an image
+    // fetched without CORS. It used to propagate out of an async onClick as
+    // an unhandled rejection: no message, no error state, nothing saved, and
+    // a button that looked like it had done nothing at all.
+    const calls = mockApi();
+    renderConti();
+    await openEditor();
+    const original = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = () => {
+      throw new Error("SecurityError");
+    };
+
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+      expect((await screen.findByRole("alert")).textContent).toContain("악보를 이미지로");
+      expect(callsTo(calls, "/edited-file", "POST")).toHaveLength(0);
+      // Still open, so the drawing is not thrown away with nothing saved.
+      expect(screen.getByRole("button", { name: "저장" })).toBeTruthy();
+    } finally {
+      HTMLCanvasElement.prototype.toDataURL = original;
+    }
+  });
+
+  it("서명 요청이 거절되면 서버가 준 이유를 보여야 한다", async () => {
+    // A member editing somebody else's upload gets 403 from
+    // _writable_score_or_error. A fixed "주소를 받지 못했습니다" would replace
+    // the one sentence that explains what to do about it.
+    mockApi({
+      signed: {
+        status: 403,
+        body: { detail: "본인이 올린 악보만 수정하거나 삭제할 수 있습니다." },
+      },
+    });
+    renderConti();
+    await openEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("본인이 올린 악보만");
+  });
+
   it("업로드가 실패하면 편집본을 기록하지 않아야 한다", async () => {
     // The half-done state this ordering exists to prevent.
     const calls = mockApi({ upload: { status: 403 } });
@@ -556,6 +599,35 @@ describe("보기 크기", () => {
       expect(drawnSize()).toEqual(enlarged);
       // And not back at the fit, which is what dropping the scale would give.
       expect(screen.getByRole("button", { name: "축소" }).disabled).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("상자가 커지면 배율 표시도 따라가야 한다", async () => {
+    // The label was computed from a ref, so a re-fit that left the scale
+    // alone changed nothing React could see: setScale(sameValue) bails out
+    // and the percentage stayed on whatever the first measurement gave.
+    const observers = [];
+    vi.stubGlobal("ResizeObserver", makeResizeObserver(observers));
+    let restore = withBox(400, 300);
+    try {
+      renderConti();
+      await openEditor();
+      const before = screen.getByText(/%$/).textContent;
+
+      restore();
+      restore = withBox(800, 600);
+      await act(async () => {
+        observers.forEach((callback) => callback());
+      });
+
+      const after = screen.getByText(/%$/).textContent;
+      expect(after).not.toBe(before);
+      // Twice the box, twice the fit — the sheet is height-limited either
+      // way. Within one point, because the label is rounded and 176 doubled
+      // is not the same as 352.94 rounded.
+      expect(Math.abs(parseInt(after, 10) - parseInt(before, 10) * 2)).toBeLessThanOrEqual(1);
     } finally {
       restore();
     }

@@ -43,6 +43,10 @@ export default function ScoreEditorDialog({
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
+  // Kept here rather than in the hook: the hook reports what it knows about
+  // loading the sheet, and this is the one failure that happens on the way
+  // out of it.
+  const [exportError, setExportError] = useState("");
   const {
     isReady,
     loadFailed,
@@ -64,7 +68,17 @@ export default function ScoreEditorDialog({
   const busy = isLoading || isSaving;
 
   const handleSave = async () => {
-    const sheet = exportSheet();
+    setExportError("");
+    let sheet;
+    try {
+      sheet = exportSheet();
+    } catch {
+      // SecurityError from a tainted canvas, in practice. The cause is not
+      // worth spelling out — nothing the leader can do differs by it — but
+      // silence is not an option: the button would look like it did nothing.
+      setExportError("악보를 이미지로 만들지 못했습니다. 새로고침한 뒤 다시 시도해주세요.");
+      return;
+    }
     if (!sheet) return;
     const result = await onSave(sheet);
     if (result?.ok) onClose();
@@ -94,9 +108,9 @@ export default function ScoreEditorDialog({
           </Button>
         </div>
 
-        {error ? (
+        {error || exportError ? (
           <p role="alert" className="mb-4 text-sm text-red-600">
-            {error}
+            {error || exportError}
           </p>
         ) : null}
 

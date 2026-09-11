@@ -41,6 +41,11 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const fitZoomRef = useRef(1);
   const zoomRef = useRef(1);
   const [scale, setScale] = useState(1);
+  // Derived from fitZoomRef when it was a computed value, which meant a
+  // re-fit that left the scale alone changed nothing React could see: a ref
+  // does not re-render, and setScale(sameValue) bails out. Held as state so
+  // the label follows the sheet through a window resize.
+  const [zoomPercent, setZoomPercent] = useState(100);
   // The observer below needs the current scale but must not be torn down and
   // rebuilt every time it changes — a resubscribe on each zoom press would
   // fire an extra measurement mid-gesture.
@@ -105,6 +110,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     canvas.requestRenderAll();
     scaleRef.current = next;
     setScale(next);
+    setZoomPercent(Math.round(zoom * 100));
   }, []);
 
   useEffect(() => {
@@ -234,6 +240,11 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     if (mode !== "text") return undefined;
 
     const placeText = async (event) => {
+      // A click that landed on something already drawn is a click *on* that
+      // thing. Making a new label there would stack an empty one over it —
+      // the old label could never be reached again, and clicking away to
+      // finish typing would itself drop another empty object onto the sheet.
+      if (event.target) return;
       const { IText } = await import("fabric");
       // Scene coordinates, not the raw pointer: the canvas is zoomed, and the
       // two disagree by exactly that factor.
@@ -253,9 +264,20 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
       canvas.requestRenderAll();
     };
 
+    // An IText left empty is invisible and unselectable, so it can only be
+    // removed by the code that made it. Dropped whenever editing ends rather
+    // than only on the text tool's watch: a label can also be emptied later,
+    // from the select tool, and it is just as unreachable then.
+    const dropEmptyText = (event) => {
+      const text = event.target;
+      if (text && !text.text?.trim()) canvas.remove(text);
+    };
+
     canvas.on("mouse:down", placeText);
+    canvas.on("text:editing:exited", dropEmptyText);
     return () => {
       canvas.off("mouse:down", placeText);
+      canvas.off("text:editing:exited", dropEmptyText);
     };
   }, [mode, color, isReady]);
 
@@ -296,6 +318,11 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const exportSheet = useCallback(() => {
     const canvas = fabricRef.current;
     if (!canvas) return null;
+    // toDataURL throws SecurityError on a canvas that has drawn an image
+    // fetched without CORS — a bucket rule that changes, or a presigned GET
+    // the browser already had cached from a plain <img>. Left to propagate it
+    // becomes an unhandled rejection inside an async onClick: no message, no
+    // error state, and a save button that looks like it did nothing.
     // Otherwise the active object's outline is painted into the saved sheet.
     canvas.discardActiveObject();
     canvas.requestRenderAll();
@@ -311,7 +338,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     // Against the sheet's own pixels, not against the fit: "this is half the
     // size the file is" is the number that says whether reading it will be
     // hard, and it is also the one that makes a wrong fit visible.
-    zoomPercent: Math.round(fitZoomRef.current * scale * 100),
+    zoomPercent,
     canZoomIn: scale < MAX_SCALE,
     canZoomOut: scale > MIN_SCALE,
     zoomIn,
