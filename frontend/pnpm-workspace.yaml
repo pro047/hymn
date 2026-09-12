@@ -1,4 +1,26 @@
 allowBuilds:
+  # fabric lists node-canvas as an optional dependency (pnpm-lock.yaml:
+  # `fabric@7.4.0: optionalDependencies: canvas`), and it is built rather than
+  # skipped: jsdom hands back null from getContext("2d") without it, so every
+  # test that mounts the editor would throw before it could assert anything.
+  # That is not a nicety — the quadrant-colour test in conti-page-edit.test.jsx
+  # reads the saved png's pixels, and it is what caught the background sitting
+  # at the wrong origin.
+  #
+  # Measured 2026-09-11, so nobody has to rediscover it:
+  #   - CI (ubuntu, glibc, x64) finds a prebuilt binary. Tests render for real.
+  #   - The Docker images are node:22-alpine, and canvas publishes no musl
+  #     build: `prebuild-install warn ... libc=musl` then node-gyp, which fails
+  #     for want of Python. The image still builds — canvas is optional, so the
+  #     failure is tolerated — and the browser bundle never wanted it anyway.
+  #   - The cost of that is log noise, plus editor tests failing if `pnpm test`
+  #     is run *inside* the dev container. The checked verification commands
+  #     run on the host, where the build succeeds.
+  # Left as is on purpose (decision 2026-09-11): moving the builder image off
+  # alpine would touch the deploy for noise, and turning the build off would
+  # cost the only tests that can judge what the canvas actually draws.
+  canvas: true
   esbuild: true
 onlyBuiltDependencies:
   - esbuild
+  - canvas

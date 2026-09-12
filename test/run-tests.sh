@@ -321,6 +321,108 @@ fi
 teardown
 
 echo
+echo "=== 검증 명령 분할 ==="
+# TEST_CMD 는 한 줄에 한 명령이고 셸이 갈라서 따로 돌린다.
+# && 로 이었다면 실패 기록이 사슬 전체가 되어, FAIL_LOG 를 읽는 다음 impl 이
+# 어느 검사가 깨졌는지 모른 채 고칠 곳을 추측한다.
+setup
+got=0
+env FAKE_SCENARIO=ok AUTO=1 MAX_RETRY=0 TEST_CMD=$'true\nfalse\ntrue' \
+  ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
+if [ "$got" -eq 2 ] \
+   && grep -q '실패한 명령: `false`' .pipeline/feat/FAIL_LOG.md 2>/dev/null \
+   && grep -q '그 앞까지 통과: true' .pipeline/feat/STATE.md 2>/dev/null; then
+  green "  PASS  여러 줄 TEST_CMD 는 명령별로 돌고 실패한 한 줄만 기록된다"; PASS=$((PASS+1))
+else
+  red   "  FAIL  명령 분할 — exit=$got (기대 2)"
+  grep -n '실패한 명령' .pipeline/feat/FAIL_LOG.md 2>/dev/null | sed 's/^/         /'
+  FAIL=$((FAIL+1))
+fi
+teardown
+
+# 세 번째 줄은 두 번째가 깨졌으면 돌지 않아야 한다. 순서대로, 첫 실패에서 멈춘다.
+setup
+got=0
+env FAKE_SCENARIO=ok AUTO=1 MAX_RETRY=0 TEST_CMD=$'true\nfalse\ntouch tripwire' \
+  ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
+if [ "$got" -eq 2 ] && [ ! -e tripwire ]; then
+  green "  PASS  첫 실패 뒤의 명령은 돌지 않는다"; PASS=$((PASS+1))
+else
+  red   "  FAIL  첫 실패 후에도 다음 명령이 돌았다 — exit=$got"; FAIL=$((FAIL+1))
+fi
+teardown
+
+# 빈 TEST_CMD 를 통과로 읽으면 검증을 한 번도 안 돌린 주행이 DONE 으로 기록된다.
+# 옛 코드는 원소가 빈 문자열 하나여서 셸이 exit 0 을 냈다.
+# ("" 는 :- 기본값에 먹히므로 개행만 있는 값으로 재현한다)
+setup
+got=0
+env FAKE_SCENARIO=ok AUTO=1 MAX_RETRY=0 TEST_CMD=$'\n\n' \
+  ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
+if [ "$got" -eq 2 ] && grep -q 'TEST_CMD 가 비어 있다' .pipeline/feat/FAIL_LOG.md 2>/dev/null; then
+  green "  PASS  빈 TEST_CMD 는 통과가 아니라 실패다"; PASS=$((PASS+1))
+else
+  red   "  FAIL  빈 TEST_CMD 가 통과로 처리됨 — exit=$got (기대 2)"; FAIL=$((FAIL+1))
+fi
+teardown
+
+# STATE.md 는 사람과 런처가 읽는 유일한 창구다. 여러 줄 값이 그대로 박히면
+# 마크다운 리스트 항목이 갈라져 그 아래 항목들이 다른 뜻으로 읽힌다.
+setup
+env FAKE_SCENARIO=ok AUTO=1 TEST_CMD=$'true\ntrue' ./orchestrate.sh feat >/dev/null 2>&1
+if grep -q '^- 검증 명령: true ; true$' .pipeline/feat/STATE.md 2>/dev/null; then
+  green "  PASS  STATE.md 의 검증 명령은 한 줄로 접혀 표시된다"; PASS=$((PASS+1))
+else
+  red   "  FAIL  STATE.md 표시가 갈라짐"
+  grep -n -A2 '검증 명령' .pipeline/feat/STATE.md 2>/dev/null | sed 's/^/         /'
+  FAIL=$((FAIL+1))
+fi
+teardown
+
+# 공백만 있는 줄은 명령이 아니다. IFS= 로 받으면 "   " 가 -n 을 통과하고
+# bash -c "   " 는 exit 0 이라, 아무것도 안 돌린 주행이 DONE 으로 남는다
+# (2026-09-08 코드리뷰가 실측으로 잡았다 — 개행만 있는 값은 막았는데 공백은 샜다).
+setup
+got=0
+env FAKE_SCENARIO=ok AUTO=1 MAX_RETRY=0 TEST_CMD='   ' \
+  ./orchestrate.sh feat >/dev/null 2>&1 || got=$?
+if [ "$got" -eq 2 ] && grep -q 'TEST_CMD 가 비어 있다' .pipeline/feat/FAIL_LOG.md 2>/dev/null; then
+  green "  PASS  공백만 있는 TEST_CMD 도 통과가 아니라 실패다"; PASS=$((PASS+1))
+else
+  red   "  FAIL  공백 TEST_CMD 가 통과로 처리됨 — exit=$got (기대 2)"
+  grep -n '마지막 결과' .pipeline/feat/STATE.md 2>/dev/null | sed 's/^/         /'
+  FAIL=$((FAIL+1))
+fi
+teardown
+
+# # 주석은 돌지 않으므로 "통과한 명령" 으로 세면 안 된다. bash -c "# x" 도 exit 0 이다.
+setup
+env FAKE_SCENARIO=ok AUTO=1 TEST_CMD=$'# 백엔드\ntrue' ./orchestrate.sh feat >/dev/null 2>&1
+if grep -q '^- 마지막 결과: 통과: true$' .pipeline/feat/STATE.md 2>/dev/null; then
+  green "  PASS  주석 줄은 명령으로 세지 않는다"; PASS=$((PASS+1))
+else
+  red   "  FAIL  주석이 통과 목록에 실림"
+  grep -n '마지막 결과' .pipeline/feat/STATE.md 2>/dev/null | sed 's/^/         /'
+  FAIL=$((FAIL+1))
+fi
+teardown
+
+# 프롬프트에 들어가는 TEST_CMD 는 한 줄로 접혀야 한다. envsubst 는 값을 그대로 박으므로
+# 개행이 들어가면 prompts/design.md 의 인라인 코드 항목이 갈라지고, 그 아래 문장이
+# 다른 뜻으로 읽힌다. 정본 재동기화가 build_prompt 를 되돌리면 이 케이스가 잡는다.
+setup
+env FAKE_SCENARIO=ok AUTO=1 TEST_CMD=$'aaa_first\nzzz_last' ./orchestrate.sh feat >/dev/null 2>&1
+if grep -q 'aaa_first ; zzz_last' .pipeline/feat/DESIGN.prompt.txt 2>/dev/null \
+   && [ "$(grep -c 'aaa_first' .pipeline/feat/DESIGN.prompt.txt 2>/dev/null)" = "1" ]; then
+  green "  PASS  프롬프트의 TEST_CMD 는 한 줄로 접혀 주입된다"; PASS=$((PASS+1))
+else
+  red   "  FAIL  프롬프트 주입이 갈라짐"
+  grep -n 'aaa_first' .pipeline/feat/DESIGN.prompt.txt 2>/dev/null | sed 's/^/         /'
+  FAIL=$((FAIL+1))
+fi
+teardown
+
+echo
 echo "=== 검증 명령 시간 상한 ==="
 # 안 돌아오는 테스트가 파이프라인을 조용히 매달아 두면 안 된다 (2026-08-27 실측).
 # 상한 초과는 "실패"와 다른 사건이므로 FAIL_LOG 에 그렇게 적혀야 한다.

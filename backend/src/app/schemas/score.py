@@ -1,5 +1,6 @@
+import json
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -91,3 +92,60 @@ class ScoreUpdate(BaseModel):
     # Same rule on the way in through an edit: otherwise a score could be
     # created for a valid week and then moved into a past one.
     _reject_past_week = field_validator('week_of')(reject_past_week)
+
+
+# The editor's document is stored opaquely, so nothing here can bound it by
+# counting fields. It is bounded by its serialized size instead: freehand
+# strokes are a point list, and a long session on a large sheet is tens of KB
+# against production's 137 KB median *image*. 1 MB leaves that an order of
+# magnitude of headroom while keeping a runaway document out of a row that
+# every conti read touches. Refused at the schema, so an oversized body never
+# reaches the transaction.
+MAX_EDIT_DOC_BYTES = 1024 * 1024
+
+
+class ScoreEditUploadResponse(BaseModel):
+    upload_url: str
+    s3_key: str
+
+
+class ScoreEditRequest(BaseModel):
+    """A finished edit: the flattened sheet, and the objects it was flattened
+    from.
+
+    Both are required together. Storing the picture without the document would
+    leave a week showing markings that can never be moved or taken off again,
+    which is the whole reason the document exists.
+    """
+
+    edited_file_uri: str = Field(..., min_length=1, max_length=1024)
+    edit_doc: dict[str, Any]
+
+    @field_validator("edit_doc")
+    @classmethod
+    def _reject_oversized_doc(cls, value: dict[str, Any]) -> dict[str, Any]:
+        # separators= matches no whitespace, the same way the JSON reaches the
+        # column: measuring the pretty-printed form would refuse documents that
+        # fit.
+        size = len(json.dumps(value, separators=(",", ":")).encode())
+        if size > MAX_EDIT_DOC_BYTES:
+            raise ValueError("편집 내용이 너무 큽니다.")
+        return value
+
+
+class ScoreEditResponse(BaseModel):
+    """What the editor needs to open a sheet, and what it gets back on save.
+
+    source_image_url is the *song's* file, signed fresh on every read. It is
+    the canvas background, and edit_doc is replayed over it. Two consequences
+    that are easy to get wrong:
+
+    - Not the edited sheet. That one already has these objects painted into
+      it, so using it as the background would draw every marking twice.
+    - Not stored in edit_doc either. A presigned URL expires; a document
+      holding one would reopen to a broken background once it did.
+    """
+
+    edited_file_uri: str | None = None
+    edit_doc: dict[str, Any] | None = None
+    source_image_url: str | None = None

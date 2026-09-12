@@ -19,6 +19,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta
 from io import BytesIO
+from urllib.parse import unquote
 
 import pytest
 from PIL import Image
@@ -26,6 +27,7 @@ from PIL import Image
 from app.deps import get_object_reader
 from app.main import app
 from app.models import Score, SetItem, Song
+from app.services.song import attach_usage
 from app.utils.s3 import ObjectNotReadable
 
 PAGE_W, PAGE_H = 1754, 1240
@@ -1195,3 +1197,182 @@ def test_the_pdf_filename_header_should_be_readable_cross_origin(client, reader)
     assert "Content-Disposition" in response.headers
     exposed = response.headers.get("access-control-expose-headers", "")
     assert "Content-Disposition" in exposed
+
+
+# --- the week's own edited sheet ---------------------------------------------
+#
+# scores.edited_file_uri is where an edit made for one Sunday lands. Until one
+# is saved it is NULL and the week shows the song's own file, exactly as it did
+# before the column existed. These tests pin the part that is easy to lose: the
+# edit must not leak into the other weeks that sing the same song.
+
+
+def _edit_sheet(db_session, reader, score_id: str, color) -> str:
+    """Points one usage at a freshly served object, the way an editor would."""
+    score = db_session.get(Score, score_id)
+    key = f"scores/{score.church_id}/edited-{score_id}.png"
+    reader.serve(key, _png(color))
+    score.edited_file_uri = key
+    db_session.commit()
+    return key
+
+
+def test_a_week_with_an_edited_sheet_should_show_the_edit(client, reader, db_session):
+    # Arrange
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    edited_key = _edit_sheet(db_session, reader, song["score_id"], GREEN)
+
+    # Act
+    (item,) = _conti_items(_get_conti(client, headers, _week(0)))
+
+    # Assert — the signed URL is minted from the edited key, not the song's
+    assert edited_key in unquote(item["image_url"])
+    assert song["key"] not in unquote(item["image_url"])
+
+
+def test_editing_one_week_should_not_touch_another_week_of_the_same_song(
+    client, reader, db_session
+):
+    """The reason the column exists at all.
+
+    The same song filed for two Sundays is one `songs` row with two usages, so
+    an edit written onto the song would rewrite the earlier service's sheet
+    too -- and its PDF, after the fact.
+    """
+    # Arrange — one title, two weeks, so both usages share a song row
+    headers = _register(client)
+    first = _add_song(client, reader, headers, title="은혜", week=_week(0))
+    second = _add_song(client, reader, headers, title="은혜", week=_week(1))
+    assert db_session.get(Score, first["score_id"]).song_id == (
+        db_session.get(Score, second["score_id"]).song_id
+    ), "the two weeks must share one song for this test to mean anything"
+
+    # Act — edit the second week only
+    edited_key = _edit_sheet(db_session, reader, second["score_id"], GREEN)
+
+    # Assert
+    (edited,) = _conti_items(_get_conti(client, headers, _week(1)))
+    (untouched,) = _conti_items(_get_conti(client, headers, _week(0)))
+    assert edited_key in unquote(edited["image_url"])
+    assert edited_key not in unquote(untouched["image_url"])
+    assert first["key"] in unquote(untouched["image_url"])
+
+
+def test_an_unedited_week_should_still_show_the_song_file(client, reader, db_session):
+    """The fallback, which is what makes this change invisible on arrival."""
+    # Arrange
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    assert db_session.get(Score, song["score_id"]).edited_file_uri is None
+
+    # Act
+    (item,) = _conti_items(_get_conti(client, headers, _week(0)))
+
+    # Assert
+    assert song["key"] in unquote(item["image_url"])
+
+
+def test_the_pdf_should_render_the_edited_sheet(client, reader, db_session):
+    """The preview and the PDF read the same rows, and this is the proof --
+    a preview that showed the edit while the printout did not would be worse
+    than not editing at all."""
+    # Arrange
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    edited_key = _edit_sheet(db_session, reader, song["score_id"], GREEN)
+
+    # Act
+    response = _get_pdf(client, headers, _week(0))
+
+    # Assert — the bytes the renderer asked for came from the edited key
+    assert response.status_code == 200, response.text
+    assert edited_key in reader.keys
+    assert song["key"] not in reader.keys
+
+
+def test_replacing_a_week_file_should_drop_that_week_edit(client, reader, db_session):
+    """Otherwise the upload looks like it did nothing.
+
+    The edit was drawn on the sheet being replaced, and coalesce puts it ahead
+    of the song's file -- so without this the conti and the PDF keep showing
+    the old drawing while the leader watches a successful upload.
+    """
+    # Arrange — a week with an edit saved on it
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    _edit_sheet(db_session, reader, song["score_id"], GREEN)
+
+    # Act — replace that week's file the way the upload screen does
+    signed = client.post(
+        f"/scores/{song['score_id']}/file",
+        json={"filename": "new.png", "content_type": "image/png"},
+        headers=headers,
+    ).json()
+    reader.serve(signed["s3_key"], _png(BLUE))
+    response = client.patch(
+        f"/scores/{song['score_id']}",
+        json={"file_uri": signed["s3_key"]},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+    # Assert — the new file is what the week shows now
+    db_session.expire_all()
+    assert db_session.get(Score, song["score_id"]).edited_file_uri is None
+    (item,) = _conti_items(_get_conti(client, headers, _week(0)))
+    assert signed["s3_key"] in unquote(item["image_url"])
+
+
+def test_moving_a_song_to_another_week_should_drop_the_edit(client, reader, db_session):
+    """The edit describes the service it was drawn for, like the page break.
+
+    attach_usage already clears starts_new_page for exactly this reason: the
+    row is being filed at the end of a different week, next to songs nobody
+    rearranged. Markings agreed on one Sunday morning are no more portable
+    than the page cut was.
+    """
+    # Arrange
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    edited_key = _edit_sheet(db_session, reader, song["score_id"], GREEN)
+
+    # Act — move the usage to the following week
+    response = client.patch(
+        f"/scores/{song['score_id']}",
+        json={"week_of": _week(1)},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+    # Assert — the new week shows the song's own sheet again
+    db_session.expire_all()
+    assert db_session.get(Score, song["score_id"]).edited_file_uri is None
+    (item,) = _conti_items(_get_conti(client, headers, _week(1)))
+    assert song["key"] in unquote(item["image_url"])
+    assert edited_key not in unquote(item["image_url"])
+
+
+def test_refiling_a_song_to_the_same_week_should_keep_the_edit(client, reader, db_session):
+    """Only a move discards it.
+
+    apply_saved_score re-files a score every time it is tapped, without
+    checking whether the week changed, so a leader who edits a sheet and then
+    taps 적용 again for the same Sunday would lose the drawing with nothing
+    having moved.
+    """
+    # Arrange
+    headers = _register(client)
+    (song,) = _seed_week(client, reader, headers, _week(0), 1)
+    edited_key = _edit_sheet(db_session, reader, song["score_id"], GREEN)
+
+    # Act — attach_usage runs, but for the week the score is already on
+    score = db_session.get(Score, song["score_id"])
+    attach_usage(db_session, score, date.fromisoformat(_week(0)))
+    db_session.commit()
+
+    # Assert
+    db_session.expire_all()
+    assert db_session.get(Score, song["score_id"]).edited_file_uri == edited_key
+    (item,) = _conti_items(_get_conti(client, headers, _week(0)))
+    assert edited_key in unquote(item["image_url"])

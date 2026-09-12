@@ -46,8 +46,33 @@ RESUME_FROM="${RESUME_FROM:-}"
 # 통과하는 명령으로 바꿔라. 테스트 파일이 0개일 때 실패하는 러너여야 한다 —
 # 검증 단계가 테스트를 안 쓰고 넘어간 것을 게이트가 통과시키면 안 된다.
 # hymn 각색: 기본값 npm test 는 이 저장소에 루트 package.json 이 없어 성공 불가다.
-# 아래는 song-usage-split 완주에서 실측 검증된 명령이다.
-TEST_CMD="${TEST_CMD:-(cd backend && .venv/bin/python -m pytest -q) && (cd frontend && pnpm test)}"
+#
+# ★ 한 줄에 한 명령. run_verify 가 줄 단위로 갈라 따로 돌린다 (아래 함수 참조).
+# && 로 잇지 않는 이유: 이으면 실패했을 때 VERIFY_FAILED 에 사슬 전체가 들어가
+# FAIL_LOG 를 읽는 impl 이 어느 검사가 깨졌는지 모른다. 시간 상한도 명령별로 걸린다.
+#
+# 목록은 .github/workflows/ci.yml 과 **같아야 한다** — 게이트가 CI 보다 느슨하면
+# 파이프라인이 "통과" 시킨 코드가 push 후에 깨진다. 2026-09-08 에 두 번 밟았다
+# (react-hooks 위반 1건 · prettier 위반 1건). 대응: ci.yml:47,50(백엔드)
+# · :80,83,86,89,92(프론트). CI 에 단계를 추가하면 여기에도 추가할 것.
+# build 의 VITE_API_BASE_URL 도 CI 를 따른 것이다 (ci.yml:94). paths.ts:1 이 이 값을
+# 검증 없이 읽어 번들에 박으므로, 안 주면 게이트와 CI 가 서로 다른 입력으로 빌드한다.
+#
+# ★★ 이 여러 줄 형식은 hymn 전용이다 — 스킬 정본은 아직 단일 문자열 + && 다
+# (SKILL.md:323). 현장 복사본 재동기화 때 run_verify 골격이 정본으로 덮이면
+# 이 값만 남아 **여러 줄이 통째로 한 명령으로 실행된다** (조용히 첫 줄만 돌거나 문법 오류).
+# 재동기화 시 run_verify 의 줄 분할이 살아 있는지 반드시 확인할 것.
+DEFAULT_TEST_CMD=$(cat <<'EOF'
+(cd backend && .venv/bin/ruff check src tests alembic)
+(cd backend && .venv/bin/python -m pytest -q)
+(cd frontend && pnpm lint)
+(cd frontend && pnpm format:check)
+(cd frontend && pnpm typecheck)
+(cd frontend && pnpm test)
+(cd frontend && VITE_API_BASE_URL=/api pnpm build)
+EOF
+)
+TEST_CMD="${TEST_CMD:-$DEFAULT_TEST_CMD}"
 
 # ── 프리플라이트 (선택) ──────────────────────────────
 # 에이전트를 **띄우기 전에** 환경 기준선을 판정하는 명령. 여기서 죽으면 비용이 $0 이다.
@@ -197,6 +222,12 @@ touch "$FAIL_LOG" "$MODEL_LOG"
 # 에이전트에게 전달된다 (run-tests 의 "프롬프트 치환" 케이스가 이걸 잡는다).
 export FEATURE WORK ROOT TEST_CMD
 
+# 표시 전용. TEST_CMD 가 여러 줄이 되면서 갈라졌다 — 실행은 줄 단위(run_verify),
+# 표시는 한 줄이다. STATE.md 의 리스트 항목과 프롬프트의 인라인 코드가 개행을 만나면
+# 마크다운이 깨져 에이전트가 읽는 문장이 망가진다. 값이 한 줄이면 원래 값 그대로다.
+# (BSD sed 에는 \o001 이 없다. bash 3.2 의 패턴 치환이면 외부 프로세스도 필요 없다.)
+TEST_CMD_ONELINE="${TEST_CMD//$'\n'/ ; }"
+
 # STATE.md 의 검증 게이트 블록이 첫 호출부터 참조한다 (set -u).
 PREFLIGHT_STATE="건너뜀 (PREFLIGHT_CMD 비어 있음)"
 VERIFY_LAST=""
@@ -251,7 +282,7 @@ ${next:-진행 중 — 개입 불필요. 이 파일을 다시 읽으면 최신 �
 셸이 실제로 무엇을 돌렸는지. "DONE" 이 무엇을 뜻하는지는 여기를 봐야 안다.
 
 - 프리플라이트: $PREFLIGHT_STATE
-- 검증 명령: $TEST_CMD$([ -f "$WORK/smoke.sh" ] && printf ', bash %s' "$WORK/smoke.sh")
+- 검증 명령: $TEST_CMD_ONELINE$([ -f "$WORK/smoke.sh" ] && printf ', bash %s' "$WORK/smoke.sh")
 - 명령별 시간 상한: ${VERIFY_TIMEOUT}초
 - 마지막 결과: ${VERIFY_LAST:-(아직 실행 안 함)}
 
@@ -426,7 +457,9 @@ rate_limited() {
 # "읽어라"가 아니라 "여기 있다"로 바꾸는 것이 이 함수의 전부다 (계기: 상단 REQUIRED_DOCS 주석).
 build_prompt() {
   local name=$1 prompt_file=$2 d
-  envsubst < "$prompt_file"
+  # TEST_CMD 는 한 줄로 접어 넘긴다 — prompts/design.md 가 인라인 코드로 감싸고 있어
+  # 개행이 들어가면 그 리스트 항목이 통째로 깨진다 (envsubst 는 값을 그대로 박는다).
+  TEST_CMD="$TEST_CMD_ONELINE" envsubst < "$prompt_file"
   [ "$name" = "design" ] && [ -n "$REQUIRED_DOCS" ] || return 0
   printf '\n\n## 정본 문서 (셸이 주입했다 — 아래 본문이 곧 파일 내용이다. Read 로 다시 열 필요 없다. 줄번호는 `파일:줄` 좌표로 쓴다)\n'
   for d in $REQUIRED_DOCS; do
@@ -894,8 +927,28 @@ run_with_timeout() {
 # smoke.sh 를 여기 붙이는 이유: 오케스트레이터는 기능 중립이어야 하므로 라우트나 포트를
 # 하드코딩하지 않고, 기능별 스모크는 파일이 있을 때만 마지막에 돈다.
 run_verify() {
-  local cmd rc
-  local -a cmds=("$TEST_CMD")
+  local cmd rc line
+  # TEST_CMD 는 한 줄에 한 명령이다. 갈라서 따로 돌려야 test_out.txt 에 명령별로
+  # 찍히고, 실패했을 때 VERIFY_FAILED 가 깨진 명령 하나를 가리킨다.
+  local -a cmds=()
+  # IFS= 를 일부러 빼놨다 — read 가 앞뒤 공백을 잘라줘야 공백만 있는 줄이 "" 가 된다.
+  # IFS= 로 받으면 "   " 가 -n 을 통과해 bash -c "   " 로 실행되고, 그건 exit 0 이다
+  # (2026-09-08 코드리뷰 실측: TEST_CMD="   " 로 phase:DONE 이 나왔다).
+  # # 주석도 거른다. 히어독에 구획 주석을 넣고 싶어지는 형식인데, bash -c "# x" 역시
+  # exit 0 이라 돌지도 않은 줄이 STATE.md 의 "통과" 목록에 실린다.
+  while read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    cmds+=("$line")
+  done <<< "$TEST_CMD"
+  # 빈 TEST_CMD 를 통과로 읽지 않는다. 옛 코드는 원소가 빈 문자열 하나여서 셸이
+  # exit 0 을 냈고, 검증을 한 번도 안 돌린 주행이 "통과"로 기록됐다.
+  if [ "${#cmds[@]}" -eq 0 ]; then
+    VERIFY_PASSED=""
+    VERIFY_FAILED="TEST_CMD 가 비어 있다 — 검증 없이 통과시키지 않는다"
+    : > "$WORK/test_out.txt"
+    echo "→ TEST_CMD 가 비어 있다." >> "$WORK/test_out.txt"
+    return 1
+  fi
   [ -f "$WORK/smoke.sh" ] && cmds+=("bash '$WORK/smoke.sh'")
 
   VERIFY_PASSED=""
@@ -1081,7 +1134,7 @@ while :; do
   check_stage_writes verify "$VERIFY_BASELINE" "$WORK/source_files.txt" "소스 파일"
 
   # ★ 최종 판정은 셸이 한다. 에이전트에게 안 맡긴다.
-  state "TESTING" "$TEST_CMD"
+  state "TESTING" "$TEST_CMD_ONELINE"
   if run_verify; then
     VERIFY_LAST="통과: $VERIFY_PASSED"
     log "✅ 검증 통과 ($VERIFY_PASSED)"

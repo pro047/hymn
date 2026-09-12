@@ -3,6 +3,7 @@ import secrets
 import uuid
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -185,6 +187,23 @@ class Score(Base):
     week_of: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     file_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Not part of that snapshot: what this one week *displays*, once a leader
+    # has edited the sheet for it. Kept apart from file_uri above so the
+    # filing record above stays a record. NULL means "show the song's file".
+    edited_file_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # The same edit in the shape the editor reopens: the objects drawn on top
+    # of the song's own file, rather than the flattened result above. Written
+    # and cleared with edited_file_uri, never on its own -- a row that had one
+    # without the other would be a sheet nobody could take the marks back off.
+    # Stored opaquely; the shape is the editor's (see routes/score.py).
+    edit_doc: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    # What that edit was drawn over. Reopening on the song's current file
+    # instead would replay the markings onto a sheet they were never placed
+    # against, the moment any other week replaced it. NULL means "the song's
+    # own file", which is true of every edit made before this column existed.
+    edit_source_uri: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(
         Enum("draft", "published", "archived", name="score_status"), nullable=False, default="draft"
     )
@@ -255,14 +274,9 @@ class SetItem(Base):
     week_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     order_no: Mapped[int] = mapped_column(nullable=False)
     score_id: Mapped[str] = mapped_column(ForeignKey("scores.id", ondelete="CASCADE"), nullable=False)
-    # Unused: nothing reads or writes these, and all 160 production rows are
-    # NULL (measured 2026-09-06). Kept for now on purpose — deploy runs
-    # `alembic upgrade head` before swapping containers, so dropping them in
-    # the same release would make the still-running old image SELECT columns
-    # that no longer exist, and a rollback to that image would 500 for good.
-    # Drop them in a later release, once no deployed image names them.
-    key: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    memo: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # `key` and `memo` columns still exist in the database but are no longer
+    # mapped: this release stops every deployed image from naming them, which
+    # is what lets a later release drop them without a rollback breaking.
     # Where the conti PDF cuts a page. order_no stays the only source of
     # sequence; this is a mark on top of it, so the two cannot disagree.
     starts_new_page: Mapped[bool] = mapped_column(

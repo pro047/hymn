@@ -28,6 +28,15 @@ set -euo pipefail
 FEATURE="${1:?사용법: ./pipeline-worktree.sh <feature-name> [base-ref]}"
 BASE="${2:-HEAD}"
 
+# ── hymn 각색: 의존성 설치 명령 ──────────────────────
+# 아래 "의존성 설치" 절의 자동 판별은 **리포 루트**에서 lock 파일을 찾는데,
+# hymn 은 모노리포라 루트에 하나도 없다 (pnpm-lock.yaml 은 frontend/, .venv 는 backend/).
+# 그래서 "설치 명령을 못 찾았다" 로 넘어가고 첫 TEST_CMD 가 양쪽 다 실패하는데,
+# 원인이 파이프라인 결함처럼 보인다. 핸드오프가 "매번 밟는다" 로 두 번 기록한 지뢰다
+# (handoff.md 1278·1368). 문서로는 안 닫혔으므로 값을 여기 박는다.
+# TEST_CMD 와 같은 각색 슬롯이다 — 정본 재동기화 때 현장 값으로 다시 넣을 것.
+SETUP_CMD="${SETUP_CMD:-(cd backend && python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt) && (cd frontend && pnpm install --frozen-lockfile)}"
+
 MAIN="$(git rev-parse --show-toplevel)"
 WT="$(dirname "$MAIN")/$(basename "$MAIN")-pipeline-$FEATURE"
 BRANCH="pipeline/$FEATURE"

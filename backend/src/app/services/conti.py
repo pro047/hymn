@@ -117,11 +117,19 @@ def list_week_entries(session: Session, *, church_id: str, week_of: date) -> lis
         .where(SetItem.score_id == Score.id, SetItem.week_date == week_of)
         .scalar_subquery()
     )
+    # This week's edit first, the song only as the fallback: an edit made for
+    # one Sunday belongs to that Sunday, and writing it onto the song would
+    # reach back into every week that ever used it -- including PDFs of
+    # services already held. edited_file_uri is NULL until someone edits, so
+    # this picks exactly what Song.file_uri picked before it existed.
+    # Deliberately not Score.file_uri: that is the filing snapshot, and the
+    # song-split downgrade rebuilds the old table from it.
+    file_uri = func.coalesce(Score.edited_file_uri, Song.file_uri)
     rows = session.execute(
         select(
             Score.id,
             Song.title,
-            Song.file_uri,
+            file_uri.label("file_uri"),
             order_no.label("order_no"),
             starts_new_page.label("starts_new_page"),
         )

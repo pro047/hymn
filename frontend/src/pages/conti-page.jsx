@@ -1,9 +1,12 @@
+import { useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import ContiPreview from "../features/conti/components/conti-preview";
+import ScoreEditorDialog from "../features/conti/components/score-editor-dialog";
 import { useConti } from "../features/conti/hooks/use-conti";
+import { useScoreEdit } from "../features/conti/hooks/use-score-edit";
 
 export default function ContiPage() {
   const { week } = useParams();
@@ -18,7 +21,32 @@ export default function ContiPage() {
     moveSlot,
     splitPage,
     downloadPdf,
+    refresh,
   } = useConti(week);
+
+  // The whole conti item, not just its id: the dialog needs the title too,
+  // and it is already on screen — asking the server for it again would be a
+  // round trip for something this component is holding.
+  const [editing, setEditing] = useState(null);
+  const edit = useScoreEdit(editing?.score_id ?? null);
+
+  const handleEdit = (item) => setEditing(item);
+  const handleCloseEditor = () => setEditing(null);
+
+  // Refreshed after the dialog closes, not instead of closing it: the preview
+  // reads image_url off the conti response, and that URL only changes once the
+  // server has been told about the new sheet.
+  const handleSaveEdit = async (sheet) => {
+    const result = await edit.save(sheet);
+    if (result?.ok) await refresh();
+    return result;
+  };
+
+  const handleClearEdit = async () => {
+    const result = await edit.clear();
+    if (result?.ok) await refresh();
+    return result;
+  };
 
   // The PDF endpoint answers 404 for an empty week (routes/conti.py:48-49),
   // so the button is not rendered rather than offered and turned into an
@@ -78,9 +106,29 @@ export default function ContiPage() {
             isSaving={isSaving}
             onMove={moveSlot}
             onSplit={splitPage}
+            onEdit={handleEdit}
           />
         )}
       </div>
+
+      {/* Keyed on the score so switching songs remounts the dialog: the canvas
+          is seeded from edit_doc once, on mount, and a reused instance would
+          keep the previous song's markings. */}
+      {editing ? (
+        <ScoreEditorDialog
+          key={editing.score_id}
+          title={editing.title}
+          sourceImageUrl={edit.sourceImageUrl}
+          editDoc={edit.editDoc}
+          hasEdit={edit.hasEdit}
+          isLoading={edit.isLoading}
+          isSaving={edit.isSaving}
+          error={edit.error}
+          onSave={handleSaveEdit}
+          onClear={handleClearEdit}
+          onClose={handleCloseEditor}
+        />
+      ) : null}
     </div>
   );
 }
