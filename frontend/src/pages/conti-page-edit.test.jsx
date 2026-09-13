@@ -523,7 +523,7 @@ describe("원본으로 되돌리기", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "원본으로 되돌리기" }));
     expect(callsTo(calls, "/scores/a/edit", "DELETE")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "지우기" }));
+    fireEvent.click(screen.getByRole("button", { name: "모두 지우기" }));
 
     await waitFor(() => expect(callsTo(calls, "/scores/a/edit", "DELETE")).toHaveLength(1));
   });
@@ -756,12 +756,276 @@ describe("도구", () => {
     expect(screen.getByRole("button", { name: "글자" }).getAttribute("aria-pressed")).toBe("true");
     expect(callsTo(calls, "/scores/a/edit", "GET")).toHaveLength(editReadsBefore);
   });
+});
 
-  it("고른 것이 없으면 선택 지우기를 누를 수 없어야 한다", async () => {
+describe("지우기", () => {
+  const eraseButton = () => screen.getByRole("button", { name: "지우기", exact: true });
+  const undoButton = () => screen.getByRole("button", { name: "실행 취소" });
+
+  /** Presses and releases the sheet through fabric's own pointer handling.
+   *
+   * Not a hand-fired event: fabric caches the target under the pointer before
+   * any mouse event is fired and keeps using that cache for the rest of the
+   * press, so what happens *after* the app's handler — selecting the object,
+   * setting up a drag on it — is where the eraser can go wrong, and a fired
+   * event skips all of it. A DOM mousedown never reaches fabric under jsdom
+   * (measured 2026-09-11), so its handler is called directly with one.
+   *
+   * `at` is in the sheet's own coordinates; the viewport transform turns it
+   * into where on the canvas element a pointer would be. fabric then reads the
+   * event back through the element's offset, which under jsdom is not zero —
+   * 16px on each axis (measured), enough to miss a short mark entirely — so
+   * the offset is taken from fabric itself and cancelled out.
+   */
+  async function pressOn(target, at) {
+    const { Point, util } = await import("fabric");
+    const canvas = sheet();
+    const scene = target ? target.getCenterPoint() : new Point(at.x, at.y);
+    const view = util.transformPoint(scene, canvas.viewportTransform);
+    const origin = canvas.getViewportPoint(new MouseEvent("mousedown", { clientX: 0, clientY: 0 }));
+    const init = {
+      clientX: view.x - origin.x,
+      clientY: view.y - origin.y,
+      button: 0,
+      bubbles: true,
+    };
+    await act(async () => {
+      canvas._onMouseDown(new MouseEvent("mousedown", init));
+      canvas._onMouseUp(new MouseEvent("mouseup", init));
+    });
+  }
+
+  it("지우기는 도구 하나여야 한다 — 선택 지우기 버튼은 없어야 한다", async () => {
     renderConti();
     await openEditor();
 
-    expect(screen.getByRole("button", { name: "선택 지우기" }).disabled).toBe(true);
+    fireEvent.click(eraseButton());
+
+    expect(eraseButton().getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "그리기" }).getAttribute("aria-pressed")).toBe(
+      "false"
+    );
+    expect(screen.queryByRole("button", { name: "선택 지우기" })).toBeNull();
+  });
+
+  it("지우기 도구로 누른 것을 바로 지워야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke(10);
+    await drawStroke(40);
+    const [first, second] = sheet().getObjects();
+
+    fireEvent.click(eraseButton());
+    await pressOn(first);
+
+    expect(sheet().getObjects()).toEqual([second]);
+  });
+
+  it("지운 것이 선택된 채 남지 않아야 한다", async () => {
+    // fabric looks the target up once per press and keeps it. An eraser that
+    // removes the object before fabric selects it leaves fabric selecting an
+    // object that is no longer on the sheet: its handles stay drawn where the
+    // stroke was, and a drag moves something nobody can see.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    fireEvent.click(eraseButton());
+    await pressOn(sheet().getObjects()[0]);
+
+    expect(sheet().getObjects()).toHaveLength(0);
+    expect(sheet().getActiveObject()).toBeUndefined();
+  });
+
+  it("지운 것은 실행 취소 한 번에 되살아나야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    fireEvent.click(eraseButton());
+    await pressOn(sheet().getObjects()[0]);
+    expect(sheet().getObjects()).toHaveLength(0);
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+    expect(sheet().getObjects()).toHaveLength(1);
+
+    // And the step before it is the stroke itself, not a second copy of the
+    // erase.
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+    expect(sheet().getObjects()).toHaveLength(0);
+    expect(undoButton().disabled).toBe(true);
+  });
+
+  it("빈 곳을 누르면 아무것도 지우지 않아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    fireEvent.click(eraseButton());
+    await pressOn(undefined, { x: 100, y: 150 });
+
+    expect(sheet().getObjects()).toHaveLength(1);
+    // Nothing filed either: one undo goes straight back past the stroke.
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+    expect(sheet().getObjects()).toHaveLength(0);
+  });
+
+  it("긴 획을 둘러싼 사각형의 빈 곳을 누르면 그 획을 지우지 않아야 한다", async () => {
+    // fabric finds targets by bounding box unless told otherwise. A diagonal
+    // stroke's box covers a whole corner of the sheet, and a press on the
+    // empty paper in it would take the stroke away.
+    const { Path } = await import("fabric");
+    renderConti();
+    await openEditor();
+    await act(async () => {
+      sheet().add(new Path("M 0 0 L 100 150", { stroke: "#dc2626", fill: "", strokeWidth: 3 }));
+    });
+
+    fireEvent.click(eraseButton());
+    await pressOn(undefined, { x: 80, y: 20 });
+
+    expect(sheet().getObjects()).toHaveLength(1);
+  });
+
+  it("동그라미 안의 짧은 표시를 누르면 그 표시만 지워야 한다", async () => {
+    // The circle is drawn later, so it is on top, and its box covers the mark
+    // — by box alone the circle would win every press inside it.
+    const { Circle, Path } = await import("fabric");
+    renderConti();
+    await openEditor();
+    // Tilted by a unit on purpose: a perfectly flat path has zero height, and
+    // fabric's selection area for it contains no point at all (measured) —
+    // that would test fabric's box maths rather than the eraser.
+    const mark = new Path("M 50 79 L 60 81", { stroke: "#dc2626", fill: "", strokeWidth: 3 });
+    const circle = new Circle({
+      left: 55,
+      top: 80,
+      radius: 40,
+      fill: "",
+      stroke: "#dc2626",
+      strokeWidth: 3,
+    });
+    await act(async () => {
+      sheet().add(mark);
+      sheet().add(circle);
+    });
+
+    fireEvent.click(eraseButton());
+    await pressOn(mark);
+
+    expect(sheet().getObjects()).toEqual([circle]);
+  });
+
+  it("가는 선은 조금 비껴 눌러도 지워야 한다", async () => {
+    // A thin stroke at the fit zoom is a pixel or two wide on screen; pixel
+    // hit-testing with no slack would make it nearly impossible to press.
+    // (10, 17.5) is 2.5 sheet units below the curve's middle — about three
+    // screen pixels past the stroke's edge at this test's zoom.
+    renderConti();
+    await openEditor();
+    await drawStroke(10);
+
+    fireEvent.click(eraseButton());
+    await pressOn(undefined, { x: 10, y: 17.5 });
+
+    expect(sheet().getObjects()).toHaveLength(0);
+  });
+
+  it("지우기에서 나오면 고르기는 다시 사각형으로 잡아야 한다", async () => {
+    // Grabbing by box is what makes a thin stroke easy to pick up and move;
+    // the pixel test is for the eraser only.
+    renderConti();
+    await openEditor();
+
+    fireEvent.click(eraseButton());
+    fireEvent.click(screen.getByRole("button", { name: "고르기" }));
+
+    expect(sheet().perPixelTargetFind).toBe(false);
+    expect(sheet().targetFindTolerance).toBe(0);
+  });
+
+  it("지우기 도구인 채로 닫아도 조용히 닫혀야 한다", async () => {
+    // Closing disposes the canvas before the eraser's cleanup runs, and
+    // restoring fabric's hit-testing on a disposed canvas throws.
+    const errors = [];
+    const onError = (event) => {
+      errors.push(event.error ?? event.message);
+      event.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      renderConti();
+      await openEditor();
+      fireEvent.click(eraseButton());
+      // Let the render the tool switch requested go out. dispose() waits for a
+      // pending render before tearing the canvas down, so closing in the same
+      // frame leaves the sampling canvas alive and hides the throw — a leader
+      // who picks 지우기 and closes a moment later does not get that luck.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "닫기" }));
+      });
+
+      expect(errors).toEqual([]);
+      expect(screen.queryByRole("button", { name: "지우기", exact: true })).toBeNull();
+    } finally {
+      window.removeEventListener("error", onError);
+    }
+  });
+
+  it("다른 도구에서는 눌러도 지우지 않아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    fireEvent.click(eraseButton());
+    fireEvent.click(screen.getByRole("button", { name: "고르기" }));
+    await pressOn(sheet().getObjects()[0]);
+
+    expect(sheet().getObjects()).toHaveLength(1);
+  });
+
+  it("지우기 도구에서는 끌어서 여러 개를 고르지 않아야 한다", async () => {
+    // A drag on empty sheet would otherwise draw a selection box, which reads
+    // as "these are about to be erased" and erases nothing.
+    renderConti();
+    await openEditor();
+
+    fireEvent.click(eraseButton());
+    expect(sheet().selection).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "고르기" }));
+    expect(sheet().selection).toBe(true);
+  });
+
+  it("글자를 치다 지우기로 바꾸면 쓰던 글자가 닫혀야 한다", async () => {
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+    const label = new IText("", { left: 10, top: 10 });
+    await act(async () => {
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+      label.text = "3부";
+    });
+
+    await act(async () => {
+      fireEvent.click(eraseButton());
+    });
+
+    expect(label.isEditing).toBe(false);
   });
 });
 
@@ -775,7 +1039,10 @@ describe("선 굵기", () => {
     await openEditor();
 
     expect(widthButton("선 보통").getAttribute("aria-pressed")).toBe("true");
-    expect(sheet().freeDrawingBrush.width).toBe(3);
+    // Waited for: openEditor returns on the render that enables the buttons,
+    // and the width is applied by an effect that runs after that render — so
+    // reading it at once failed about one run in seven.
+    await waitFor(() => expect(sheet().freeDrawingBrush.width).toBe(3));
   });
 
   it("굵게를 고르면 그 굵기로 그려야 한다", async () => {
@@ -1215,33 +1482,6 @@ describe("실행 취소", () => {
     });
 
     expect(undoButton().disabled).toBe(false);
-  });
-
-  it("여러 개를 한 번에 지우면 한 번에 되살아나야 한다", async () => {
-    // 선택 지우기 removes each object separately, one event each. Filing them
-    // one by one would make a single press of 지우기 take three presses of
-    // 실행 취소 to come back.
-    const { ActiveSelection } = await import("fabric");
-    renderConti();
-    await openEditor();
-    await drawStroke(10);
-    await drawStroke(40);
-    await drawStroke(70);
-
-    await act(async () => {
-      const canvas = sheet();
-      canvas.setActiveObject(new ActiveSelection(canvas.getObjects(), { canvas }));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "선택 지우기" }));
-    });
-    expect(sheet().getObjects()).toHaveLength(0);
-
-    await act(async () => {
-      fireEvent.click(undoButton());
-    });
-
-    expect(sheet().getObjects()).toHaveLength(3);
   });
 });
 

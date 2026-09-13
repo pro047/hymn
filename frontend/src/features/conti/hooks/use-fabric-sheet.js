@@ -20,6 +20,19 @@ const ZOOM_STEP = 1.25;
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
 
+/** How far off a stroke's pixels the eraser may land and still take it, in
+ * screen pixels (fabric measures it in viewport space, so it does not grow
+ * with the zoom). Without it a press between the pixels of a thin curve finds
+ * nothing.
+ *
+ * Only inside the stroke's bounding box, though: fabric tests the box first
+ * and samples pixels only for a point already in it (SelectableCanvas
+ * _checkTarget), so a press just beyond a thin straight line's edge — whose
+ * box is barely thicker than the line — still misses (measured). That was
+ * equally true before pixel testing; this does not make it worse.
+ */
+const ERASE_TOLERANCE = 6;
+
 const BRUSH_WIDTH = 3;
 const TEXT_SIZE = 24;
 
@@ -88,7 +101,6 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   // mode effect for the same reason width has an effect of its own: a size
   // change must not run that effect's cleanup, which closes the open label.
   const textSizeRef = useRef(TEXT_SIZE);
-  const [hasSelection, setHasSelection] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
 
@@ -97,19 +109,14 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   // history existed on the render that created them.
   const historyRef = useRef(createEditHistory());
   // Set while the code itself is changing the canvas, so those changes are not
-  // read as the leader's. Two callers need it and for the same reason:
-  //   - undo replays a document, and loadFromJSON fires object:removed for
-  //     every object it clears and object:added for every one it restores
-  //     (measured). Recording those would push the restored state straight
-  //     back on, and undo could never reach the bottom.
-  //   - deleting a rubber-band selection removes several objects, one event
-  //     each. Recording each would make one press of 지우기 take several
-  //     presses of 실행 취소 to come back.
+  // read as the leader's: undo replays a document, and loadFromJSON fires
+  // object:removed for every object it clears and object:added for every one
+  // it restores (measured). Recording those would push the restored state
+  // straight back on, and undo could never reach the bottom.
   const suspendHistoryRef = useRef(false);
   // Held apart from the flag above because it answers a different question:
   // that one says "ignore what is happening", this one says "a step back is
-  // already under way". They are set together in undo and separately in
-  // deleteSelected, which is synchronous and cannot overlap itself.
+  // already under way".
   const undoingRef = useRef(false);
 
   // The seed is read once per canvas, so it is held in a ref rather than
@@ -229,11 +236,6 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
         canvas.freeDrawingBrush = new PencilBrush(canvas);
         canvas.requestRenderAll();
 
-        const syncSelection = () => setHasSelection(Boolean(canvas.getActiveObject()));
-        canvas.on("selection:created", syncSelection);
-        canvas.on("selection:updated", syncSelection);
-        canvas.on("selection:cleared", syncSelection);
-
         // The bottom of the stack is the sheet as it opened — the saved edit
         // if there was one. Set after the seed has been replayed and the
         // background attached, so the first step back lands on what the
@@ -341,6 +343,46 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
       canvas.requestRenderAll();
     }
 
+    if (mode === "erase") {
+      // mouse:down, not down:before. fabric looks the target up once when the
+      // press starts and keeps that answer for the whole press
+      // (Canvas._cacheTransformEventData), so an object removed at down:before
+      // is still selected and set up for dragging a moment later — its handles
+      // stay drawn over empty sheet. By mouse:down it is already the active
+      // object, and removing the active object makes fabric drop the
+      // selection and end the drag itself (SelectableCanvas._onObjectRemoved).
+      const eraseTarget = (event) => {
+        if (event.target) canvas.remove(event.target);
+      };
+      const { hoverCursor, perPixelTargetFind, targetFindTolerance } = canvas;
+      // No rubber band: a box drawn on empty sheet reads as "these are about
+      // to go" and erases nothing.
+      canvas.selection = false;
+      canvas.hoverCursor = "pointer";
+      // By pixels, not by bounding box. fabric's default finds a target by its
+      // box, and a stroke's box is mostly empty paper: a press inside a circle
+      // took the circle rather than the mark it was aimed at, and a press on
+      // blank sheet near a long diagonal took the diagonal. The tolerance goes
+      // through its setter — it sizes the canvas fabric samples on.
+      canvas.perPixelTargetFind = true;
+      canvas.setTargetFindTolerance(ERASE_TOLERANCE);
+      canvas.on("mouse:down", eraseTarget);
+      return () => {
+        canvas.off("mouse:down", eraseTarget);
+        // Closing the editor disposes the canvas first (the effect above runs
+        // its cleanup before this one), and a disposed canvas has no sampling
+        // canvas left for setTargetFindTolerance to size — it throws. Nothing
+        // needs restoring on a canvas that is gone.
+        if (fabricRef.current !== canvas) return;
+        canvas.selection = true;
+        canvas.hoverCursor = hoverCursor;
+        // Back to boxes for 고르기, where a thin stroke is easier to pick up
+        // by its box than by its pixels.
+        canvas.perPixelTargetFind = perPixelTargetFind;
+        canvas.setTargetFindTolerance(targetFindTolerance);
+      };
+    }
+
     if (mode !== "text") return undefined;
 
     const placeText = async (event) => {
@@ -422,26 +464,6 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     if (editing?.isEditing) editing.hiddenTextarea?.focus();
   }, []);
 
-  const deleteSelected = useCallback(() => {
-    const canvas = fabricRef.current;
-    if (!canvas) return;
-    suspendHistoryRef.current = true;
-    try {
-      // getActiveObjects, not getActiveObject: a rubber-band selection is one
-      // group object, and removing the group would leave its members behind.
-      canvas.getActiveObjects().forEach((object) => canvas.remove(object));
-    } finally {
-      suspendHistoryRef.current = false;
-    }
-    canvas.discardActiveObject();
-    setHasSelection(false);
-    canvas.requestRenderAll();
-    // One entry for the whole deletion, recorded here because the events it
-    // would have come from were suspended above.
-    historyRef.current.record(JSON.stringify(documentOf(canvas)));
-    setCanUndo(historyRef.current.canUndo());
-  }, []);
-
   /** Puts the sheet back one step.
    *
    * Async because loadFromJSON is: fabric has to rebuild every object from
@@ -485,7 +507,6 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
       if (imageRef.current) canvas.backgroundImage = imageRef.current;
       canvas.discardActiveObject();
       canvas.requestRenderAll();
-      setHasSelection(false);
       setCanUndo(historyRef.current.canUndo());
     } catch {
       // The step came off the stack before the replay began, so a replay that
@@ -547,8 +568,6 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     setBrushWidth,
     textSize,
     chooseTextSize,
-    hasSelection,
-    deleteSelected,
     canUndo,
     undo,
     exportSheet,

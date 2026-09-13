@@ -37,6 +37,7 @@ const MODES = [
   { value: "draw", label: "그리기" },
   { value: "text", label: "글자" },
   { value: "select", label: "고르기" },
+  { value: "erase", label: "지우기" },
 ];
 
 /** The editing surface for one song's sheet, on one week.
@@ -82,8 +83,6 @@ export default function ScoreEditorDialog({
     setBrushWidth,
     textSize,
     chooseTextSize,
-    hasSelection,
-    deleteSelected,
     canUndo,
     undo,
     exportSheet,
@@ -244,19 +243,6 @@ export default function ScoreEditorDialog({
             실행 취소
           </Button>
 
-          {/* Disabled rather than hidden: a control that appears and vanishes
-              as the selection changes is harder to find than one that is
-              always in the same place. */}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={!hasSelection || busy}
-            onClick={deleteSelected}
-          >
-            선택 지우기
-          </Button>
-
           {/* Zoom is on the right, away from the tools: it changes what can be
               seen, not what a click does, and grouping it with the brushes
               read as a fourth tool. */}
@@ -335,7 +321,7 @@ export default function ScoreEditorDialog({
                 is the one control on this screen that tests cannot press. */}
             {hasEdit && confirmingClear ? (
               <span className="flex items-center gap-2 text-sm text-stone-700">
-                이 주차의 편집을 모두 지웁니다.
+                이 곡에 그린 편집을 모두 지웁니다.
                 <Button
                   type="button"
                   variant="outline"
@@ -343,7 +329,9 @@ export default function ScoreEditorDialog({
                   disabled={busy}
                   onClick={handleClear}
                 >
-                  지우기
+                  {/* Not 지우기: that is the eraser tool's name, a few
+                      centimetres up, and this one cannot be undone. */}
+                  모두 지우기
                 </Button>
                 <Button
                   type="button"
