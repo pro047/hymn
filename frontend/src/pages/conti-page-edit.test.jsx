@@ -765,6 +765,87 @@ describe("도구", () => {
   });
 });
 
+describe("선 굵기", () => {
+  const widthButton = (name) => screen.getByRole("button", { name });
+
+  it("처음에는 보통 굵기로 그려야 한다", async () => {
+    // The width every sheet was drawn with before there was a choice, so a
+    // leader who never touches the control marks up the same as before.
+    renderConti();
+    await openEditor();
+
+    expect(widthButton("선 보통").getAttribute("aria-pressed")).toBe("true");
+    expect(sheet().freeDrawingBrush.width).toBe(3);
+  });
+
+  it("굵게를 고르면 그 굵기로 그려야 한다", async () => {
+    renderConti();
+    await openEditor();
+    const canvasCount = canvases.length;
+
+    await act(async () => {
+      fireEvent.click(widthButton("선 굵게"));
+    });
+
+    expect(widthButton("선 굵게").getAttribute("aria-pressed")).toBe("true");
+    expect(widthButton("선 보통").getAttribute("aria-pressed")).toBe("false");
+    expect(sheet().freeDrawingBrush.width).toBe(6);
+    // Same canvas, not a rebuilt one — a rebuild would drop the drawing.
+    expect(canvases).toHaveLength(canvasCount);
+  });
+
+  it("얇게를 고르면 그 굵기로 그려야 한다", async () => {
+    renderConti();
+    await openEditor();
+
+    await act(async () => {
+      fireEvent.click(widthButton("선 얇게"));
+    });
+
+    expect(sheet().freeDrawingBrush.width).toBe(1.5);
+  });
+
+  it("이미 그린 선의 굵기는 바꾸지 않아야 한다", async () => {
+    // Same rule as colour: the control sets the next stroke, not the ones
+    // already on the sheet.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    await act(async () => {
+      fireEvent.click(widthButton("선 굵게"));
+    });
+
+    const [stroke] = sheet()
+      .getObjects()
+      .filter((o) => o.type === "path");
+    expect(stroke.strokeWidth).toBe(3);
+  });
+
+  it("글자를 치는 중에 굵기를 바꿔도 편집이 닫히지 않아야 한다", async () => {
+    // Changing the tool closes a label on purpose; changing the width is not
+    // changing the tool, and closing there would commit a half-typed word.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+    const label = new IText("", { left: 10, top: 10 });
+    await act(async () => {
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+      label.text = "3부";
+    });
+
+    await act(async () => {
+      fireEvent.click(widthButton("선 굵게"));
+    });
+
+    expect(label.isEditing).toBe(true);
+  });
+});
+
 describe("실행 취소", () => {
   const undoButton = () => screen.getByRole("button", { name: "실행 취소" });
 

@@ -15,6 +15,16 @@ const COLORS = [
   { value: "#1c1917", swatch: "bg-stone-900", label: "검정" },
 ];
 
+// Three steps for now; a slider may replace them later. `value` is in the
+// sheet's own pixels, so a stroke keeps its weight at every zoom. `bar` draws
+// the weight on the button. Labels say 선 so they stay distinct once the text
+// tool gets sizes of its own.
+const WIDTHS = [
+  { value: 1.5, bar: "h-0.5", label: "선 얇게" },
+  { value: 3, bar: "h-1", label: "선 보통" },
+  { value: 6, bar: "h-2", label: "선 굵게" },
+];
+
 const MODES = [
   { value: "draw", label: "그리기" },
   { value: "text", label: "글자" },
@@ -60,6 +70,8 @@ export default function ScoreEditorDialog({
     setMode,
     color,
     setColor,
+    brushWidth,
+    setBrushWidth,
     hasSelection,
     deleteSelected,
     canUndo,
@@ -168,6 +180,24 @@ export default function ScoreEditorDialog({
                 item.swatch
               } ${color === item.value ? "border-stone-900" : "border-stone-200"}`}
             />
+          ))}
+
+          <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />
+
+          {WIDTHS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              aria-label={item.label}
+              aria-pressed={brushWidth === item.value}
+              disabled={!isReady || busy}
+              onClick={() => setBrushWidth(item.value)}
+              className={`flex h-7 w-8 items-center justify-center rounded-md border-2 transition-colors disabled:opacity-40 ${
+                brushWidth === item.value ? "border-stone-900" : "border-stone-200"
+              }`}
+            >
+              <span aria-hidden="true" className={`w-4 rounded-full bg-stone-900 ${item.bar}`} />
+            </button>
           ))}
 
           <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />

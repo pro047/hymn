@@ -20,7 +20,7 @@ const ZOOM_STEP = 1.25;
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
 
-export const BRUSH_WIDTH = 3;
+const BRUSH_WIDTH = 3;
 export const TEXT_SIZE = 24;
 
 /** The canvas as a document, without its background.
@@ -82,6 +82,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const [isReady, setIsReady] = useState(false);
   const [mode, setMode] = useState("draw");
   const [color, setColor] = useState("#dc2626");
+  const [brushWidth, setBrushWidth] = useState(BRUSH_WIDTH);
   const [hasSelection, setHasSelection] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -308,6 +309,16 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     return () => observer.disconnect();
   }, [containerRef, isReady, fitZoomFor, applyScale]);
 
+  // Width has an effect of its own rather than a place in the mode effect
+  // below. That effect's cleanup closes a label being typed into — right when
+  // the tool changes, wrong when only the width does, which would commit a
+  // half-typed word the moment the leader reached for 굵게.
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    if (!canvas?.freeDrawingBrush || !isReady) return;
+    canvas.freeDrawingBrush.width = brushWidth;
+  }, [brushWidth, isReady]);
+
   // Mode and colour are applied to the live canvas rather than baked in at
   // creation: switching either must not rebuild the canvas, which would drop
   // everything drawn so far.
@@ -316,10 +327,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     if (!canvas || !isReady) return undefined;
 
     canvas.isDrawingMode = mode === "draw";
-    if (canvas.freeDrawingBrush) {
-      canvas.freeDrawingBrush.color = color;
-      canvas.freeDrawingBrush.width = BRUSH_WIDTH;
-    }
+    if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.color = color;
     if (mode !== "select") {
       // Handles left on screen while another tool is active read as "this is
       // still selected", and the next click would move that object instead of
@@ -516,6 +524,8 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     setMode,
     color,
     setColor,
+    brushWidth,
+    setBrushWidth,
     hasSelection,
     deleteSelected,
     canUndo,
