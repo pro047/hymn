@@ -25,6 +25,14 @@ const WIDTHS = [
   { value: 6, bar: "h-2", label: "선 굵게" },
 ];
 
+// Same three-step shape as the widths, in the sheet's own pixels. `glyph` is
+// the size the sample letter is shown at on the button.
+const SIZES = [
+  { value: 16, glyph: "text-xs", label: "글자 작게" },
+  { value: 24, glyph: "text-sm", label: "글자 보통" },
+  { value: 36, glyph: "text-base", label: "글자 크게" },
+];
+
 const MODES = [
   { value: "draw", label: "그리기" },
   { value: "text", label: "글자" },
@@ -72,6 +80,8 @@ export default function ScoreEditorDialog({
     setColor,
     brushWidth,
     setBrushWidth,
+    textSize,
+    chooseTextSize,
     hasSelection,
     deleteSelected,
     canUndo,
@@ -166,7 +176,7 @@ export default function ScoreEditorDialog({
             </Button>
           ))}
 
-          <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
 
           {COLORS.map((item) => (
             <button
@@ -182,7 +192,7 @@ export default function ScoreEditorDialog({
             />
           ))}
 
-          <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
 
           {WIDTHS.map((item) => (
             <button
@@ -200,7 +210,25 @@ export default function ScoreEditorDialog({
             </button>
           ))}
 
-          <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
+
+          {SIZES.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              aria-label={item.label}
+              aria-pressed={textSize === item.value}
+              disabled={!isReady || busy}
+              onClick={() => chooseTextSize(item.value)}
+              className={`flex h-7 w-8 items-center justify-center rounded-md border-2 font-semibold leading-none text-stone-900 transition-colors disabled:opacity-40 ${
+                item.glyph
+              } ${textSize === item.value ? "border-stone-900" : "border-stone-200"}`}
+            >
+              <span aria-hidden="true">가</span>
+            </button>
+          ))}
+
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
 
           {/* Named 실행 취소, not 되돌리기: the button at the bottom of this
               same dialog is 원본으로 되돌리기, which throws the whole week's
@@ -255,7 +283,7 @@ export default function ScoreEditorDialog({
             {/* Against the file's own size, so 100% means "as sharp as this
                 scan gets". Most scores are under 600px wide, so the fit on a
                 full-height box is well under that. */}
-            <span className="w-12 text-right text-xs tabular-nums text-stone-500">
+            <span className="w-10 text-right text-xs tabular-nums text-stone-500">
               {isReady ? `${zoomPercent}%` : ""}
             </span>
             <Button

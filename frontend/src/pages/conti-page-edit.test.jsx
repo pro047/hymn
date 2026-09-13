@@ -846,6 +846,157 @@ describe("선 굵기", () => {
   });
 });
 
+describe("글자 크기", () => {
+  const sizeButton = (name) => screen.getByRole("button", { name });
+
+  /** Places a label the way a click with the text tool does.
+   *
+   * The click itself never reaches fabric here, so the event it would have
+   * produced is fired at the canvas instead — which runs the app's own
+   * handler, and with it whatever size that handler reads.
+   */
+  async function placeLabel() {
+    await act(async () => {
+      sheet().fire("mouse:down", {
+        e: new MouseEvent("mousedown", { clientX: 5, clientY: 5 }),
+        target: undefined,
+      });
+    });
+    let label;
+    await waitFor(() => {
+      label = sheet()
+        .getObjects()
+        .find((o) => o.type === "i-text");
+      expect(label).toBeTruthy();
+    });
+    return label;
+  }
+
+  /** A label with "3부" typed into it and still open. */
+  async function typingLabel() {
+    const { IText } = await import("fabric");
+    const label = new IText("", { left: 10, top: 10 });
+    await act(async () => {
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+      label.text = "3부";
+    });
+    return label;
+  }
+
+  it("처음에는 보통 크기로 글자를 놓아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+
+    expect(sizeButton("글자 보통").getAttribute("aria-pressed")).toBe("true");
+    expect((await placeLabel()).fontSize).toBe(24);
+  });
+
+  it("크게를 고르면 새 글자를 그 크기로 놓아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+
+    await act(async () => {
+      fireEvent.click(sizeButton("글자 크게"));
+    });
+
+    expect(sizeButton("글자 크게").getAttribute("aria-pressed")).toBe("true");
+    expect(sizeButton("글자 보통").getAttribute("aria-pressed")).toBe("false");
+    expect((await placeLabel()).fontSize).toBe(36);
+  });
+
+  it("작게를 고르면 새 글자를 그 크기로 놓아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+
+    await act(async () => {
+      fireEvent.click(sizeButton("글자 작게"));
+    });
+
+    expect((await placeLabel()).fontSize).toBe(16);
+  });
+
+  it("이미 쓴 글자의 크기는 바꾸지 않아야 한다", async () => {
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+    const label = new IText("3부", { left: 10, top: 10, fontSize: 24 });
+    await act(async () => {
+      sheet().add(label);
+    });
+
+    await act(async () => {
+      fireEvent.click(sizeButton("글자 크게"));
+    });
+
+    expect(label.fontSize).toBe(24);
+  });
+
+  it("글자를 치는 중에 크기를 바꿔도 편집이 닫히지 않아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+    const label = await typingLabel();
+
+    await act(async () => {
+      fireEvent.click(sizeButton("글자 크게"));
+    });
+
+    expect(label.isEditing).toBe(true);
+  });
+
+  it("글자를 치는 중에 크기를 바꾸면 치던 글자로 돌아가야 한다", async () => {
+    // A real click moves focus to the button, and fabric reads keys only from
+    // its hidden textarea — so without this the next letters go nowhere.
+    // jsdom does not move focus on click, so the press does it by hand.
+    renderConti();
+    await openEditor();
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+    const label = await typingLabel();
+
+    const button = sizeButton("글자 크게");
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    expect(document.activeElement).toBe(label.hiddenTextarea);
+  });
+
+  it("치는 글자가 없어도 크기를 바꿀 수 있어야 한다", async () => {
+    // Nothing is selected, so there is no label to hand focus back to. A throw
+    // in the click handler would not fail the press on its own — React reports
+    // it and moves on — so the error is listened for directly.
+    const errors = [];
+    const onError = (event) => {
+      errors.push(event.error ?? event.message);
+      event.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      renderConti();
+      await openEditor();
+
+      const button = sizeButton("글자 크게");
+      button.focus();
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      expect(errors).toEqual([]);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(document.activeElement).toBe(button);
+    } finally {
+      window.removeEventListener("error", onError);
+    }
+  });
+});
+
 describe("실행 취소", () => {
   const undoButton = () => screen.getByRole("button", { name: "실행 취소" });
 

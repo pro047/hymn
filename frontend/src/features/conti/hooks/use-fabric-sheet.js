@@ -21,7 +21,7 @@ const MIN_SCALE = 1;
 const MAX_SCALE = 4;
 
 const BRUSH_WIDTH = 3;
-export const TEXT_SIZE = 24;
+const TEXT_SIZE = 24;
 
 /** The canvas as a document, without its background.
  *
@@ -83,6 +83,11 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const [mode, setMode] = useState("draw");
   const [color, setColor] = useState("#dc2626");
   const [brushWidth, setBrushWidth] = useState(BRUSH_WIDTH);
+  const [textSize, setTextSize] = useState(TEXT_SIZE);
+  // What the text tool's click reads. A ref rather than a dependency of the
+  // mode effect for the same reason width has an effect of its own: a size
+  // change must not run that effect's cleanup, which closes the open label.
+  const textSizeRef = useRef(TEXT_SIZE);
   const [hasSelection, setHasSelection] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -351,7 +356,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
       const text = new IText("", {
         left: point.x,
         top: point.y,
-        fontSize: TEXT_SIZE,
+        fontSize: textSizeRef.current,
         fill: color,
       });
       canvas.add(text);
@@ -402,6 +407,20 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const zoomIn = useCallback(() => zoomBy(ZOOM_STEP), [zoomBy]);
   const zoomOut = useCallback(() => zoomBy(1 / ZOOM_STEP), [zoomBy]);
   const zoomToFit = useCallback(() => applyScale(fabricRef.current, 1), [applyScale]);
+
+  /** Sets the size the next label is placed at.
+   *
+   * A label already open keeps its size, but gets the keyboard back: pressing
+   * the button moved focus onto it, and fabric reads keys only from the
+   * label's hidden textarea — so the rest of the word would otherwise go
+   * nowhere while the caret still showed in the label.
+   */
+  const chooseTextSize = useCallback((size) => {
+    textSizeRef.current = size;
+    setTextSize(size);
+    const editing = fabricRef.current?.getActiveObject();
+    if (editing?.isEditing) editing.hiddenTextarea?.focus();
+  }, []);
 
   const deleteSelected = useCallback(() => {
     const canvas = fabricRef.current;
@@ -526,6 +545,8 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     setColor,
     brushWidth,
     setBrushWidth,
+    textSize,
+    chooseTextSize,
     hasSelection,
     deleteSelected,
     canUndo,
