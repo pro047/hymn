@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "../../../components/ui/button";
 import { useFabricSheet } from "../hooks/use-fabric-sheet";
@@ -62,10 +62,35 @@ export default function ScoreEditorDialog({
     setColor,
     hasSelection,
     deleteSelected,
+    canUndo,
+    undo,
     exportSheet,
   } = useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDoc });
 
   const busy = isLoading || isSaving;
+
+  // The keyboard half of 실행 취소. The button is the other half and is the
+  // one that matters on the tablets the churches use, which have no Ctrl key.
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      // Shift+Z is redo in every editor that has one, so it must not undo
+      // here — better to do nothing than the opposite of what was asked.
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey) return;
+      if (event.key !== "z" && event.key !== "Z") return;
+      // Held back mid-save for the same reason the buttons are: the request
+      // carries a sheet that was exported before the key was pressed, so
+      // undoing now would store one picture and show another.
+      if (busy) return;
+      // Only once the canvas exists — and only when there is something to
+      // take back, so the browser's own undo is left alone on an untouched
+      // sheet.
+      if (!isReady || !canUndo) return;
+      event.preventDefault();
+      undo();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [undo, canUndo, isReady, busy]);
 
   const handleSave = async () => {
     setExportError("");
@@ -147,10 +172,23 @@ export default function ScoreEditorDialog({
 
           <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />
 
-          {/* Disabled rather than hidden: it is the only way to take a stroke
-              back, and a control that appears and vanishes as the selection
-              changes is harder to find than one that is always in the same
-              place. */}
+          {/* Named 실행 취소, not 되돌리기: the button at the bottom of this
+              same dialog is 원본으로 되돌리기, which throws the whole week's
+              edit away on the server. Two controls a few centimetres apart
+              sharing a word would be read as the same thing at two strengths. */}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!isReady || !canUndo || busy}
+            onClick={undo}
+          >
+            실행 취소
+          </Button>
+
+          {/* Disabled rather than hidden: a control that appears and vanishes
+              as the selection changes is harder to find than one that is
+              always in the same place. */}
           <Button
             type="button"
             size="sm"

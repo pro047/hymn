@@ -22,6 +22,70 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import ContiPage from "./conti-page";
 
+/** The canvases the editor built, newest last.
+ *
+ * A click never reaches fabric under jsdom — pointer and mouse events on both
+ * canvas elements leave the object count at zero (measured 2026-09-11) — so
+ * the undo tests below could not draw anything to take back. Holding the
+ * instance is the way past that: the test adds the object fabric itself would
+ * have added, and everything after that point is the real thing.
+ *
+ * This is real fabric, subclassed, not a stand-in: loadFromJSON runs, every
+ * event fires, and the existing tests in this file go through the same class
+ * unchanged. What it does NOT cover is the step it replaces — whether a
+ * click, a drag or a keystroke reaches fabric at all. That stays on the
+ * 눈 확인 list.
+ */
+const canvases = [];
+
+/** Set to a promise to hold every loadFromJSON until it settles.
+ *
+ * Undo awaits that call, and in this file it resolves almost immediately —
+ * the documents hold only paths and labels, so nothing is fetched. That
+ * leaves no window for a second press to land inside the first, which is the
+ * one thing the re-entry guard exists for. Holding the call open is how the
+ * window is made wide enough to aim at.
+ */
+let holdLoad = null;
+
+vi.mock("fabric", async (importOriginal) => {
+  const actual = await importOriginal();
+  class ReachableCanvas extends actual.Canvas {
+    constructor(...args) {
+      super(...args);
+      canvases.push(this);
+    }
+
+    async loadFromJSON(...args) {
+      if (holdLoad) await holdLoad;
+      return super.loadFromJSON(...args);
+    }
+  }
+  return { ...actual, Canvas: ReachableCanvas };
+});
+
+/** The canvas currently on screen. */
+const sheet = () => canvases[canvases.length - 1];
+
+/** Draws the way the pencil does: one Path, added to the canvas.
+ *
+ * The brush is not driven here because what it produces is a Path either way —
+ * and going through onMouseDown/Move/Up would test fabric's brush rather than
+ * this app's history.
+ */
+async function drawStroke(y = 10) {
+  const { Path } = await import("fabric");
+  await act(async () => {
+    sheet().add(
+      new Path(`M 0 ${y} Q 10 ${y + 10} 20 ${y}`, {
+        stroke: "#dc2626",
+        fill: "",
+        strokeWidth: 3,
+      })
+    );
+  });
+}
+
 // A real 120x170 png. Portrait on purpose: every score in production is, and
 // a landscape stand-in cannot tell "fit the whole sheet" apart from "fit the
 // width" — the two agree on a wide image and disagree on a tall one, which is
@@ -200,6 +264,8 @@ const callsTo = (calls, suffix, method) =>
   calls.filter((call) => call.url.endsWith(suffix) && (!method || call.method === method));
 
 beforeEach(() => {
+  canvases.length = 0;
+  holdLoad = null;
   mockApi();
 });
 
@@ -696,5 +762,545 @@ describe("도구", () => {
     await openEditor();
 
     expect(screen.getByRole("button", { name: "선택 지우기" }).disabled).toBe(true);
+  });
+});
+
+describe("실행 취소", () => {
+  const undoButton = () => screen.getByRole("button", { name: "실행 취소" });
+
+  it("연 직후에는 실행 취소를 누를 수 없어야 한다", async () => {
+    renderConti();
+    await openEditor();
+
+    // Nothing of the leader's own has happened yet, so there is nothing to
+    // take back — and the sheet as it opened is the floor, not a step.
+    expect(undoButton().disabled).toBe(true);
+  });
+
+  it("저장된 편집을 열어도 실행 취소를 누를 수 없어야 한다", async () => {
+    // The seed is replayed with loadFromJSON, which fires object:added for
+    // every object it restores. Subscribing before that replay would file the
+    // whole saved edit as steps the leader could undo their way out of.
+    mockApi({
+      edit: {
+        body: {
+          edited_file_uri: "scores/church-1/old.png",
+          edit_doc: SEEDED_DOC,
+          source_image_url: SHEET_PNG,
+        },
+      },
+    });
+    renderConti();
+    await openEditor();
+
+    expect(sheet().getObjects()).toHaveLength(1);
+    expect(undoButton().disabled).toBe(true);
+  });
+
+  it("그리고 나면 실행 취소를 누를 수 있어야 한다", async () => {
+    renderConti();
+    await openEditor();
+
+    await drawStroke();
+
+    expect(undoButton().disabled).toBe(false);
+  });
+
+  it("실행 취소를 누르면 방금 그린 것이 사라져야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke();
+    expect(sheet().getObjects()).toHaveLength(1);
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    expect(sheet().getObjects()).toHaveLength(0);
+  });
+
+  it("실행 취소를 해도 악보는 그대로 깔려 있어야 한다", async () => {
+    // loadFromJSON replaces the whole canvas, background included, and the
+    // stored document deliberately carries none. Without re-attaching it the
+    // first undo would leave the leader drawing on nothing.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    expect(sheet().backgroundImage).toBeTruthy();
+  });
+
+  it("연속으로 되돌리면 한 획씩 거슬러야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke(10);
+    await drawStroke(40);
+    await drawStroke(70);
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+    expect(sheet().getObjects()).toHaveLength(2);
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+    expect(sheet().getObjects()).toHaveLength(1);
+  });
+
+  it("연 상태까지 되돌리면 더는 누를 수 없어야 한다", async () => {
+    // Also the guard against undo recording itself: restoring fires
+    // object:removed and object:added, and filing those would keep the button
+    // alive forever while the sheet stopped changing.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    expect(sheet().getObjects()).toHaveLength(0);
+    expect(undoButton().disabled).toBe(true);
+  });
+
+  it("되돌린 상태가 저장돼야 한다", async () => {
+    // The sheet on screen and the sheet in the row have to be the same one.
+    const calls = mockApi();
+    renderConti();
+    await openEditor();
+    await drawStroke(10);
+    await drawStroke(40);
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(callsTo(calls, "/scores/a/edit", "PUT")).toHaveLength(1));
+    const saved = callsTo(calls, "/scores/a/edit", "PUT")[0].body;
+    expect(saved.edit_doc.objects).toHaveLength(1);
+  });
+
+  it("Ctrl+Z 로도 되돌려야 한다", async () => {
+    // The button is the tablet's way in; this is the desk's.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    const event = new KeyboardEvent("keydown", {
+      key: "z",
+      ctrlKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    await act(async () => {
+      window.dispatchEvent(event);
+    });
+
+    expect(sheet().getObjects()).toHaveLength(0);
+    // Claimed, so the browser's own undo does not also run on whatever else
+    // the page has focus in.
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("Cmd+Z 로도 되돌려야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "z", metaKey: true });
+    });
+
+    expect(sheet().getObjects()).toHaveLength(0);
+  });
+
+  it("Shift 를 같이 누르면 되돌리지 않아야 한다", async () => {
+    // Ctrl+Shift+Z is redo everywhere else. Doing the opposite of what was
+    // asked is worse than doing nothing.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Z", ctrlKey: true, shiftKey: true });
+    });
+
+    expect(sheet().getObjects()).toHaveLength(1);
+  });
+
+  it("편집기를 닫으면 Ctrl+Z 를 가로채지 않아야 한다", async () => {
+    // The listener is on the window, so one left behind would swallow undo on
+    // every other screen of the app.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+    fireEvent.click(screen.getByRole("button", { name: "닫기" }));
+
+    const event = new KeyboardEvent("keydown", {
+      key: "z",
+      ctrlKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("빈 글자를 만들었다 그만두면 실행 취소가 열리지 않아야 한다", async () => {
+    // The text tool adds an empty IText on click and drops it again when the
+    // leader walks away. Filing both would leave two presses to get back to
+    // where they already are, and neither of them would change the picture.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+
+    await act(async () => {
+      const blank = new IText("", { left: 10, top: 10 });
+      sheet().add(blank);
+      sheet().remove(blank);
+    });
+
+    expect(undoButton().disabled).toBe(true);
+  });
+
+  it("글자를 쓰고 나면 실행 취소를 누를 수 있어야 한다", async () => {
+    // The other half of the rule above: a label that was actually typed is a
+    // step, and it is the modified event at the end of editing that files it.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+
+    await act(async () => {
+      const label = new IText("3부", { left: 10, top: 10 });
+      sheet().add(label);
+    });
+
+    expect(undoButton().disabled).toBe(false);
+  });
+
+  it("여러 개를 한 번에 지우면 한 번에 되살아나야 한다", async () => {
+    // 선택 지우기 removes each object separately, one event each. Filing them
+    // one by one would make a single press of 지우기 take three presses of
+    // 실행 취소 to come back.
+    const { ActiveSelection } = await import("fabric");
+    renderConti();
+    await openEditor();
+    await drawStroke(10);
+    await drawStroke(40);
+    await drawStroke(70);
+
+    await act(async () => {
+      const canvas = sheet();
+      canvas.setActiveObject(new ActiveSelection(canvas.getObjects(), { canvas }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "선택 지우기" }));
+    });
+    expect(sheet().getObjects()).toHaveLength(0);
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    expect(sheet().getObjects()).toHaveLength(3);
+  });
+});
+
+describe("실행 취소 — 듣지 말아야 할 때", () => {
+  it("되돌릴 것이 없으면 Ctrl+Z 를 가로채지 않아야 한다", async () => {
+    // The key belongs to the browser until this editor has something of its
+    // own to take back.
+    renderConti();
+    await openEditor();
+
+    const event = new KeyboardEvent("keydown", {
+      key: "z",
+      ctrlKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("저장하는 중에는 Ctrl+Z 로 되돌릴 수 없어야 한다", async () => {
+    // The request already carries a png exported before the key was pressed.
+    // Undoing now would store one picture and leave another on screen.
+    mockApi({ save: { pending: true } });
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "저장하는 중…" })).toBeTruthy());
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    });
+
+    expect(sheet().getObjects()).toHaveLength(1);
+  });
+});
+
+describe("실행 취소 — 글자를 치는 중", () => {
+  it("빈 글자를 열어둔 채 누르면 그 앞 단계가 되돌아가야 한다", async () => {
+    // Placing a label and pressing 실행 취소 before typing anything: the empty
+    // IText was never a step — it draws nothing, so filing it would have cost
+    // a press that changed nothing on screen — and the press falls through to
+    // the stroke before it, which is the last thing the leader can actually
+    // see.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    await act(async () => {
+      const label = new IText("", { left: 10, top: 10 });
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    });
+
+    expect(
+      sheet()
+        .getObjects()
+        .filter((object) => object.type === "path")
+    ).toHaveLength(0);
+  });
+});
+
+describe("실행 취소 — 코드리뷰가 짚은 것", () => {
+  const undoButton = () => screen.getByRole("button", { name: "실행 취소" });
+
+  it("글자를 치는 중에 눌러도 되돌아가야 한다", async () => {
+    // fabric does not end editing when focus leaves the canvas — the hidden
+    // textarea's blur leaves isEditing true (measured) — so a toolbar press
+    // used to hit a guard and do nothing at all while the button sat enabled.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    // The text tool's real order: an empty label is placed (not a step, it
+    // draws nothing) and the letters arrive afterwards. Only closing the
+    // editing session turns that into something history can see — fabric
+    // fires object:modified from exitEditing, and only when the text changed.
+    await act(async () => {
+      const label = new IText("", { left: 10, top: 10 });
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+      label.text = "3부";
+    });
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    // The label was closed, filed as a step, and that step taken back: the
+    // stroke stays, the word just typed is gone. Without the close the press
+    // would fall through to the stroke and take that instead.
+    expect(
+      sheet()
+        .getObjects()
+        .filter((o) => o.type === "i-text")
+    ).toHaveLength(0);
+    expect(
+      sheet()
+        .getObjects()
+        .filter((o) => o.type === "path")
+    ).toHaveLength(1);
+  });
+
+  it("Ctrl+Z 도 글자를 치는 중에 되돌려야 한다", async () => {
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    await act(async () => {
+      const label = new IText("", { left: 10, top: 10 });
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+      label.text = "3부";
+    });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    });
+
+    expect(
+      sheet()
+        .getObjects()
+        .filter((o) => o.type === "i-text")
+    ).toHaveLength(0);
+    expect(
+      sheet()
+        .getObjects()
+        .filter((o) => o.type === "path")
+    ).toHaveLength(1);
+  });
+
+  it("쓰여 있던 글자를 지우면 그 지움도 되돌릴 수 있어야 한다", async () => {
+    // fabric fires object:modified after text:editing:exited with the label
+    // already empty. Filtering blanks out of modified as well would lose this
+    // change entirely: the history would still claim "3부" is on the sheet.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+
+    const label = new IText("3부", { left: 10, top: 10 });
+    await act(async () => {
+      sheet().add(label);
+      sheet().setActiveObject(label);
+    });
+    await act(async () => {
+      label.enterEditing();
+      label.text = "";
+      label.exitEditing();
+    });
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    const labels = sheet()
+      .getObjects()
+      .filter((o) => o.type === "i-text");
+    expect(labels).toHaveLength(1);
+    expect(labels[0].text).toBe("3부");
+  });
+
+  it("되돌리는 중에 또 누르면 두 단계가 한꺼번에 사라지지 않아야 한다", async () => {
+    // The restore is awaited, and a second press landing inside that await
+    // takes another step off the stack while the first is still replaying —
+    // two strokes gone for one press the leader can account for, and the
+    // second finally clearing the suspend flag the first still needs.
+    renderConti();
+    await openEditor();
+    await drawStroke(10);
+    await drawStroke(40);
+    await drawStroke(70);
+
+    let release;
+    holdLoad = new Promise((resolve) => {
+      release = resolve;
+    });
+
+    await act(async () => {
+      fireEvent.click(undoButton());
+      fireEvent.click(undoButton());
+    });
+    holdLoad = null;
+    await act(async () => {
+      release();
+    });
+
+    // Counted by what the stack has left rather than by what is on screen:
+    // when two restores overlap, which of them lands last is not fixed, but
+    // how many steps were taken off is. A dropped second press leaves the
+    // next undo on the second stroke; a second press that got through would
+    // already have spent it, and this would come back empty.
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    expect(sheet().getObjects()).toHaveLength(1);
+  });
+});
+
+describe("실행 취소 — 되돌리는 중에 닫으면", () => {
+  it("편집기를 닫아도 조용히 끝나야 한다", async () => {
+    // The restore is awaited and the cleanup disposes the canvas, so a close
+    // that lands inside that await leaves undo holding a canvas that is gone.
+    //
+    // ★ This does NOT verify the `fabricRef.current !== canvas` guard that
+    // undo carries: fabric 7 accepts the calls on a disposed canvas without
+    // complaint, so the test passes with the guard removed (measured). It
+    // pins the behaviour — closing mid-undo stays quiet — and would catch a
+    // future fabric that starts throwing. The guard itself is unverified, and
+    // kept because the path is real and it costs one line.
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    let release;
+    holdLoad = new Promise((resolve) => {
+      release = resolve;
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "실행 취소" }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "닫기" }));
+    holdLoad = null;
+    const rejections = [];
+    const onRejection = (event) => {
+      rejections.push(event.reason);
+      event.preventDefault();
+    };
+    window.addEventListener("unhandledrejection", onRejection);
+    await act(async () => {
+      release();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    window.removeEventListener("unhandledrejection", onRejection);
+
+    expect(rejections).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "저장" })).toBeNull();
+  });
+});
+
+describe("실행 취소 — 도구를 바꿔 글자를 끝냈을 때", () => {
+  it("도구를 바꾸면 쓰던 글자가 한 단계로 남아야 한다", async () => {
+    // fabric does not end editing when focus moves to a toolbar button, so a
+    // label finished that way never fires object:modified. Unrecorded, the
+    // next 실행 취소 takes back the stroke before it and the label stays —
+    // the opposite of what the press asked for.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+    await drawStroke();
+
+    fireEvent.click(screen.getByRole("button", { name: "글자" }));
+    const label = new IText("", { left: 10, top: 10 });
+    await act(async () => {
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+      label.text = "3부";
+    });
+
+    // Leaving the text tool is what has to close it.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "고르기" }));
+    });
+    expect(label.isEditing).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "실행 취소" }));
+    });
+
+    // The label goes, the stroke stays.
+    expect(
+      sheet()
+        .getObjects()
+        .filter((o) => o.type === "i-text")
+    ).toHaveLength(0);
+    expect(
+      sheet()
+        .getObjects()
+        .filter((o) => o.type === "path")
+    ).toHaveLength(1);
   });
 });
