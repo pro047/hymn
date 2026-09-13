@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { createEditHistory } from "../../../lib/edit-history";
+
 /** Used only when the box has not been laid out yet.
  *
  * jsdom has no layout at all, so clientWidth is 0 there and every zoom
@@ -18,8 +20,48 @@ const ZOOM_STEP = 1.25;
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
 
-export const BRUSH_WIDTH = 3;
-export const TEXT_SIZE = 24;
+/** How far off a stroke's pixels the eraser may land and still take it, in
+ * screen pixels (fabric measures it in viewport space, so it does not grow
+ * with the zoom). Without it a press between the pixels of a thin curve finds
+ * nothing.
+ *
+ * Only inside the stroke's bounding box, though: fabric tests the box first
+ * and samples pixels only for a point already in it (SelectableCanvas
+ * _checkTarget), so a press just beyond a thin straight line's edge — whose
+ * box is barely thicker than the line — still misses (measured). That was
+ * equally true before pixel testing; this does not make it worse.
+ */
+const ERASE_TOLERANCE = 6;
+
+const BRUSH_WIDTH = 3;
+const TEXT_SIZE = 24;
+
+/** The canvas as a document, without its background.
+ *
+ * fabric puts the image's `src` in there, and that src is a presigned URL —
+ * storing it would write a fifteen-minute credential into the row and reopen
+ * to a broken background once it expired. The server hands back a fresh one.
+ *
+ * Undo leans on the same omission for a second reason: a document with no
+ * background restores none, so the sheet has to be re-attached afterwards —
+ * which is cheaper than re-decoding the image on every step back.
+ */
+function documentOf(canvas) {
+  const { backgroundImage: _background, ...doc } = canvas.toJSON();
+  return doc;
+}
+
+/** An object marked up but never typed into.
+ *
+ * The text tool adds an empty IText the moment it is clicked and drops it
+ * again if the leader walks away, so both events arrive for a label that was
+ * never made. Neither is worth a step: an empty IText draws nothing and
+ * cannot be selected, so returning to that state looks like 실행 취소 did
+ * nothing at all.
+ */
+function isBlankLabel(object) {
+  return object?.type === "i-text" && !object.text?.trim();
+}
 
 /** Drives one fabric canvas: the song's sheet as the background, the leader's
  * markings as objects on top.
@@ -53,8 +95,29 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const [isReady, setIsReady] = useState(false);
   const [mode, setMode] = useState("draw");
   const [color, setColor] = useState("#dc2626");
-  const [hasSelection, setHasSelection] = useState(false);
+  const [brushWidth, setBrushWidth] = useState(BRUSH_WIDTH);
+  const [textSize, setTextSize] = useState(TEXT_SIZE);
+  // What the text tool's click reads. A ref rather than a dependency of the
+  // mode effect for the same reason width has an effect of its own: a size
+  // change must not run that effect's cleanup, which closes the open label.
+  const textSizeRef = useRef(TEXT_SIZE);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [canUndo, setCanUndo] = useState(false);
+
+  // The states this sheet has been in. A ref because the fabric listeners
+  // below are attached once and would otherwise keep writing into whichever
+  // history existed on the render that created them.
+  const historyRef = useRef(createEditHistory());
+  // Set while the code itself is changing the canvas, so those changes are not
+  // read as the leader's: undo replays a document, and loadFromJSON fires
+  // object:removed for every object it clears and object:added for every one
+  // it restores (measured). Recording those would push the restored state
+  // straight back on, and undo could never reach the bottom.
+  const suspendHistoryRef = useRef(false);
+  // Held apart from the flag above because it answers a different question:
+  // that one says "ignore what is happening", this one says "a step back is
+  // already under way".
+  const undoingRef = useRef(false);
 
   // The seed is read once per canvas, so it is held in a ref rather than
   // listed as a dependency: putting editDoc in the effect below would rebuild
@@ -173,10 +236,46 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
         canvas.freeDrawingBrush = new PencilBrush(canvas);
         canvas.requestRenderAll();
 
-        const syncSelection = () => setHasSelection(Boolean(canvas.getActiveObject()));
-        canvas.on("selection:created", syncSelection);
-        canvas.on("selection:updated", syncSelection);
-        canvas.on("selection:cleared", syncSelection);
+        // The bottom of the stack is the sheet as it opened — the saved edit
+        // if there was one. Set after the seed has been replayed and the
+        // background attached, so the first step back lands on what the
+        // leader saw rather than on a blank canvas. The seed's own
+        // loadFromJSON above happens before these listeners exist, which is
+        // why it needs no suspend.
+        historyRef.current.reset(JSON.stringify(documentOf(canvas)));
+        setCanUndo(false);
+
+        // added covers a stroke and a pasted label, modified covers a move, a
+        // resize and the end of typing, removed covers a deletion. Measured
+        // (fabric 7): one freehand stroke is object:added then path:created,
+        // so subscribing to path:created as well would record it twice.
+        const recordChange = () => {
+          if (suspendHistoryRef.current) return;
+          historyRef.current.record(JSON.stringify(documentOf(canvas)));
+          setCanUndo(historyRef.current.canUndo());
+        };
+
+        // The blank-label rule applies to appearing and disappearing only.
+        // An empty IText draws nothing, so a sheet with one looks exactly
+        // like a sheet without: the text tool's click adds one and walking
+        // away drops it again, and filing either would cost a press of
+        // 실행 취소 that changes nothing on screen.
+        const recordUnlessBlank = (event) => {
+          if (isBlankLabel(event?.target)) return;
+          recordChange();
+        };
+
+        canvas.on("object:added", recordUnlessBlank);
+        canvas.on("object:removed", recordUnlessBlank);
+        // modified is not filtered, and the difference matters. fabric fires
+        // it after text:editing:exited with the label already emptied
+        // (ITextBehavior.exitEditing), so a leader who selects "3부" and
+        // deletes its letters arrives here with an empty target — but the
+        // sheet really did change, and skipping it would leave the history
+        // claiming the label is still there. The next 실행 취소 would then
+        // restore the state the sheet is already in, look like a dead press,
+        // and drop "3부" from the stack for good.
+        canvas.on("object:modified", recordChange);
 
         setIsReady(true);
       })
@@ -217,6 +316,16 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     return () => observer.disconnect();
   }, [containerRef, isReady, fitZoomFor, applyScale]);
 
+  // Width has an effect of its own rather than a place in the mode effect
+  // below. That effect's cleanup closes a label being typed into — right when
+  // the tool changes, wrong when only the width does, which would commit a
+  // half-typed word the moment the leader reached for 굵게.
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    if (!canvas?.freeDrawingBrush || !isReady) return;
+    canvas.freeDrawingBrush.width = brushWidth;
+  }, [brushWidth, isReady]);
+
   // Mode and colour are applied to the live canvas rather than baked in at
   // creation: switching either must not rebuild the canvas, which would drop
   // everything drawn so far.
@@ -225,16 +334,53 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     if (!canvas || !isReady) return undefined;
 
     canvas.isDrawingMode = mode === "draw";
-    if (canvas.freeDrawingBrush) {
-      canvas.freeDrawingBrush.color = color;
-      canvas.freeDrawingBrush.width = BRUSH_WIDTH;
-    }
+    if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.color = color;
     if (mode !== "select") {
       // Handles left on screen while another tool is active read as "this is
       // still selected", and the next click would move that object instead of
       // drawing.
       canvas.discardActiveObject();
       canvas.requestRenderAll();
+    }
+
+    if (mode === "erase") {
+      // mouse:down, not down:before. fabric looks the target up once when the
+      // press starts and keeps that answer for the whole press
+      // (Canvas._cacheTransformEventData), so an object removed at down:before
+      // is still selected and set up for dragging a moment later — its handles
+      // stay drawn over empty sheet. By mouse:down it is already the active
+      // object, and removing the active object makes fabric drop the
+      // selection and end the drag itself (SelectableCanvas._onObjectRemoved).
+      const eraseTarget = (event) => {
+        if (event.target) canvas.remove(event.target);
+      };
+      const { hoverCursor, perPixelTargetFind, targetFindTolerance } = canvas;
+      // No rubber band: a box drawn on empty sheet reads as "these are about
+      // to go" and erases nothing.
+      canvas.selection = false;
+      canvas.hoverCursor = "pointer";
+      // By pixels, not by bounding box. fabric's default finds a target by its
+      // box, and a stroke's box is mostly empty paper: a press inside a circle
+      // took the circle rather than the mark it was aimed at, and a press on
+      // blank sheet near a long diagonal took the diagonal. The tolerance goes
+      // through its setter — it sizes the canvas fabric samples on.
+      canvas.perPixelTargetFind = true;
+      canvas.setTargetFindTolerance(ERASE_TOLERANCE);
+      canvas.on("mouse:down", eraseTarget);
+      return () => {
+        canvas.off("mouse:down", eraseTarget);
+        // Closing the editor disposes the canvas first (the effect above runs
+        // its cleanup before this one), and a disposed canvas has no sampling
+        // canvas left for setTargetFindTolerance to size — it throws. Nothing
+        // needs restoring on a canvas that is gone.
+        if (fabricRef.current !== canvas) return;
+        canvas.selection = true;
+        canvas.hoverCursor = hoverCursor;
+        // Back to boxes for 고르기, where a thin stroke is easier to pick up
+        // by its box than by its pixels.
+        canvas.perPixelTargetFind = perPixelTargetFind;
+        canvas.setTargetFindTolerance(targetFindTolerance);
+      };
     }
 
     if (mode !== "text") return undefined;
@@ -252,7 +398,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
       const text = new IText("", {
         left: point.x,
         top: point.y,
-        fontSize: TEXT_SIZE,
+        fontSize: textSizeRef.current,
         fill: color,
       });
       canvas.add(text);
@@ -276,6 +422,17 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     canvas.on("mouse:down", placeText);
     canvas.on("text:editing:exited", dropEmptyText);
     return () => {
+      // Leaving the text tool finishes whatever was being typed. fabric does
+      // not do this itself — focus moving to a toolbar button leaves the
+      // label open (measured) — and a label still open is a label that never
+      // fired object:modified, so history has no record of it: the next
+      // 실행 취소 would take back the stroke before it instead. Typing would
+      // also keep going into it after another tool was picked.
+      //
+      // Before the listeners come off, not after: an empty label has to reach
+      // dropEmptyText, which is removed on the next two lines.
+      const editing = canvas.getActiveObject();
+      if (editing?.isEditing) editing.exitEditing();
       canvas.off("mouse:down", placeText);
       canvas.off("text:editing:exited", dropEmptyText);
     };
@@ -293,15 +450,107 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
   const zoomOut = useCallback(() => zoomBy(1 / ZOOM_STEP), [zoomBy]);
   const zoomToFit = useCallback(() => applyScale(fabricRef.current, 1), [applyScale]);
 
-  const deleteSelected = useCallback(() => {
+  /** Sets the size the next label is placed at.
+   *
+   * A label already open keeps its size, but gets the keyboard back: pressing
+   * the button moved focus onto it, and fabric reads keys only from the
+   * label's hidden textarea — so the rest of the word would otherwise go
+   * nowhere while the caret still showed in the label.
+   */
+  const chooseTextSize = useCallback((size) => {
+    textSizeRef.current = size;
+    setTextSize(size);
+    const editing = fabricRef.current?.getActiveObject();
+    if (editing?.isEditing) editing.hiddenTextarea?.focus();
+  }, []);
+
+  /** Deletes what 고르기 has selected, as one step, and answers whether it did.
+   *
+   * Only on 고르기. On the text tool the active object is the label being
+   * typed, and a press meant to change tools would take it away. Not while a
+   * label is being edited either: its Backspace is a letter, not the label.
+   */
+  const deleteSelection = useCallback(() => {
     const canvas = fabricRef.current;
-    if (!canvas) return;
+    if (!canvas || mode !== "select") return false;
+    if (canvas.getActiveObject()?.isEditing) return false;
     // getActiveObjects, not getActiveObject: a rubber-band selection is one
     // group object, and removing the group would leave its members behind.
-    canvas.getActiveObjects().forEach((object) => canvas.remove(object));
+    const selected = canvas.getActiveObjects();
+    if (selected.length === 0) return false;
+    // Suspended because each removal fires its own object:removed; filed one
+    // by one, a single delete would take several presses of 실행 취소.
+    suspendHistoryRef.current = true;
+    try {
+      selected.forEach((object) => canvas.remove(object));
+    } finally {
+      suspendHistoryRef.current = false;
+    }
     canvas.discardActiveObject();
-    setHasSelection(false);
     canvas.requestRenderAll();
+    historyRef.current.record(JSON.stringify(documentOf(canvas)));
+    setCanUndo(historyRef.current.canUndo());
+    return true;
+  }, [mode]);
+
+  /** Puts the sheet back one step.
+   *
+   * Async because loadFromJSON is: fabric has to rebuild every object from
+   * the document, and images among them are fetched. The dialog does not wait
+   * on the promise — there is nothing for it to do afterwards.
+   */
+  const undo = useCallback(async () => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    // One at a time. The restore below is awaited, and a second press landing
+    // inside that await would have its own finally clear the flag while the
+    // first was still replaying — the very events the flag exists to ignore
+    // would then be filed as the leader's. Buttons do get pressed twice.
+    if (undoingRef.current) return;
+
+    // A label being typed into has to be closed first, not stepped over.
+    // fabric does not end editing when focus leaves the canvas — the hidden
+    // textarea's blur only stops the caret animation (measured: isEditing is
+    // still true afterwards) — so a leader who reaches for 실행 취소 mid-word
+    // would otherwise press an enabled button and watch nothing happen.
+    // Closing it fires object:modified, which files the label as a step, and
+    // the undo immediately below then takes that step back: the word they
+    // just typed disappears, which is what the press asked for.
+    const editing = canvas.getActiveObject();
+    if (editing?.isEditing) editing.exitEditing();
+
+    const snapshot = historyRef.current.undo();
+    if (snapshot === null) return;
+
+    undoingRef.current = true;
+    suspendHistoryRef.current = true;
+    try {
+      await canvas.loadFromJSON(JSON.parse(snapshot));
+      // The dialog can be closed while the document is being rebuilt, and the
+      // cleanup disposes the canvas. Touching it after that throws inside a
+      // promise nobody awaits.
+      if (fabricRef.current !== canvas) return;
+      // loadFromJSON drops the background along with everything else
+      // (measured), and the document deliberately does not carry one. Same
+      // order as the seed path above: load, then attach.
+      if (imageRef.current) canvas.backgroundImage = imageRef.current;
+      canvas.discardActiveObject();
+      canvas.requestRenderAll();
+      setCanUndo(historyRef.current.canUndo());
+    } catch {
+      // The step came off the stack before the replay began, so a replay that
+      // failed part way leaves the history describing a sheet that is not on
+      // screen — and every later undo would then restore the wrong state.
+      // Filed as whatever the canvas actually holds now rather than as what
+      // was being restored, because a half-applied document is neither.
+      if (fabricRef.current === canvas) {
+        historyRef.current.record(JSON.stringify(documentOf(canvas)));
+        setCanUndo(historyRef.current.canUndo());
+      }
+    } finally {
+      suspendHistoryRef.current = false;
+      undoingRef.current = false;
+    }
   }, []);
 
   /** The two shapes the edit is stored in: the flattened sheet, and the
@@ -310,10 +559,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
    * multiplier undoes the display zoom, so the PNG comes out at the image's
    * own resolution rather than whatever this screen happened to show.
    *
-   * backgroundImage is stripped from the document on purpose. fabric puts the
-   * image's `src` in there, and that src is a presigned URL — storing it would
-   * write a fifteen-minute credential into the row and reopen to a broken
-   * background once it expired. The server hands back a fresh one instead.
+   * The document has no background — see documentOf.
    */
   const exportSheet = useCallback(() => {
     const canvas = fabricRef.current;
@@ -327,8 +573,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     canvas.discardActiveObject();
     canvas.requestRenderAll();
     const dataUrl = canvas.toDataURL({ format: "png", multiplier: 1 / zoomRef.current });
-    const { backgroundImage: _background, ...doc } = canvas.toJSON();
-    return { dataUrl, doc };
+    return { dataUrl, doc: documentOf(canvas) };
   }, []);
 
   return {
@@ -348,8 +593,13 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     setMode,
     color,
     setColor,
-    hasSelection,
-    deleteSelected,
+    brushWidth,
+    setBrushWidth,
+    textSize,
+    chooseTextSize,
+    deleteSelection,
+    canUndo,
+    undo,
     exportSheet,
   };
 }

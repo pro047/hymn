@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "../../../components/ui/button";
 import { useFabricSheet } from "../hooks/use-fabric-sheet";
@@ -15,10 +15,29 @@ const COLORS = [
   { value: "#1c1917", swatch: "bg-stone-900", label: "검정" },
 ];
 
+// Three steps for now; a slider may replace them later. `value` is in the
+// sheet's own pixels, so a stroke keeps its weight at every zoom. `bar` draws
+// the weight on the button. Labels say 선 so they stay distinct once the text
+// tool gets sizes of its own.
+const WIDTHS = [
+  { value: 1.5, bar: "h-0.5", label: "선 얇게" },
+  { value: 3, bar: "h-1", label: "선 보통" },
+  { value: 6, bar: "h-2", label: "선 굵게" },
+];
+
+// Same three-step shape as the widths, in the sheet's own pixels. `glyph` is
+// the size the sample letter is shown at on the button.
+const SIZES = [
+  { value: 16, glyph: "text-xs", label: "글자 작게" },
+  { value: 24, glyph: "text-sm", label: "글자 보통" },
+  { value: 36, glyph: "text-base", label: "글자 크게" },
+];
+
 const MODES = [
   { value: "draw", label: "그리기" },
   { value: "text", label: "글자" },
   { value: "select", label: "고르기" },
+  { value: "erase", label: "지우기" },
 ];
 
 /** The editing surface for one song's sheet, on one week.
@@ -60,12 +79,62 @@ export default function ScoreEditorDialog({
     setMode,
     color,
     setColor,
-    hasSelection,
-    deleteSelected,
+    brushWidth,
+    setBrushWidth,
+    textSize,
+    chooseTextSize,
+    deleteSelection,
+    canUndo,
+    undo,
     exportSheet,
   } = useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDoc });
 
   const busy = isLoading || isSaving;
+
+  // The keyboard half of 실행 취소. The button is the other half and is the
+  // one that matters on the tablets the churches use, which have no Ctrl key.
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      // Shift+Z is redo in every editor that has one, so it must not undo
+      // here — better to do nothing than the opposite of what was asked.
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey) return;
+      if (event.key !== "z" && event.key !== "Z") return;
+      // Held back mid-save for the same reason the buttons are: the request
+      // carries a sheet that was exported before the key was pressed, so
+      // undoing now would store one picture and show another.
+      if (busy) return;
+      // Only once the canvas exists — and only when there is something to
+      // take back, so the browser's own undo is left alone on an untouched
+      // sheet.
+      if (!isReady || !canUndo) return;
+      event.preventDefault();
+      undo();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [undo, canUndo, isReady, busy]);
+
+  // The keyboard way to delete a selection, for the PC this is mostly used
+  // on. Same holds as 실행 취소: nothing mid-save, nothing before the canvas
+  // exists — and only when something was deleted is the key kept from the
+  // browser.
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (busy || !isReady) return;
+      if (deleteSelection()) event.preventDefault();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [deleteSelection, isReady, busy]);
+
+  // 지우기 with a selection on 고르기 deletes it and stays on 고르기; with
+  // none it is the eraser tool. One button rather than two, so the toolbar
+  // stays on one line.
+  const handleModeClick = (value) => {
+    if (value === "erase" && deleteSelection()) return;
+    setMode(value);
+  };
 
   const handleSave = async () => {
     setExportError("");
@@ -123,13 +192,13 @@ export default function ScoreEditorDialog({
               variant={mode === item.value ? "default" : "outline"}
               aria-pressed={mode === item.value}
               disabled={!isReady || busy}
-              onClick={() => setMode(item.value)}
+              onClick={() => handleModeClick(item.value)}
             >
               {item.label}
             </Button>
           ))}
 
-          <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
 
           {COLORS.map((item) => (
             <button
@@ -145,20 +214,56 @@ export default function ScoreEditorDialog({
             />
           ))}
 
-          <span aria-hidden="true" className="mx-1 h-5 w-px bg-stone-200" />
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
 
-          {/* Disabled rather than hidden: it is the only way to take a stroke
-              back, and a control that appears and vanishes as the selection
-              changes is harder to find than one that is always in the same
-              place. */}
+          {WIDTHS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              aria-label={item.label}
+              aria-pressed={brushWidth === item.value}
+              disabled={!isReady || busy}
+              onClick={() => setBrushWidth(item.value)}
+              className={`flex h-7 w-8 items-center justify-center rounded-md border-2 transition-colors disabled:opacity-40 ${
+                brushWidth === item.value ? "border-stone-900" : "border-stone-200"
+              }`}
+            >
+              <span aria-hidden="true" className={`w-4 rounded-full bg-stone-900 ${item.bar}`} />
+            </button>
+          ))}
+
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
+
+          {SIZES.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              aria-label={item.label}
+              aria-pressed={textSize === item.value}
+              disabled={!isReady || busy}
+              onClick={() => chooseTextSize(item.value)}
+              className={`flex h-7 w-8 items-center justify-center rounded-md border-2 font-semibold leading-none text-stone-900 transition-colors disabled:opacity-40 ${
+                item.glyph
+              } ${textSize === item.value ? "border-stone-900" : "border-stone-200"}`}
+            >
+              <span aria-hidden="true">가</span>
+            </button>
+          ))}
+
+          <span aria-hidden="true" className="h-5 w-px bg-stone-200" />
+
+          {/* Named 실행 취소, not 되돌리기: the button at the bottom of this
+              same dialog is 원본으로 되돌리기, which throws the whole week's
+              edit away on the server. Two controls a few centimetres apart
+              sharing a word would be read as the same thing at two strengths. */}
           <Button
             type="button"
             size="sm"
             variant="outline"
-            disabled={!hasSelection || busy}
-            onClick={deleteSelected}
+            disabled={!isReady || !canUndo || busy}
+            onClick={undo}
           >
-            선택 지우기
+            실행 취소
           </Button>
 
           {/* Zoom is on the right, away from the tools: it changes what can be
@@ -187,7 +292,7 @@ export default function ScoreEditorDialog({
             {/* Against the file's own size, so 100% means "as sharp as this
                 scan gets". Most scores are under 600px wide, so the fit on a
                 full-height box is well under that. */}
-            <span className="w-12 text-right text-xs tabular-nums text-stone-500">
+            <span className="w-10 text-right text-xs tabular-nums text-stone-500">
               {isReady ? `${zoomPercent}%` : ""}
             </span>
             <Button
@@ -239,7 +344,7 @@ export default function ScoreEditorDialog({
                 is the one control on this screen that tests cannot press. */}
             {hasEdit && confirmingClear ? (
               <span className="flex items-center gap-2 text-sm text-stone-700">
-                이 주차의 편집을 모두 지웁니다.
+                이 곡에 그린 편집을 모두 지웁니다.
                 <Button
                   type="button"
                   variant="outline"
@@ -247,7 +352,9 @@ export default function ScoreEditorDialog({
                   disabled={busy}
                   onClick={handleClear}
                 >
-                  지우기
+                  {/* Not 지우기: that is the eraser tool's name, a few
+                      centimetres up, and this one cannot be undone. */}
+                  모두 지우기
                 </Button>
                 <Button
                   type="button"
