@@ -1026,6 +1026,178 @@ describe("지우기", () => {
     });
 
     expect(label.isEditing).toBe(false);
+    // Switched tools, not deleted: the label being typed is the active object,
+    // and 지우기 only deletes a selection made with 고르기.
+    expect(sheet().getObjects()).toContain(label);
+    expect(eraseButton().getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
+describe("여러 개 지우기", () => {
+  const eraseButton = () => screen.getByRole("button", { name: "지우기", exact: true });
+  const selectButton = () => screen.getByRole("button", { name: "고르기" });
+  const undoButton = () => screen.getByRole("button", { name: "실행 취소" });
+
+  /** Three strokes, all selected with 고르기 — a rubber band, as fabric makes one. */
+  async function selectThreeStrokes() {
+    const { ActiveSelection } = await import("fabric");
+    await drawStroke(10);
+    await drawStroke(40);
+    await drawStroke(70);
+    fireEvent.click(selectButton());
+    await act(async () => {
+      const canvas = sheet();
+      canvas.setActiveObject(new ActiveSelection(canvas.getObjects(), { canvas }));
+    });
+  }
+
+  const keyDown = (key) => {
+    const event = new KeyboardEvent("keydown", { key, cancelable: true, bubbles: true });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+    return event;
+  };
+
+  it("고르기로 여러 개를 고르고 지우기를 누르면 한꺼번에 지워야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await selectThreeStrokes();
+
+    await act(async () => {
+      fireEvent.click(eraseButton());
+    });
+
+    expect(sheet().getObjects()).toHaveLength(0);
+    // No selection left behind: its handles would stay drawn over empty sheet.
+    expect(sheet().getActiveObject()).toBeUndefined();
+    // Stays on 고르기: the press deleted, it did not change tools.
+    expect(selectButton().getAttribute("aria-pressed")).toBe("true");
+    expect(eraseButton().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("한꺼번에 지운 것은 실행 취소 한 번에 돌아와야 한다", async () => {
+    // Removed one by one, one event each; filed one by one, a single press of
+    // 지우기 would take three presses of 실행 취소 to come back.
+    renderConti();
+    await openEditor();
+    await selectThreeStrokes();
+
+    await act(async () => {
+      fireEvent.click(eraseButton());
+    });
+    await act(async () => {
+      fireEvent.click(undoButton());
+    });
+
+    expect(sheet().getObjects()).toHaveLength(3);
+  });
+
+  it("고르기에서 고른 것이 없으면 지우기는 도구로 바뀌어야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke();
+    fireEvent.click(selectButton());
+
+    await act(async () => {
+      fireEvent.click(eraseButton());
+    });
+
+    expect(sheet().getObjects()).toHaveLength(1);
+    expect(eraseButton().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("고른 것을 Delete 키로 지워야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await selectThreeStrokes();
+
+    const event = keyDown("Delete");
+
+    expect(sheet().getObjects()).toHaveLength(0);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("고른 것을 Backspace 키로도 지워야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await selectThreeStrokes();
+
+    keyDown("Backspace");
+
+    expect(sheet().getObjects()).toHaveLength(0);
+  });
+
+  it("글자를 고쳐 쓰는 중에는 Delete 키가 글자를 지우지 않아야 한다", async () => {
+    // The key belongs to the label then: it deletes a letter, not the label.
+    const { IText } = await import("fabric");
+    renderConti();
+    await openEditor();
+    fireEvent.click(selectButton());
+    const label = new IText("3부", { left: 10, top: 10 });
+    await act(async () => {
+      sheet().add(label);
+      sheet().setActiveObject(label);
+      label.enterEditing();
+    });
+
+    const event = keyDown("Backspace");
+
+    expect(sheet().getObjects()).toContain(label);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("고른 것이 없으면 Delete 키를 가로채지 않아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await drawStroke();
+    fireEvent.click(selectButton());
+
+    const event = keyDown("Delete");
+
+    expect(sheet().getObjects()).toHaveLength(1);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("고르기가 아닌 도구에서는 Delete 키로 지우지 않아야 한다", async () => {
+    renderConti();
+    await openEditor();
+    await selectThreeStrokes();
+    // Selecting again behind the tool's back: the draw tool discards the
+    // selection when chosen, so this is the only way to have both at once.
+    const { ActiveSelection } = await import("fabric");
+    fireEvent.click(screen.getByRole("button", { name: "그리기" }));
+    await act(async () => {
+      const canvas = sheet();
+      canvas.setActiveObject(new ActiveSelection(canvas.getObjects(), { canvas }));
+    });
+
+    keyDown("Delete");
+
+    expect(sheet().getObjects()).toHaveLength(3);
+  });
+
+  it("저장하는 중에는 Delete 키로 지우지 않아야 한다", async () => {
+    // Same reason as Ctrl+Z: the request carries a sheet exported before the
+    // key, and deleting now would store one picture and show another.
+    const { ActiveSelection } = await import("fabric");
+    mockApi({ save: { pending: true } });
+    renderConti();
+    await openEditor();
+    await drawStroke();
+    fireEvent.click(selectButton());
+
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "저장하는 중…" })).toBeTruthy());
+    // The export discarded the selection; select again so the key has
+    // something it could delete.
+    await act(async () => {
+      const canvas = sheet();
+      canvas.setActiveObject(new ActiveSelection(canvas.getObjects(), { canvas }));
+    });
+    keyDown("Delete");
+
+    expect(sheet().getObjects()).toHaveLength(1);
   });
 });
 

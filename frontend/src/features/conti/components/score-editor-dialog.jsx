@@ -83,6 +83,7 @@ export default function ScoreEditorDialog({
     setBrushWidth,
     textSize,
     chooseTextSize,
+    deleteSelection,
     canUndo,
     undo,
     exportSheet,
@@ -112,6 +113,28 @@ export default function ScoreEditorDialog({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [undo, canUndo, isReady, busy]);
+
+  // The keyboard way to delete a selection, for the PC this is mostly used
+  // on. Same holds as 실행 취소: nothing mid-save, nothing before the canvas
+  // exists — and only when something was deleted is the key kept from the
+  // browser.
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (busy || !isReady) return;
+      if (deleteSelection()) event.preventDefault();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [deleteSelection, isReady, busy]);
+
+  // 지우기 with a selection on 고르기 deletes it and stays on 고르기; with
+  // none it is the eraser tool. One button rather than two, so the toolbar
+  // stays on one line.
+  const handleModeClick = (value) => {
+    if (value === "erase" && deleteSelection()) return;
+    setMode(value);
+  };
 
   const handleSave = async () => {
     setExportError("");
@@ -169,7 +192,7 @@ export default function ScoreEditorDialog({
               variant={mode === item.value ? "default" : "outline"}
               aria-pressed={mode === item.value}
               disabled={!isReady || busy}
-              onClick={() => setMode(item.value)}
+              onClick={() => handleModeClick(item.value)}
             >
               {item.label}
             </Button>

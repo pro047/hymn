@@ -464,6 +464,35 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     if (editing?.isEditing) editing.hiddenTextarea?.focus();
   }, []);
 
+  /** Deletes what 고르기 has selected, as one step, and answers whether it did.
+   *
+   * Only on 고르기. On the text tool the active object is the label being
+   * typed, and a press meant to change tools would take it away. Not while a
+   * label is being edited either: its Backspace is a letter, not the label.
+   */
+  const deleteSelection = useCallback(() => {
+    const canvas = fabricRef.current;
+    if (!canvas || mode !== "select") return false;
+    if (canvas.getActiveObject()?.isEditing) return false;
+    // getActiveObjects, not getActiveObject: a rubber-band selection is one
+    // group object, and removing the group would leave its members behind.
+    const selected = canvas.getActiveObjects();
+    if (selected.length === 0) return false;
+    // Suspended because each removal fires its own object:removed; filed one
+    // by one, a single delete would take several presses of 실행 취소.
+    suspendHistoryRef.current = true;
+    try {
+      selected.forEach((object) => canvas.remove(object));
+    } finally {
+      suspendHistoryRef.current = false;
+    }
+    canvas.discardActiveObject();
+    canvas.requestRenderAll();
+    historyRef.current.record(JSON.stringify(documentOf(canvas)));
+    setCanUndo(historyRef.current.canUndo());
+    return true;
+  }, [mode]);
+
   /** Puts the sheet back one step.
    *
    * Async because loadFromJSON is: fabric has to rebuild every object from
@@ -568,6 +597,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
     setBrushWidth,
     textSize,
     chooseTextSize,
+    deleteSelection,
     canUndo,
     undo,
     exportSheet,
