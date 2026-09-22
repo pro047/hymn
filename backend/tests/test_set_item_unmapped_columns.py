@@ -5,9 +5,10 @@ Deploy runs `alembic upgrade head` and only then swaps containers
 deployed image names it -- otherwise the still-running old image SELECTs a
 column that is gone, and a rollback to that image 500s for good.
 
-This release removes the mappings; a later one drops the columns. Nothing else
-in the suite fails if the mappings come back, so the drop migration would then
-break in production with every test green. These tests are that alarm.
+The mappings came off first; migration a9c4e2f7b1d6 dropped the columns a
+release later. Before the drop nothing else in the suite noticed a restored
+mapping. Now that the test database is at head, a restored one breaks every
+test that reads set_items -- and these two are the ones that say why.
 """
 
 from sqlalchemy import select
