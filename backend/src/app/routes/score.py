@@ -177,7 +177,10 @@ def list_scores(session: Session = Depends(get_session)):
             title=s.song.title,
             file_url=s.song.file_url,
             file_uri=s.song.file_uri,
-            download_url=presign_score_download(s.song.file_uri),
+            # This week's edit first, as conti reads it. The app draws this URL
+            # and nothing else, so it is the only place an edit can reach it.
+            # file_uri stays the song's: the web replaces the file through it.
+            download_url=presign_score_download(s.edited_file_uri or s.song.file_uri),
             created_at=s.created_at,
             song_id=s.song_id,
         )
