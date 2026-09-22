@@ -274,9 +274,6 @@ class SetItem(Base):
     week_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     order_no: Mapped[int] = mapped_column(nullable=False)
     score_id: Mapped[str] = mapped_column(ForeignKey("scores.id", ondelete="CASCADE"), nullable=False)
-    # `key` and `memo` columns still exist in the database but are no longer
-    # mapped: this release stops every deployed image from naming them, which
-    # is what lets a later release drop them without a rollback breaking.
     # Where the conti PDF cuts a page. order_no stays the only source of
     # sequence; this is a mark on top of it, so the two cannot disagree.
     starts_new_page: Mapped[bool] = mapped_column(
