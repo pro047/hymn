@@ -504,3 +504,66 @@ def test_moving_the_usage_to_another_week_should_drop_the_document_too(client, d
     score = db_session.get(Score, score_id)
     assert score.edited_file_uri is None
     assert score.edit_doc is None
+
+
+# --- what the app sees --------------------------------------------------
+#
+# The Flutter app makes one request, GET /scores, and draws whatever
+# download_url holds (hymn_app/lib/screens/score_pager_screen.dart). It never
+# learns that an edit exists, so the server has to point that URL at the right
+# sheet. Nothing but the value may move: the app parses this answer by key.
+
+
+def _listed(client, score_id: str) -> dict:
+    response = client.get("/scores")
+    assert response.status_code == 200, response.text
+    return next(item for item in response.json() if item["id"] == score_id)
+
+
+def test_saving_an_edit_should_change_what_the_score_list_hands_the_app(client):
+    # Arrange
+    leader = _found_church(client)
+    score_id = _create_score(client, leader)
+    before = _listed(client, score_id)
+
+    # Act
+    key = _save_edit(client, leader, score_id)
+
+    # Assert
+    after = _listed(client, score_id)
+    assert key in after["download_url"]
+    # The song's own key stays where the web reads it for replacing the file.
+    assert after["file_uri"] == before["file_uri"]
+    assert key not in after["file_uri"]
+    assert set(after.keys()) == set(before.keys())
+
+
+def test_an_unedited_score_should_be_listed_with_the_songs_own_file(client):
+    # Arrange
+    leader = _found_church(client)
+    edited_id = _create_score(client, leader)
+    unedited_id = _create_score(client, leader, {**NEW_SCORE, "title": "Be Thou My Vision"})
+
+    # Act — an edit on the neighbouring row must not leak onto this one
+    edited_key = _save_edit(client, leader, edited_id)
+
+    # Assert
+    unedited = _listed(client, unedited_id)
+    assert unedited["file_uri"] in unedited["download_url"]
+    assert edited_key not in unedited["download_url"]
+
+
+def test_clearing_an_edit_should_put_the_songs_file_back_in_the_score_list(client):
+    # Arrange
+    leader = _found_church(client)
+    score_id = _create_score(client, leader)
+    key = _save_edit(client, leader, score_id)
+
+    # Act
+    response = client.delete(f"/scores/{score_id}/edit", headers=leader)
+
+    # Assert
+    assert response.status_code == 200, response.text
+    listed = _listed(client, score_id)
+    assert listed["file_uri"] in listed["download_url"]
+    assert key not in listed["download_url"]
