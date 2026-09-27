@@ -7,6 +7,7 @@ import { Input } from "../../../components/ui/input";
 import { Label } from "../../../components/ui/label";
 import { startOfToday } from "../../../lib/dates";
 import { SAVED_SCORES_ENABLED } from "../feature-flags";
+import SavedScorePicker from "./saved-score-picker";
 
 function getInitialMode(initialMode) {
   if (initialMode) return initialMode;
@@ -171,20 +172,12 @@ export default function ScoreUploadDialog({
           {mode === "library" ? (
             <>
               <div className="space-y-2">
-                <Label htmlFor="saved-score">보관함 악보</Label>
-                <select
-                  id="saved-score"
-                  className="flex h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-900 outline-none ring-offset-white focus-visible:border-stone-400"
-                  value={selectedSavedScoreId}
-                  onChange={(event) => setSelectedSavedScoreId(event.target.value)}
-                >
-                  <option value="">악보를 선택하세요</option>
-                  {savedScores.map((score) => (
-                    <option key={score.score_id} value={score.score_id}>
-                      {score.title}
-                    </option>
-                  ))}
-                </select>
+                <Label>보관함 악보</Label>
+                <SavedScorePicker
+                  scores={savedScores}
+                  selectedId={selectedSavedScoreId}
+                  onSelect={setSelectedSavedScoreId}
+                />
               </div>
 
               {selectedSavedScore ? (
