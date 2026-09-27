@@ -2,10 +2,7 @@ import { useMemo, useState } from "react";
 import { Check } from "lucide-react";
 
 import { Input } from "../../../components/ui/input";
-
-// Spaces and case are how the same title drifts between uploads ("은혜 아니면"
-// vs "은혜아니면"), so the search ignores both.
-const searchKey = (text) => text.replace(/\s+/g, "").toLowerCase();
+import { matchesTitle } from "../../../lib/korean-search";
 
 // Picking songs for a Sunday favors the ones sung most, so the most used lead
 // and the more recently used break a tie. The library tab keeps its own
@@ -19,8 +16,7 @@ export default function SavedScorePicker({ scores, selectedId, onSelect }) {
   const [query, setQuery] = useState("");
 
   const visible = useMemo(() => {
-    const key = searchKey(query);
-    return [...scores].filter((score) => searchKey(score.title).includes(key)).sort(byMostUsed);
+    return [...scores].filter((score) => matchesTitle(score.title, query)).sort(byMostUsed);
   }, [scores, query]);
 
   if (scores.length === 0) {
@@ -37,7 +33,7 @@ export default function SavedScorePicker({ scores, selectedId, onSelect }) {
         type="search"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="제목으로 찾기"
+        placeholder="제목 또는 초성으로 찾기 (예: ㅈㅁㅂ)"
         aria-label="보관함 악보 검색"
       />
       {visible.length === 0 ? (

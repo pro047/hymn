@@ -53,6 +53,12 @@ describe("SavedScorePicker", () => {
     expect(tileTitles()).toEqual(["은혜 아니면"]);
   });
 
+  it("should find a title by its initial consonants", () => {
+    renderPicker();
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "ㅈㅁㅂ" } });
+    expect(tileTitles()).toEqual(["주만 바라볼찌라"]);
+  });
+
   it("should hand the chosen score to onSelect", () => {
     const { onSelect } = renderPicker();
     fireEvent.click(screen.getByRole("button", { name: /주만 바라볼찌라/ }));
