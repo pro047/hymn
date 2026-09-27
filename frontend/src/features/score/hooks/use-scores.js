@@ -57,8 +57,9 @@ export function useScores() {
     fetchLibrary();
   }, [fetchLibrary, fetchScores]);
 
-  const createScoreWithUpload = async ({ title, weekOf, file, saveToLibrary = false }) => {
-    // Both branches write now, so the check no longer depends on saveToLibrary.
+  // Uploading files a song in the library and nothing else; a Sunday gets it
+  // only through placeSongOnWeek.
+  const uploadSong = async ({ title, file }) => {
     if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return { ok: false };
@@ -66,37 +67,16 @@ export function useScores() {
 
     setIsUploading(true);
     try {
-      // Decide the whole request shape once, instead of branching per field.
-      const { request, url, payload } = saveToLibrary
-        ? {
-            request: apiFetch,
-            url: API_PATHS.songs,
-            payload: { title, filename: file.name, content_type: file.type },
-          }
-        : {
-            // apiFetch, not fetch: /scores writes require a token now, and the
-            // church comes from it rather than from a field in this payload.
-            request: apiFetch,
-            url: API_PATHS.scores,
-            payload: {
-              title,
-              week_of: weekOf,
-              storage_type: "s3",
-              filename: file.name,
-              content_type: file.type,
-            },
-          };
-      const response = await request(url, {
+      const response = await apiFetch(API_PATHS.songs, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ title, filename: file.name, content_type: file.type }),
       });
 
       if (!response.ok) {
-        // D5-a's same-week 409 and the library's same-title 409 both carry a
-        // Korean detail the user needs to see; the generic message hid it.
+        // The same-title 409 carries a Korean detail the user needs to see.
         // Read through api-error because a 422's `detail` is an array of items,
         // not a string: passing it to Error() renders "[object Object]" on
         // screen. Unlike updateScore, this path has no client-side length guard,
@@ -108,16 +88,6 @@ export function useScores() {
       }
 
       const data = await response.json();
-
-      // D5: a reused song's create response has upload_url=null — there is no
-      // file to PUT, and fetch(null, ...) would throw if this ran anyway.
-      // Scoped to saveToLibrary === false because the library answers a
-      // same-titled upload with 409, which is already caught above.
-      if (!saveToLibrary && data.reused_song) {
-        await fetchScores();
-        return { ok: true, scoreId: data.score_id, reused: true };
-      }
-
       const uploadResponse = await fetch(data.upload_url, {
         method: "PUT",
         headers: { "Content-Type": file.type || "application/octet-stream" },
@@ -128,12 +98,8 @@ export function useScores() {
         throw new Error("S3 업로드에 실패했습니다.");
       }
 
-      // Either way the library changes: a new song, or a known one used again.
-      await Promise.all([fetchScores(), fetchLibrary()]);
-      // A library upload files no Sunday, so it answers with the song instead.
-      return saveToLibrary
-        ? { ok: true, songId: data.song_id }
-        : { ok: true, scoreId: data.score_id };
+      await fetchLibrary();
+      return { ok: true, songId: data.song_id };
     } catch (err) {
       setError(err.message);
       return { ok: false, message: err.message };
@@ -191,7 +157,7 @@ export function useScores() {
       if (!response.ok) {
         // D8's title-collision 409 carries a Korean detail (rename_song's
         // message); the generic message here used to swallow it. Same array-vs
-        // -string reason as createScoreWithUpload — the guard above only covers
+        // -string reason as uploadSong — the guard above only covers
         // `title`, so a 422 can still arrive from another field.
         const apiError = await readApiError(response, "악보 수정에 실패했습니다.", []);
         throw new Error(alertMessageOf(apiError));
@@ -267,7 +233,7 @@ export function useScores() {
     isUploading,
     isUpdating,
     isPlacingSong,
-    createScoreWithUpload,
+    uploadSong,
     updateScore,
     deleteScore,
     placeSongOnWeek,

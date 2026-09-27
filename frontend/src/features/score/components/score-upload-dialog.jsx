@@ -35,11 +35,13 @@ export default function ScoreUploadDialog({
   initialFile,
   initialSavedScore,
   lockMode = false,
-  saveToLibrary = false,
 }) {
   const [mode, setMode] = useState(getInitialMode(initialMode));
   const [title, setTitle] = useState(() => getInitialTitle(initialFile));
   const [weekOf, setWeekOf] = useState(null);
+  // Uploading files the song in the library only; this places it on a Sunday
+  // in the same step, through the same placement the library uses.
+  const [placeNow, setPlaceNow] = useState(false);
   const [file, setFile] = useState(initialFile ?? null);
   const [selectedSongId, setSelectedSongId] = useState(initialSavedScore?.song_id ?? "");
   const [submitError, setSubmitError] = useState("");
@@ -64,8 +66,8 @@ export default function ScoreUploadDialog({
   if (!open) return null;
 
   const selectedSavedScore = savedScores.find((score) => score.song_id === selectedSongId) ?? null;
-  const isSubmitting = mode === "library" ? applyLoading : uploadLoading;
-  const isLibraryUpload = mode === "pc" && saveToLibrary;
+  const isSubmitting = uploadLoading || applyLoading;
+  const needsWeek = mode === "library" || placeNow;
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -78,44 +80,47 @@ export default function ScoreUploadDialog({
         weekOf: weekLabel,
       });
     } else {
-      if (!title || !file || (!isLibraryUpload && !weekOf)) return;
-      result = await onUploadSubmit({
-        title,
-        weekOf: weekLabel,
-        file,
-        saveToLibrary,
-      });
+      if (!title || !file || (placeNow && !weekLabel)) return;
+      result = await onUploadSubmit({ title, file });
     }
 
     if (!result?.ok) {
-      // D5-a's same-week 409 and D10's saved-score reupload 409 carry a
-      // server-authored detail; it stays on screen and the dialog stays open
-      // so the caller can fix the week and retry, rather than losing the form.
+      // The same-week and same-title 409s carry a server-authored detail; it
+      // stays on screen and the dialog stays open so the caller can fix the
+      // week or title and retry, rather than losing the form.
       setSubmitError(result?.message || "");
       return;
+    }
+
+    let placeError = "";
+    if (mode === "pc" && placeNow) {
+      const placed = await onApplySavedScore({ songId: result.songId, weekOf: weekLabel });
+      placeError = placed?.ok ? "" : placed?.message || "주차에 배치하지 못했습니다.";
     }
 
     onClose();
     setTitle("");
     setWeekOf(null);
+    setPlaceNow(false);
     setFile(null);
     setSelectedSongId("");
     setSubmitError("");
 
-    if (result.reused) {
-      // D5: 200 with nothing uploaded — the file this church has used for
-      // months is untouched. This text is the frontend's own, since a success
-      // response carries no server detail to show instead.
-      window.alert("기존 악보를 사용합니다. 악보를 바꾸려면 [수정]을 사용해 주세요.");
+    // The song is in the library by now, so the dialog closes even if placing
+    // it failed: retrying the upload would only hit the same-title 409.
+    if (placeError) {
+      window.alert(
+        `보관함에는 올렸지만 주차에 배치하지 못했습니다: ${placeError} 보관함에서 골라 다시 배치해 주세요.`
+      );
       return;
     }
 
     window.alert(
       mode === "library"
         ? "선택한 악보를 반영했습니다."
-        : saveToLibrary
-          ? "보관함에 업로드되었습니다."
-          : "업로드가 완료되었습니다."
+        : placeNow
+          ? "보관함에 올리고 주차에 배치했습니다."
+          : "보관함에 업로드되었습니다."
     );
   };
 
@@ -129,10 +134,8 @@ export default function ScoreUploadDialog({
             </p>
             <h2 className="mt-1 text-xl font-semibold text-stone-950">
               {mode === "library"
-                ? "보관함 악보를 다시 반영하세요"
-                : saveToLibrary
-                  ? "보관함에 새 악보를 추가하세요"
-                  : "새 악보를 등록하세요"}
+                ? "보관함 악보를 주차에 반영하세요"
+                : "보관함에 새 악보를 추가하세요"}
             </h2>
           </div>
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
@@ -199,26 +202,6 @@ export default function ScoreUploadDialog({
                 />
               </div>
 
-              {!isLibraryUpload ? (
-                <div className="space-y-2">
-                  <Label>주차 선택</Label>
-                  {/* Past dates are always a mis-click here: in 140 production
-                      uploads every score was filed 1-3 days before its Sunday
-                      and none was ever backdated.
-
-                      This week stays reachable — the server files a score under
-                      the Sunday opening the week of whatever day is picked, so
-                      choosing today lands in the current week. The server's own
-                      floor is that Sunday rather than today, because sending
-                      week_of=<this Sunday> straight to the API is legitimate. */}
-                  <DatePicker
-                    value={weekOf}
-                    onChange={setWeekOf}
-                    disabled={{ before: startOfToday() }}
-                  />
-                </div>
-              ) : null}
-
               <div className="space-y-2">
                 <Label htmlFor="score-file">이미지 파일</Label>
                 <Input
@@ -231,7 +214,7 @@ export default function ScoreUploadDialog({
                 {file ? <p className="text-xs text-stone-500">선택한 파일: {file.name}</p> : null}
               </div>
 
-              {isLibraryUpload && previewUrl ? (
+              {previewUrl ? (
                 <div className="w-fit overflow-hidden rounded-xl border border-stone-200 bg-stone-50">
                   <img
                     src={previewUrl}
@@ -243,6 +226,34 @@ export default function ScoreUploadDialog({
                       {title || file?.name}
                     </p>
                   </div>
+                </div>
+              ) : null}
+
+              <label className="flex items-center gap-2 text-sm text-stone-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-stone-300"
+                  checked={placeNow}
+                  onChange={(event) => setPlaceNow(event.target.checked)}
+                />
+                업로드 후 바로 주차에 배치
+              </label>
+
+              {placeNow ? (
+                <div className="space-y-2">
+                  <Label>주차 선택</Label>
+                  {/* Past dates are always a mis-click here: in 140 production
+                      uploads every score was filed 1-3 days before its Sunday
+                      and none was ever backdated.
+
+                      This week stays reachable — the server files a score under
+                      the Sunday opening the week of whatever day is picked, so
+                      choosing today lands in the current week. */}
+                  <DatePicker
+                    value={weekOf}
+                    onChange={setWeekOf}
+                    disabled={{ before: startOfToday() }}
+                  />
                 </div>
               ) : null}
             </>
@@ -262,9 +273,8 @@ export default function ScoreUploadDialog({
               type="submit"
               disabled={
                 isSubmitting ||
-                (mode === "library"
-                  ? !selectedSongId || !weekLabel
-                  : !title || !file || (!isLibraryUpload && !weekLabel))
+                (mode === "library" ? !selectedSongId : !title || !file) ||
+                (needsWeek && !weekLabel)
               }
             >
               {mode === "library"

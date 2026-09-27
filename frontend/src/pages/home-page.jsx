@@ -28,7 +28,6 @@ export default function HomePage({ headerActions = null }) {
     file: null,
     savedScore: null,
     lockMode: false,
-    saveToLibrary: false,
     sessionKey: 0,
   });
   const [editingScore, setEditingScore] = useState(null);
@@ -41,7 +40,7 @@ export default function HomePage({ headerActions = null }) {
     isUploading,
     isUpdating,
     isPlacingSong,
-    createScoreWithUpload,
+    uploadSong,
     updateScore,
     deleteScore,
     placeSongOnWeek,
@@ -58,7 +57,6 @@ export default function HomePage({ headerActions = null }) {
     file = null,
     savedScore = null,
     lockMode = false,
-    saveToLibrary = false,
   } = {}) => {
     setUploadDialogState({
       open: true,
@@ -66,7 +64,6 @@ export default function HomePage({ headerActions = null }) {
       file,
       savedScore,
       lockMode,
-      saveToLibrary,
       sessionKey: Date.now(),
     });
   };
@@ -78,7 +75,6 @@ export default function HomePage({ headerActions = null }) {
       file: null,
       savedScore: null,
       lockMode: false,
-      saveToLibrary: false,
       sessionKey: 0,
     });
   };
@@ -160,7 +156,6 @@ export default function HomePage({ headerActions = null }) {
                   mode: "pc",
                   file,
                   lockMode: true,
-                  saveToLibrary: true,
                 })
               }
             />
@@ -185,7 +180,7 @@ export default function HomePage({ headerActions = null }) {
         key={uploadDialogState.sessionKey}
         open={uploadDialogState.open}
         onClose={closeUploadDialog}
-        onUploadSubmit={createScoreWithUpload}
+        onUploadSubmit={uploadSong}
         onApplySavedScore={placeSongOnWeek}
         savedScores={librarySongs}
         uploadLoading={isUploading}
@@ -194,7 +189,6 @@ export default function HomePage({ headerActions = null }) {
         initialFile={uploadDialogState.file}
         initialSavedScore={uploadDialogState.savedScore}
         lockMode={uploadDialogState.lockMode}
-        saveToLibrary={uploadDialogState.saveToLibrary}
       />
     </div>
   );

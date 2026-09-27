@@ -79,57 +79,65 @@ describe("교회 이름 입력칸", () => {
   });
 });
 
+const placeNowBox = () => screen.getByLabelText("업로드 후 바로 주차에 배치");
+
 describe("제출 게이트", () => {
-  it("제목과 파일만 있고 주차가 없으면 제출 버튼이 비활성이어야 한다", () => {
+  it("제목과 파일만 있으면 주차 없이도 제출할 수 있어야 한다", () => {
     renderDialog();
 
     fillTitleAndFile();
+
+    // Uploading files the song in the library; no Sunday is involved.
+    expect(submitButton().disabled).toBe(false);
+  });
+
+  it("바로 배치를 켜면 주차를 고르기 전까지 비활성이어야 한다", () => {
+    renderDialog();
+
+    fillTitleAndFile();
+    fireEvent.click(placeNowBox());
 
     expect(submitButton().disabled).toBe(true);
   });
 
-  it("제목·파일·주차가 모두 있으면 제출 버튼이 활성이어야 한다", () => {
+  it("바로 배치를 켜고 주차를 고르면 활성이어야 한다", () => {
     renderDialog();
 
     fillTitleAndFile();
+    fireEvent.click(placeNowBox());
     fireEvent.click(screen.getByRole("button", { name: "주차 고르기" }));
 
-    // The gate used to also require a church name. Dropping that field must
-    // not have left the condition asking for something nothing can supply.
     expect(submitButton().disabled).toBe(false);
   });
 
-  it("보관함 업로드면 주차 없이도 제출할 수 있어야 한다", () => {
-    renderDialog({ saveToLibrary: true });
+  it("바로 배치를 켜지 않으면 주차 선택기를 보여주지 않아야 한다", () => {
+    renderDialog();
 
-    fillTitleAndFile();
-
-    expect(submitButton().disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "주차 고르기" })).toBeNull();
   });
 });
 
 describe("제출 payload", () => {
-  it("교회명 없이 제목·주차·파일만 넘겨야 한다", async () => {
+  it("업로드에는 제목과 파일만 넘겨야 한다", async () => {
     const { onUploadSubmit } = renderDialog();
 
     fillTitleAndFile("주 은혜임을");
-    fireEvent.click(screen.getByRole("button", { name: "주차 고르기" }));
     fireEvent.click(submitButton());
 
     await vi.waitFor(() => expect(onUploadSubmit).toHaveBeenCalledTimes(1));
     const payload = onUploadSubmit.mock.calls[0][0];
     expect(payload.title).toBe("주 은혜임을");
-    expect(payload.weekOf).toBe("2026-08-02");
     expect(payload.file.name).toBe("score.pdf");
-    // Sending it would be harmless but misleading: the server drops unknown
-    // keys silently, so a stale field looks like it still does something.
-    expect(payload).not.toHaveProperty("churchName");
+    // The upload no longer knows about Sundays, and the church comes from the
+    // caller's token; either key would look like it still did something.
+    expect(Object.keys(payload).sort()).toEqual(["file", "title"]);
   });
 
-  it("주차를 고르지 않았으면 제출해도 호출되지 않아야 한다", () => {
+  it("바로 배치를 켜고 주차를 고르지 않았으면 제출해도 호출되지 않아야 한다", () => {
     const { onUploadSubmit } = renderDialog();
 
     fillTitleAndFile();
+    fireEvent.click(placeNowBox());
     fireEvent.submit(submitButton().closest("form"));
 
     // The button is disabled, but the form can still be submitted by other
@@ -148,46 +156,82 @@ describe("추가 방식 선택", () => {
 });
 
 describe("업로드 결과 처리", () => {
-  function submitFilledForm() {
-    fillTitleAndFile();
-    fireEvent.click(screen.getByRole("button", { name: "주차 고르기" }));
-    fireEvent.click(submitButton());
-  }
-
-  it("재사용 결과면 안내 문구를 띄우고 다이얼로그를 닫아야 한다", async () => {
-    // Arrange — the hook answered {reused: true}: nothing was uploaded and the
-    // church's existing file stays. The text is the frontend's own, since a
-    // success response carries no server detail.
+  it("바로 배치를 켜면 올린 곡을 고른 주차에 배치해야 한다", async () => {
+    // Arrange
+    const onApplySavedScore = vi.fn().mockResolvedValue({ ok: true });
     const { props } = renderDialog({
-      onUploadSubmit: vi.fn().mockResolvedValue({ ok: true, reused: true }),
+      onUploadSubmit: vi.fn().mockResolvedValue({ ok: true, songId: "song-9" }),
+      onApplySavedScore,
     });
 
     // Act
-    submitFilledForm();
+    fillTitleAndFile();
+    fireEvent.click(placeNowBox());
+    fireEvent.click(screen.getByRole("button", { name: "주차 고르기" }));
+    fireEvent.click(submitButton());
 
-    // Assert
+    // Assert — upload first, then the library's own placement
     await vi.waitFor(() =>
-      expect(window.alert).toHaveBeenCalledWith(
-        "기존 악보를 사용합니다. 악보를 바꾸려면 [수정]을 사용해 주세요."
-      )
+      expect(onApplySavedScore).toHaveBeenCalledWith({ songId: "song-9", weekOf: "2026-08-02" })
     );
+    expect(props.onUploadSubmit.mock.invocationCallOrder[0]).toBeLessThan(
+      onApplySavedScore.mock.invocationCallOrder[0]
+    );
+    expect(window.alert).toHaveBeenCalledWith("보관함에 올리고 주차에 배치했습니다.");
     expect(props.onClose).toHaveBeenCalled();
   });
 
+  it("바로 배치를 끄면 배치를 부르지 않아야 한다", async () => {
+    // Arrange
+    const { props } = renderDialog({
+      onUploadSubmit: vi.fn().mockResolvedValue({ ok: true, songId: "song-9" }),
+    });
+
+    // Act
+    fillTitleAndFile();
+    fireEvent.click(submitButton());
+
+    // Assert
+    await vi.waitFor(() => expect(window.alert).toHaveBeenCalledWith("보관함에 업로드되었습니다."));
+    expect(props.onApplySavedScore).not.toHaveBeenCalled();
+  });
+
+  it("배치만 실패하면 보관함에는 올라갔다고 알리고 닫아야 한다", async () => {
+    // Arrange — the song exists now, so keeping the form for a retry would only
+    // hit the same-title 409
+    const { props } = renderDialog({
+      onUploadSubmit: vi.fn().mockResolvedValue({ ok: true, songId: "song-9" }),
+      onApplySavedScore: vi.fn().mockResolvedValue({ ok: false, message: "네트워크 오류" }),
+    });
+
+    // Act
+    fillTitleAndFile();
+    fireEvent.click(placeNowBox());
+    fireEvent.click(screen.getByRole("button", { name: "주차 고르기" }));
+    fireEvent.click(submitButton());
+
+    // Assert
+    await vi.waitFor(() => expect(props.onClose).toHaveBeenCalled());
+    expect(window.alert.mock.calls[0][0]).toContain("보관함에는 올렸지만");
+    expect(window.alert.mock.calls[0][0]).toContain("네트워크 오류");
+  });
+
   it("409 detail을 그대로 보여주고 다이얼로그를 닫지 않아야 한다", async () => {
-    // Arrange — the message is server-authored (D5-a/D10); the dialog must not
-    // invent its own, and must keep the form so the user can fix the week.
-    const detail = "이 곡은 이미 그 주차에 등록되어 있습니다.";
+    // Arrange — the message is server-authored; the dialog must not invent its
+    // own, and must keep the form so the user can fix the title.
+    const detail = "이미 보관함에 있는 곡입니다. 보관함에서 골라 배치해 주세요.";
     const { props } = renderDialog({
       onUploadSubmit: vi.fn().mockResolvedValue({ ok: false, message: detail }),
     });
 
     // Act
-    submitFilledForm();
+    fillTitleAndFile();
+    fireEvent.click(submitButton());
 
     // Assert
     await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toBe(detail));
     expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onApplySavedScore).not.toHaveBeenCalled();
     // The form survives for a retry — closing would throw the input away.
     expect(screen.getByLabelText("악보 제목").value).toBe("은혜");
     expect(window.alert).not.toHaveBeenCalled();
@@ -197,6 +241,7 @@ describe("업로드 결과 처리", () => {
 describe("주차 달력 제한", () => {
   it("오늘 이전 날짜를 비활성화하도록 전달해야 한다", () => {
     renderDialog();
+    fireEvent.click(placeNowBox());
 
     const passed = screen.getByTestId("week-disabled").textContent;
     const now = new Date();

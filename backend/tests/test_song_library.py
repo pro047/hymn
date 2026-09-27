@@ -5,7 +5,13 @@ the Sundays the song is already on alone. Everything here is scoped to the
 caller's church -- the unauthenticated GET /scores is not the library.
 """
 
+import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+
+from app.deps import get_object_probe
+from app.main import app
 from app.models import Score, Song
+from app.utils import s3
 from test_song_split import OTHER_CHURCH, _register, _week
 
 
@@ -213,3 +219,93 @@ def test_a_weekless_legacy_usage_should_not_count_as_a_use(client, db_session):
     # Assert
     assert (item["use_count"], item["last_week_of"]) == (0, None)
 
+
+@pytest.fixture()
+def missing_objects():
+    """Keys in this set are missing from the bucket; everything else exists."""
+    missing: set[str] = set()
+    app.dependency_overrides[get_object_probe] = lambda: lambda key: key not in missing
+    return missing
+
+
+def test_uploading_a_title_whose_file_never_arrived_should_hand_out_a_new_key(client, db_session, missing_objects):
+    # Arrange — the first upload's PUT never happened
+    headers = _register(client)
+    first = _upload(client, headers, "은혜")
+    missing_objects.add(first["s3_key"])
+
+    # Act
+    second = _upload(client, headers, "은혜")
+
+    # Assert — the same song, now pointing at a key that can be uploaded to
+    assert second["song_id"] == first["song_id"]
+    assert second["s3_key"] != first["s3_key"]
+    assert second["upload_url"]
+    song = db_session.get(Song, first["song_id"])
+    assert song.file_uri == second["s3_key"]
+    assert song.file_url.endswith(second["s3_key"])
+    assert db_session.query(Song).count() == 1
+
+
+def test_a_healed_song_should_show_its_new_file_on_the_sundays_it_was_placed_on(client, missing_objects):
+    # Arrange — placed on a Sunday before anyone noticed the file was missing
+    headers = _register(client)
+    first = _upload(client, headers, "은혜")
+    assert _place(client, headers, first["song_id"], _week(0)).status_code == 200
+    missing_objects.add(first["s3_key"])
+
+    # Act
+    second = _upload(client, headers, "은혜")
+
+    # Assert
+    [listed] = client.get("/scores").json()
+    assert listed["file_uri"] == second["s3_key"]
+
+
+def test_a_legacy_key_should_never_be_replaced_by_an_upload(client, db_session, missing_objects):
+    # Arrange — keys from before the s3 branch were never in the bucket
+    headers = _register(client)
+    song_id = _upload(client, headers, "옛 곡")["song_id"]
+    song = db_session.get(Song, song_id)
+    song.file_uri = "a.pdf"
+    db_session.commit()
+    missing_objects.add("a.pdf")
+
+    # Act
+    response = client.post(
+        "/songs",
+        json={"title": "옛 곡", "filename": "score.png", "content_type": "image/png"},
+        headers=headers,
+    )
+
+    # Assert
+    assert response.status_code == 409, response.text
+    db_session.refresh(song)
+    assert song.file_uri == "a.pdf"
+
+
+def _head_raising(monkeypatch, exc):
+    def head_object(**kwargs):
+        raise exc
+
+    monkeypatch.setattr(s3.s3_client, "head_object", head_object)
+
+
+def test_object_exists_should_say_missing_only_on_a_404(monkeypatch):
+    _head_raising(monkeypatch, ClientError({"Error": {"Code": "404"}}, "HeadObject"))
+
+    assert s3.object_exists("scores/c/k.png") is False
+
+
+def test_object_exists_should_count_a_refusal_as_present(monkeypatch):
+    # A 403 says nothing about whether the file is there; guessing "missing"
+    # would let an upload overwrite it.
+    _head_raising(monkeypatch, ClientError({"Error": {"Code": "403"}}, "HeadObject"))
+
+    assert s3.object_exists("scores/c/k.png") is True
+
+
+def test_object_exists_should_count_a_network_error_as_present(monkeypatch):
+    _head_raising(monkeypatch, EndpointConnectionError(endpoint_url="http://s3"))
+
+    assert s3.object_exists("scores/c/k.png") is True

@@ -13,7 +13,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.deps import get_current_user
+from app.deps import ObjectProbe, get_current_user, get_object_probe
 from app.models import Score, Song, User
 from app.schemas.song import (
     SongLibraryItem,
@@ -27,6 +27,7 @@ from app.services.song import (
     get_or_reuse_song,
     has_usage_in_week,
     normalize_week_date,
+    replace_song_file,
 )
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_get, presign_put, presign_score_download
@@ -87,6 +88,7 @@ def upload_song(
     payload: SongUploadRequest,
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
+    object_exists: ObjectProbe = Depends(get_object_probe),
 ):
     ext = extension_from_input(payload.filename, payload.content_type)
     key = f"scores/{user.church_id}/{uuid4()}.{ext}"
@@ -99,14 +101,22 @@ def upload_song(
         file_url=object_url(key),
         file_uri=key,
     )
-    # A same-titled upload is refused rather than reused: the song is already
-    # in the library, and taking the new file silently would either drop it or
-    # redraw every Sunday that used the old one.
     if not created:
-        raise HTTPException(
-            status_code=409,
-            detail="이미 보관함에 있는 곡입니다. 보관함에서 골라 배치해 주세요.",
-        )
+        # The row is written before the browser PUTs the file, so an upload
+        # that died on the way leaves a song whose file never arrived. Taking
+        # the same title again is how that song gets its file; only keys this
+        # route mints are probed, since legacy keys ("a.pdf") were never in the
+        # bucket to begin with.
+        if song.file_uri and song.file_uri.startswith(f"scores/{user.church_id}/") and not object_exists(song.file_uri):
+            replace_song_file(session, song, file_url=object_url(key), file_uri=key)
+        else:
+            # Otherwise a same-titled upload is refused rather than reused: the
+            # song is already in the library, and taking the new file silently
+            # would either drop it or redraw every Sunday that used the old one.
+            raise HTTPException(
+                status_code=409,
+                detail="이미 보관함에 있는 곡입니다. 보관함에서 골라 배치해 주세요.",
+            )
     session.commit()
 
     return SongUploadResponse(

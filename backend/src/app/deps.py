@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.db import get_session
 from app.models import User
 from app.services.auth import decode_token, parse_bearer_token
-from app.utils.s3 import get_object_bytes
+from app.utils.s3 import get_object_bytes, object_exists
 
 # Rendered straight to the user by the client, like the auth router's messages.
 # One wording for every way a token can fail: the caller can only sign in again
@@ -66,3 +66,15 @@ def get_object_reader() -> ObjectReader:
     get_session already uses, so no test ever opens a real S3 connection.
     """
     return get_object_bytes
+
+
+ObjectProbe = Callable[[str], bool]
+
+
+def get_object_probe() -> ObjectProbe:
+    """How this request asks whether an S3 object exists.
+
+    Production resolves to app.utils.s3.object_exists; tests override it the
+    same way as get_object_reader.
+    """
+    return object_exists
