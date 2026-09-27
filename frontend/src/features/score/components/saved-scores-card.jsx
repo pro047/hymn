@@ -1,16 +1,11 @@
 import { useRef } from "react";
-import { Trash2 } from "lucide-react";
 
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
-export default function SavedScoresCard({
-  scores,
-  onApplyRequest,
-  onRemove,
-  onQuickUpload,
-  pendingSaveSongId,
-}) {
+// Every song the church has is here, so there is nothing to take out: deleting
+// a song would take it off every Sunday that used it.
+export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload }) {
   const fileInputRef = useRef(null);
 
   const handleFileChange = (event) => {
@@ -27,7 +22,7 @@ export default function SavedScoresCard({
         <div>
           <CardTitle>악보 보관함</CardTitle>
           <p className="mt-1 text-xs text-stone-500">
-            저장한 악보를 여러 주차에 다시 반영하거나 새 이미지를 바로 추가합니다.
+            교회의 모든 곡이 여기 있습니다. 골라서 주차에 반영하거나 새 악보를 추가합니다.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -46,12 +41,12 @@ export default function SavedScoresCard({
       <CardContent className="space-y-3">
         {scores.length === 0 ? (
           <div className="rounded-md border border-dashed border-stone-300 p-4 text-sm text-stone-500">
-            저장한 악보가 없습니다.
+            아직 올린 악보가 없습니다.
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
             {scores.map((score) => (
-              <div key={score.song_id} className="group relative min-w-0">
+              <div key={score.song_id} className="group min-w-0">
                 <button
                   type="button"
                   className="block w-full text-left"
@@ -70,19 +65,6 @@ export default function SavedScoresCard({
                     </div>
                   </div>
                 </button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  type="button"
-                  className="absolute right-2 top-2 h-8 w-8 rounded-full border-stone-200 bg-white/95 opacity-0 shadow-sm transition group-hover:opacity-100"
-                  disabled={pendingSaveSongId === score.song_id}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRemove(score.song_id);
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
               </div>
             ))}
           </div>

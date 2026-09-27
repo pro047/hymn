@@ -30,7 +30,7 @@ const IMAGE = () => new File(["x"], "rescan.png", { type: "image/png" });
 let calls;
 
 function trace(method, url) {
-  calls.push(`${method} ${String(url).replace(/^.*?(?=\/scores|https:)/, "")}`);
+  calls.push(`${method} ${String(url).replace(/^.*?(?=\/scores|\/songs|https:)/, "")}`);
 }
 
 beforeEach(() => {
@@ -39,9 +39,9 @@ beforeEach(() => {
   apiFetch.mockImplementation(async (url, options = {}) => {
     trace(options.method ?? "GET", url);
     if (String(url).endsWith("/file")) return ok(SIGNED);
-    // The mount fetches the saved-score list through apiFetch too, and the hook
-    // maps over whatever comes back.
-    if (String(url).includes("saved-scores")) return ok([]);
+    // The mount fetches the library through apiFetch too, and the hook keeps
+    // whatever comes back as the list the library tab and the dialog draw.
+    if (String(url).endsWith("/songs") && (options.method ?? "GET") === "GET") return ok([]);
     return ok({ id: "score-1" });
   });
   globalThis.fetch = vi.fn(async (url, options = {}) => {
@@ -138,7 +138,7 @@ it("서명 발급이 실패하면 업로드를 시도하지 않아야 한다", a
 it("로그인 상태면 마운트할 때 보관함 목록도 불러야 한다", async () => {
   // Arrange & Act — the library tab and the upload dialog both draw this list.
   renderHook(() => useScores());
-  await waitFor(() => expect(calls.some((call) => call.includes("saved-scores"))).toBe(true));
+  await waitFor(() => expect(calls).toContain("GET /songs"));
 
   // Assert
   expect(calls.some((call) => call.includes("/scores"))).toBe(true);
@@ -340,7 +340,7 @@ it("보관함 적용 409의 서버 detail을 메시지로 올려야 한다", asy
   // Act
   let outcome;
   await act(async () => {
-    outcome = await result.current.applySavedScoreToWeek({
+    outcome = await result.current.placeSongOnWeek({
       songId: "song-1",
       weekOf: "2026-10-04",
     });
@@ -350,27 +350,44 @@ it("보관함 적용 409의 서버 detail을 메시지로 올려야 한다", asy
   expect(outcome).toEqual({ ok: false, message: "이 곡은 이미 그 주차에 등록되어 있습니다." });
 });
 
-it("보관 토글은 곡 id로 부르고, 저장된 곡 집합은 song_id로 만들어야 한다", async () => {
-  // Arrange — one saved song in the library
-  apiFetch.mockImplementation(async (url, options = {}) => {
-    trace(options.method ?? "GET", url);
-    if (String(url).includes("saved-scores") && (options.method ?? "GET") === "GET") {
-      return ok([{ song_id: "song-1", title: "은혜", use_count: 1 }]);
-    }
-    return { ok: true, status: 204, json: async () => ({}) };
-  });
-  const { result } = renderHook(() => useScores());
-  await waitFor(() => expect(result.current.savedSongIds.has("song-1")).toBe(true));
+it("배치는 곡의 usages로 보내고 악보 목록과 보관함을 다시 불러야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
 
-  // Act — a saved song toggles off, another toggles on
+  // Act
+  let outcome;
   await act(async () => {
-    await result.current.toggleSavedScore("song-1");
-    await result.current.toggleSavedScore("song-2");
+    outcome = await result.current.placeSongOnWeek({ songId: "song-1", weekOf: "2026-10-04" });
   });
 
   // Assert
-  const writes = calls
-    .filter((call) => /^(POST|DELETE) /.test(call))
-    .map((call) => call.replace(/ .*\/me\//, " /me/"));
-  expect(writes).toEqual(["DELETE /me/saved-scores/song-1", "POST /me/saved-scores/song-2"]);
+  expect(outcome).toEqual({ ok: true });
+  expect(calls[0]).toBe("POST /songs/song-1/usages");
+  expect(calls).toEqual(expect.arrayContaining(["GET /scores", "GET /songs"]));
+});
+
+it("보관함 업로드는 곡만 만들고 받은 주소로 파일을 올려야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    if ((options.method ?? "GET") === "POST") {
+      return ok({ song_id: "song-9", upload_url: "https://s3.example.com/put?sig=9" });
+    }
+    return ok([]);
+  });
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.createScoreWithUpload({
+      title: "새 곡",
+      file: IMAGE(),
+      saveToLibrary: true,
+    });
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true, songId: "song-9" });
+  expect(calls.slice(0, 2)).toEqual(["POST /songs", "PUT https://s3.example.com/put?sig=9"]);
 });

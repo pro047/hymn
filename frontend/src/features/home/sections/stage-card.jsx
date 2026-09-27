@@ -3,15 +3,7 @@ import { Link } from "react-router-dom";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
-export default function StageCard({
-  scores,
-  weekOf,
-  onUpdate,
-  onDelete,
-  savedSongIds,
-  pendingSaveSongId,
-  onToggleSave,
-}) {
+export default function StageCard({ scores, weekOf, onUpdate, onDelete }) {
   const stageScores = scores.slice(0, 5);
 
   return (
@@ -52,17 +44,6 @@ export default function StageCard({
                 {score.title}
               </button>
               <div className="flex items-center gap-1">
-                {onToggleSave ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    type="button"
-                    disabled={pendingSaveSongId === score.song_id}
-                    onClick={() => onToggleSave(score.song_id)}
-                  >
-                    {savedSongIds.has(score.song_id) ? "저장 해제" : "저장"}
-                  </Button>
-                ) : null}
                 <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score)}>
                   수정
                 </Button>

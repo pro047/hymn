@@ -36,19 +36,15 @@ export default function HomePage({ headerActions = null }) {
   const {
     scores,
     totalSongs,
-    savedScores,
-    savedSongIds,
+    librarySongs,
     error,
     isUploading,
     isUpdating,
-    pendingSaveSongId,
-    isApplyingSavedScore,
+    isPlacingSong,
     createScoreWithUpload,
     updateScore,
     deleteScore,
-    toggleSavedScore,
-    removeSavedScore,
-    applySavedScoreToWeek,
+    placeSongOnWeek,
   } = useScores();
 
   const upcomingSundayWeekOf = useUpcomingSunday();
@@ -154,13 +150,10 @@ export default function HomePage({ headerActions = null }) {
               weekOf={upcomingSundayWeekOf}
               onUpdate={setEditingScore}
               onDelete={deleteScore}
-              savedSongIds={savedSongIds}
-              pendingSaveSongId={pendingSaveSongId}
-              onToggleSave={toggleSavedScore}
             />
           ) : (
             <SavedScoresCard
-              scores={savedScores}
+              scores={librarySongs}
               onApplyRequest={(score) => openUploadDialog({ mode: "library", savedScore: score })}
               onQuickUpload={(file) =>
                 openUploadDialog({
@@ -170,8 +163,6 @@ export default function HomePage({ headerActions = null }) {
                   saveToLibrary: true,
                 })
               }
-              onRemove={removeSavedScore}
-              pendingSaveSongId={pendingSaveSongId}
             />
           )}
         </main>
@@ -195,10 +186,10 @@ export default function HomePage({ headerActions = null }) {
         open={uploadDialogState.open}
         onClose={closeUploadDialog}
         onUploadSubmit={createScoreWithUpload}
-        onApplySavedScore={applySavedScoreToWeek}
-        savedScores={savedScores}
+        onApplySavedScore={placeSongOnWeek}
+        savedScores={librarySongs}
         uploadLoading={isUploading}
-        applyLoading={isApplyingSavedScore}
+        applyLoading={isPlacingSong}
         initialMode={uploadDialogState.mode}
         initialFile={uploadDialogState.file}
         initialSavedScore={uploadDialogState.savedScore}

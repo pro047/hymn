@@ -7,18 +7,11 @@ import { isAuthenticated } from "../../../lib/auth-storage";
 
 export function useScores() {
   const [scores, setScores] = useState([]);
-  const [savedScores, setSavedScores] = useState([]);
+  const [librarySongs, setLibrarySongs] = useState([]);
   const [error, setError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [pendingSaveSongId, setPendingSaveSongId] = useState(null);
-  const [isApplyingSavedScore, setIsApplyingSavedScore] = useState(false);
-
-  // The library holds songs: every week's usage of a saved song shows as saved.
-  const savedSongIds = useMemo(
-    () => new Set(savedScores.map((score) => score.song_id)),
-    [savedScores]
-  );
+  const [isPlacingSong, setIsPlacingSong] = useState(false);
 
   // Falls back to title when song_id is absent so a frontend deployed ahead
   // of the migration still shows a meaningful count instead of 0.
@@ -41,18 +34,18 @@ export function useScores() {
     }
   }, []);
 
-  const fetchSavedScores = useCallback(async () => {
+  const fetchLibrary = useCallback(async () => {
     if (!isAuthenticated()) {
-      setSavedScores([]);
+      setLibrarySongs([]);
       return;
     }
     try {
-      const response = await apiFetch(API_PATHS.savedScores);
+      const response = await apiFetch(API_PATHS.songs);
       if (!response.ok) {
-        throw new Error("저장소 목록을 불러오지 못했습니다.");
+        throw new Error("보관함 목록을 불러오지 못했습니다.");
       }
       const data = await response.json();
-      setSavedScores(data);
+      setLibrarySongs(data);
       setError("");
     } catch (err) {
       setError(err.message);
@@ -61,8 +54,8 @@ export function useScores() {
 
   useEffect(() => {
     fetchScores();
-    fetchSavedScores();
-  }, [fetchSavedScores, fetchScores]);
+    fetchLibrary();
+  }, [fetchLibrary, fetchScores]);
 
   const createScoreWithUpload = async ({ title, weekOf, file, saveToLibrary = false }) => {
     // Both branches write now, so the check no longer depends on saveToLibrary.
@@ -77,7 +70,7 @@ export function useScores() {
       const { request, url, payload } = saveToLibrary
         ? {
             request: apiFetch,
-            url: API_PATHS.savedScoreUpload,
+            url: API_PATHS.songs,
             payload: { title, filename: file.name, content_type: file.type },
           }
         : {
@@ -102,7 +95,7 @@ export function useScores() {
       });
 
       if (!response.ok) {
-        // D5-a's same-week 409 and D10's saved-score reupload 409 both carry a
+        // D5-a's same-week 409 and the library's same-title 409 both carry a
         // Korean detail the user needs to see; the generic message hid it.
         // Read through api-error because a 422's `detail` is an array of items,
         // not a string: passing it to Error() renders "[object Object]" on
@@ -118,8 +111,8 @@ export function useScores() {
 
       // D5: a reused song's create response has upload_url=null — there is no
       // file to PUT, and fetch(null, ...) would throw if this ran anyway.
-      // Scoped to saveToLibrary === false because D10 answers a saved-score
-      // reupload with 409, which is already caught above.
+      // Scoped to saveToLibrary === false because the library answers a
+      // same-titled upload with 409, which is already caught above.
       if (!saveToLibrary && data.reused_song) {
         await fetchScores();
         return { ok: true, scoreId: data.score_id, reused: true };
@@ -135,7 +128,8 @@ export function useScores() {
         throw new Error("S3 업로드에 실패했습니다.");
       }
 
-      await Promise.all([fetchScores(), saveToLibrary ? fetchSavedScores() : Promise.resolve()]);
+      // Either way the library changes: a new song, or a known one used again.
+      await Promise.all([fetchScores(), fetchLibrary()]);
       // A library upload files no Sunday, so it answers with the song instead.
       return saveToLibrary
         ? { ok: true, songId: data.song_id }
@@ -231,64 +225,14 @@ export function useScores() {
     }
   };
 
-  const saveScore = async (songId) => {
-    if (!isAuthenticated()) {
-      setError("로그인이 필요합니다.");
-      return;
-    }
-    setPendingSaveSongId(songId);
-    try {
-      const response = await apiFetch(API_PATHS.savedScore(songId), {
-        method: "POST",
-      });
-      if (!response.ok) {
-        throw new Error("악보 저장에 실패했습니다.");
-      }
-      await fetchSavedScores();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setPendingSaveSongId(null);
-    }
-  };
-
-  const removeSavedScore = async (songId) => {
-    if (!isAuthenticated()) {
-      setError("로그인이 필요합니다.");
-      return;
-    }
-    setPendingSaveSongId(songId);
-    try {
-      const response = await apiFetch(API_PATHS.savedScore(songId), {
-        method: "DELETE",
-      });
-      if (!response.ok) {
-        throw new Error("저장소 삭제에 실패했습니다.");
-      }
-      await fetchSavedScores();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setPendingSaveSongId(null);
-    }
-  };
-
-  const toggleSavedScore = async (songId) => {
-    if (savedSongIds.has(songId)) {
-      await removeSavedScore(songId);
-      return;
-    }
-    await saveScore(songId);
-  };
-
-  const applySavedScoreToWeek = async ({ songId, weekOf }) => {
+  const placeSongOnWeek = async ({ songId, weekOf }) => {
     if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return { ok: false };
     }
-    setIsApplyingSavedScore(true);
+    setIsPlacingSong(true);
     try {
-      const response = await apiFetch(API_PATHS.applySavedScore(songId), {
+      const response = await apiFetch(API_PATHS.songUsages(songId), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -300,37 +244,32 @@ export function useScores() {
         // another week); the generic text hid it. Same reader as the upload.
         const apiError = await readApiError(
           response,
-          "저장소 악보를 주차에 반영하지 못했습니다.",
+          "보관함 악보를 주차에 반영하지 못했습니다.",
           []
         );
         throw new Error(alertMessageOf(apiError));
       }
-      await Promise.all([fetchScores(), fetchSavedScores()]);
+      await Promise.all([fetchScores(), fetchLibrary()]);
       return { ok: true };
     } catch (err) {
       setError(err.message);
       return { ok: false, message: err.message };
     } finally {
-      setIsApplyingSavedScore(false);
+      setIsPlacingSong(false);
     }
   };
 
   return {
     scores,
     totalSongs,
-    savedScores,
-    savedSongIds,
+    librarySongs,
     error,
     isUploading,
     isUpdating,
-    pendingSaveSongId,
-    isApplyingSavedScore,
+    isPlacingSong,
     createScoreWithUpload,
     updateScore,
     deleteScore,
-    saveScore,
-    removeSavedScore,
-    toggleSavedScore,
-    applySavedScoreToWeek,
+    placeSongOnWeek,
   };
 }

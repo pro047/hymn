@@ -14,10 +14,10 @@ export const API_PATHS = {
   // Signs a PUT for the flattened canvas. Like scoreFile, it writes nothing —
   // the week moves onto the new sheet only when the PUT above follows.
   scoreEditedFile: (scoreId: string) => `${API_BASE}/scores/${scoreId}/edited-file`,
-  savedScores: `${API_BASE}/me/saved-scores`,
-  savedScoreUpload: `${API_BASE}/me/saved-scores/upload`,
-  savedScore: (songId: string) => `${API_BASE}/me/saved-scores/${songId}`,
-  applySavedScore: (songId: string) => `${API_BASE}/me/saved-scores/${songId}/apply`,
+  // The library: every song of the caller's church. POST files a song with no
+  // Sunday; a Sunday gets one only through songUsages.
+  songs: `${API_BASE}/songs`,
+  songUsages: (songId: string) => `${API_BASE}/songs/${songId}/usages`,
   // The address goes in the query string, so it must be escaped: `+` and `&` are
   // legal in a local part and would otherwise be read as syntax.
   authCheckEmail: (email: string) =>
