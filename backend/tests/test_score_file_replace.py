@@ -15,6 +15,7 @@ import re
 from datetime import date, timedelta
 
 from app.models import Score
+from song_helpers import file_usage
 
 
 def _this_week_sunday() -> date:
@@ -34,13 +35,7 @@ LEADER_PAYLOAD = {
     "agreed_terms": True,
 }
 
-NEW_SCORE = {
-    "title": "Amazing Grace",
-    "week_of": THIS_WEEK.isoformat(),
-    "storage_type": "s3",
-    "filename": "score.jpg",
-    "content_type": "image/jpeg",
-}
+NEW_SCORE = {"title": "Amazing Grace", "week_of": THIS_WEEK.isoformat()}
 
 REPLACEMENT = {"filename": "rescan.png", "content_type": "image/png"}
 
@@ -64,21 +59,19 @@ def _join_member(client, code: str, email: str) -> dict:
 
 
 def _create_score(client, headers: dict) -> str:
-    response = client.post("/scores", json=NEW_SCORE, headers=headers)
-    assert response.status_code == 200, response.text
-    return response.json()["score_id"]
+    return file_usage(
+        client, headers, title=NEW_SCORE["title"], week=NEW_SCORE["week_of"]
+    ).json()["score_id"]
 
 
 def test_requesting_a_replacement_upload_should_return_a_new_church_scoped_key(client):
     # Arrange
     leader, _ = _found_church(client)
-    created = client.post("/scores", json=NEW_SCORE, headers=leader)
-    original_key = created.json()["s3_key"]
+    score_id = _create_score(client, leader)
+    original_key = client.get(f"/scores/{score_id}", headers=leader).json()["file_uri"]
 
     # Act
-    response = client.post(
-        f"/scores/{created.json()['score_id']}/file", json=REPLACEMENT, headers=leader
-    )
+    response = client.post(f"/scores/{score_id}/file", json=REPLACEMENT, headers=leader)
 
     # Assert
     assert response.status_code == 200, response.text

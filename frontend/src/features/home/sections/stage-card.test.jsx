@@ -34,9 +34,6 @@ function renderCard(overrides = {}) {
         weekOf="2026-08-23"
         onUpdate={onUpdate}
         onDelete={onDelete}
-        savedSongIds={new Set()}
-        pendingSaveSongId={null}
-        onToggleSave={null}
         {...overrides}
       />
     </MemoryRouter>
@@ -116,22 +113,12 @@ it("악보가 없으면 빈 상태를 안내해야 한다", () => {
   expect(screen.getByText(/악보가 없습니다/)).toBeTruthy();
 });
 
-it("같은 곡이면 어느 주차 줄이든 저장 상태가 같고, 토글은 곡을 넘겨야 한다", () => {
-  // Arrange — the library holds songs, so two usages of one song are one entry
-  const onToggleSave = vi.fn();
+it("보관함은 교회의 모든 곡이라 저장 버튼을 보여주지 않아야 한다", () => {
+  // Arrange
   renderCard({
-    scores: [
-      { id: "u1", song_id: "song-1", title: "은혜", week_of: "2026-08-23" },
-      { id: "u2", song_id: "song-2", title: "믿음", week_of: "2026-08-23" },
-    ],
-    savedSongIds: new Set(["song-1"]),
-    onToggleSave,
+    scores: [{ id: "u1", song_id: "song-1", title: "은혜", week_of: "2026-08-23" }],
   });
 
-  // Act
-  fireEvent.click(screen.getByRole("button", { name: "저장 해제" }));
-
   // Assert
-  expect(screen.getAllByRole("button", { name: "저장" })).toHaveLength(1);
-  expect(onToggleSave).toHaveBeenCalledWith("song-1");
+  expect(screen.queryByRole("button", { name: /저장/ })).toBeNull();
 });

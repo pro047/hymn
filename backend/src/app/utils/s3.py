@@ -97,6 +97,22 @@ def object_url(key: str) -> str:
     return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}"
 
 
+def object_exists(key: str) -> bool:
+    """False only when S3 answers that the key is not there.
+
+    Every other failure counts as present. The one caller lets an upload
+    replace a song's file when this says False, so guessing "missing" on a
+    network error would overwrite a file the church is using.
+    """
+    try:
+        s3_client.head_object(Bucket=S3_BUCKET, Key=key)
+    except ClientError as exc:
+        return exc.response.get("Error", {}).get("Code") not in {"404", "NoSuchKey", "NotFound"}
+    except BotoCoreError:
+        return True
+    return True
+
+
 class ObjectNotReadable(Exception):
     """This key's bytes could not be fetched. The cause (missing/network/permission) is not distinguished."""
 

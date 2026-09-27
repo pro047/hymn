@@ -85,24 +85,19 @@ def add_usage(
     church_id: str,
     uploader_id: str,
     week_of: dt.date,
-    title: str | None = None,
-    file_url: str | None = None,
-    file_uri: str | None = None,
 ) -> Score:
     """A new usage of `song` filed under `week_of`, set item included.
 
-    Title and file are the usage's snapshot and default to the song's own;
-    POST /scores passes what the leader typed and, for a brand-new song, the
-    key its upload is about to fill.
+    Title and file are the usage's snapshot of the song's own.
     """
     score = Score(
         church_id=church_id,
         uploader_id=uploader_id,
         song_id=song.id,
-        title=title if title is not None else song.title,
+        title=song.title,
         week_of=week_of,
-        file_url=file_url if file_url is not None else song.file_url,
-        file_uri=file_uri if file_uri is not None else song.file_uri,
+        file_url=song.file_url,
+        file_uri=song.file_uri,
         status="draft",
     )
     session.add(score)

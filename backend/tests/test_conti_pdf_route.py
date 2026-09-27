@@ -29,6 +29,7 @@ from app.main import app
 from app.models import Score, SetItem, Song
 from app.services.song import attach_usage
 from app.utils.s3 import ObjectNotReadable
+from song_helpers import library_song
 
 PAGE_W, PAGE_H = 1754, 1240
 MARGIN = 47
@@ -132,21 +133,11 @@ def _add_song(client, reader, headers: dict, *, title: str, week: str, color=RED
     Returns {"score_id", "key", "color"} — the key is what the reader will be
     asked for, so tests can assert on call order against it.
     """
-    response = client.post(
-        "/scores",
-        json={
-            "title": title,
-            "week_of": week,
-            "storage_type": "s3",
-            "filename": "score.png",
-            "content_type": "image/png",
-        },
-        headers=headers,
-    )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    reader.serve(body["s3_key"], _png(color))
-    return {"score_id": body["score_id"], "key": body["s3_key"], "color": color}
+    song = library_song(client, headers, title=title)
+    placed = client.post(f"/songs/{song['song_id']}/usages", json={"week_of": week}, headers=headers)
+    assert placed.status_code == 200, placed.text
+    reader.serve(song["file_uri"], _png(color))
+    return {"score_id": placed.json()["score_id"], "key": song["file_uri"], "color": color}
 
 
 def _seed_week(client, reader, headers: dict, week: str, count: int) -> list[dict]:

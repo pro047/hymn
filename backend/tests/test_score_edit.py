@@ -20,6 +20,7 @@ from datetime import date, timedelta
 
 from app.models import Score
 from app.schemas.score import MAX_EDIT_DOC_BYTES
+from song_helpers import file_usage
 
 
 def _this_week_sunday() -> date:
@@ -46,13 +47,7 @@ OTHER_CHURCH_PAYLOAD = {
     "church": "Other Edit Church",
 }
 
-NEW_SCORE = {
-    "title": "Amazing Grace",
-    "week_of": THIS_WEEK.isoformat(),
-    "storage_type": "s3",
-    "filename": "score.jpg",
-    "content_type": "image/jpeg",
-}
+NEW_SCORE = {"title": "Amazing Grace", "week_of": THIS_WEEK.isoformat()}
 
 # Deliberately not fabric's real shape: the server stores this opaquely, and a
 # test written against a shape it does not parse would suggest otherwise.
@@ -70,9 +65,9 @@ def _found_church(client, payload: dict = LEADER_PAYLOAD) -> dict:
 
 
 def _create_score(client, headers: dict, payload: dict = NEW_SCORE) -> str:
-    response = client.post("/scores", json=payload, headers=headers)
-    assert response.status_code == 200, response.text
-    return response.json()["score_id"]
+    return file_usage(
+        client, headers, title=payload["title"], week=payload["week_of"]
+    ).json()["score_id"]
 
 
 def _sign_edit_upload(client, headers: dict, score_id: str) -> str:

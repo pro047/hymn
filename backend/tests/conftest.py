@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app import login_guard
 from app.db import get_session
+from app.deps import get_object_probe
 from app.main import app
 from app.rate_limit import limiter
 from app.services import token_sweep
@@ -102,6 +103,19 @@ def reset_throttles():
     login_guard.reset()
     token_sweep.reset()
     yield
+
+
+@pytest.fixture(autouse=True)
+def objects_exist():
+    """Every S3 object counts as present unless a test says otherwise.
+
+    The upload route probes S3 on a same-titled upload; left to the real
+    client, every such test would wait out connect timeouts against a bucket
+    that is not there. Tests that need a missing object override it again.
+    """
+    app.dependency_overrides[get_object_probe] = lambda: lambda key: True
+    yield
+    app.dependency_overrides.pop(get_object_probe, None)
 
 
 @pytest.fixture(scope="session")
