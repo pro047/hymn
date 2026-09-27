@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
-import { addDays, format, startOfWeek } from "date-fns";
 
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Separator } from "../components/ui/separator";
+import { useUpcomingSunday } from "../features/home/hooks/use-upcoming-sunday";
 import HeroSection from "../features/home/sections/hero-section";
 import StageCard from "../features/home/sections/stage-card";
 import SavedScoresCard from "../features/score/components/saved-scores-card";
@@ -55,12 +55,7 @@ export default function HomePage({ headerActions = null }) {
     applySavedScoreToWeek,
   } = useScores();
 
-  const upcomingSundayWeekOf = useMemo(() => {
-    const today = new Date();
-    const thisWeekStart = startOfWeek(today, { weekStartsOn: 1 });
-    const upcomingSunday = addDays(thisWeekStart, 6);
-    return format(upcomingSunday, "yyyy-MM-dd");
-  }, []);
+  const upcomingSundayWeekOf = useUpcomingSunday();
 
   const upcomingSundayScores = useMemo(() => {
     return scores.filter((score) => String(score.week_of).slice(0, 10) === upcomingSundayWeekOf);
