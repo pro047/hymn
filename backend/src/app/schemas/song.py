@@ -1,6 +1,8 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.score import reject_past_week
 
 
 class SongLibraryItem(BaseModel):
@@ -31,6 +33,10 @@ class SongUploadResponse(BaseModel):
 
 class SongUsageRequest(BaseModel):
     week_of: date
+
+    # A Sunday already gone by is a mis-click, not a filing: in production no
+    # score was ever filed after its Sunday.
+    _reject_past_week = field_validator("week_of")(reject_past_week)
 
 
 class SongUsageResponse(BaseModel):

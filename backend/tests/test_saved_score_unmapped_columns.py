@@ -1,32 +1,28 @@
-"""Guards the release-N half of dropping three saved_scores columns.
+"""Guards the release-N half of dropping the saved_scores table.
 
 Deploy runs `alembic upgrade head` and only then swaps containers
-(.github/workflows/deploy.yml), so a column can be dropped safely only once no
-deployed image names it -- otherwise the still-running old image SELECTs a
-column that is gone, and a rollback to that image 500s for good.
+(.github/workflows/deploy.yml), so a table can be dropped safely only once no
+deployed image names it -- otherwise the still-running old image queries a
+table that is gone, and a rollback to that image 500s for good.
 
-Migration b7e3d1f9a2c4 moved the library onto songs and stopped mapping the
-usage-era columns; migration 18af83d5c624 dropped them a release later. Before
-the drop nothing else in the suite noticed a restored mapping. Now that the
-test database is at head, a restored one breaks every test that reads
-saved_scores -- and these two are the ones that say why.
+The library became the church's songs (routes/song.py) and this release stops
+mapping saved_scores; a later one drops it. While the table still exists,
+nothing else in the suite fails if a mapping comes back, so the drop migration
+would then break production with every test green. These tests are that alarm.
 """
 
-from sqlalchemy import select
-
-from app.models import SavedScore
-
-DROPPED_COLUMNS = ("score_id", "use_count", "last_used_at")
+from app.main import app
+from app.models import Base
 
 
-def test_saved_score_should_not_map_the_columns_a_later_release_drops():
-    mapped = set(SavedScore.__mapper__.columns.keys())
-    assert mapped.isdisjoint(DROPPED_COLUMNS)
+def test_no_model_should_map_the_table_a_later_release_drops():
+    mapped_tables = {mapper.persist_selectable.fullname for mapper in Base.registry.mappers}
+    assert "saved_scores" not in mapped_tables
 
 
-def test_reading_saved_scores_should_not_name_the_columns_a_later_release_drops():
-    # The mapper check above is about the declaration; this is about the SQL an
-    # old image would actually send after the drop migration has run.
-    compiled = str(select(SavedScore).compile())
-    for column in DROPPED_COLUMNS:
-        assert f"saved_scores.{column}" not in compiled
+def test_no_route_should_serve_the_old_library_paths():
+    # The routes are what an old client would still call; they must be gone
+    # with the mapping, or they would be the thing naming the table.
+    paths = app.openapi()["paths"]
+    assert not any(path.startswith("/me/saved-scores") for path in paths)
+    assert "post" not in paths["/scores"]

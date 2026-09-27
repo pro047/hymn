@@ -7,8 +7,6 @@ from app.db import get_session
 from app.deps import get_current_user
 from app.models import Score, User
 from app.schemas.score import (
-    ScoreCreate,
-    ScoreCreateResponse,
     ScoreEditRequest,
     ScoreEditResponse,
     ScoreEditUploadResponse,
@@ -20,10 +18,7 @@ from app.schemas.score import (
 from app.services.score_edit import clear_edit, save_edit
 from app.services.song import (
     SongTitleTaken,
-    add_usage,
     attach_usage,
-    get_or_reuse_song,
-    has_usage_in_week,
     normalize_week_date,
     rename_song,
     replace_song_file,
@@ -37,11 +32,10 @@ router = APIRouter()
 def _reject_foreign_object_key(file_uri: str, church_id: str) -> None:
     """Refuses a storage key that is not this church's, or returns.
 
-    file_uri is written straight through from the request body on the `local`
-    branch, and presign_score_download signs anything under the scores/ prefix.
-    Together
-    those made the route a signing oracle: file a score whose file_uri is
-    another church's key and the server hands back a presigned GET for it. That
+    file_uri is written straight through from the request body on PATCH, and
+    presign_score_download signs anything under the scores/ prefix. Together
+    those made the route a signing oracle: point a score's file_uri at another
+    church's key and the server hands back a presigned GET for it. That
     survives scoping the read routes, because the URL is minted on demand from
     a key rather than read off a row the caller may see — so it is closed here,
     on the way in.
@@ -60,7 +54,7 @@ def _own_score_or_404(session: Session, score_id: str, user: User) -> Score:
 
     404 rather than 403 for a score that exists in another church: 403 would
     confirm the id is real, which is one bit more than a caller outside that
-    congregation should get. Same choice the saved-scores routes make.
+    congregation should get. Same choice the library routes make.
     """
     score = session.get(Score, score_id)
     if score is None or score.church_id != user.church_id:
@@ -82,81 +76,6 @@ def _writable_score_or_error(session: Session, score_id: str, user: User) -> Sco
     if user.role != "leader" and score.uploader_id != user.id:
         raise HTTPException(403, "본인이 올린 악보만 수정하거나 삭제할 수 있습니다.")
     return score
-
-@router.post('/scores', response_model=ScoreCreateResponse)
-def create_score(
-    payload: ScoreCreate,
-    session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    normalized_week_of = normalize_week_date(payload.week_of)
-    # From the token, never the body. The old route took church_id or a free
-    # text church_name and created the church if the name was unknown, with no
-    # authentication at all: anyone could file scores under any congregation.
-    church_id = user.church_id
-
-    if payload.storage_type == 's3':
-        if not payload.filename:
-            raise HTTPException(400, 'filename required for s3')
-        ext = extension_from_input(payload.filename, payload.content_type)
-        candidate_key = f"scores/{church_id}/{uuid4()}.{ext}"
-        candidate_file_url = object_url(candidate_key)
-        candidate_file_uri = candidate_key
-    else:
-        if not payload.file_uri:
-            raise HTTPException(400, 'file_uri required for local')
-        _reject_foreign_object_key(payload.file_uri, church_id)
-        candidate_file_url = payload.file_uri
-        candidate_file_uri = payload.file_uri
-
-    song, created = get_or_reuse_song(
-        session,
-        church_id=church_id,
-        title=payload.title,
-        uploader_id=user.id,
-        file_url=candidate_file_url,
-        file_uri=candidate_file_uri,
-    )
-    if not created and has_usage_in_week(session, song_id=song.id, week_of=normalized_week_of):
-        raise HTTPException(409, "이 곡은 이미 그 주차에 등록되어 있습니다.")
-
-    # A reused song keeps its existing file; the candidate key above was never
-    # uploaded to, so writing it into the usage snapshot would point at an
-    # object that does not exist.
-    file_url = candidate_file_url if created else song.file_url
-    file_uri = candidate_file_uri if created else song.file_uri
-
-    score = add_usage(
-        session,
-        song,
-        church_id=church_id,
-        uploader_id=user.id,
-        week_of=normalized_week_of,
-        title=payload.title,
-        file_url=file_url,
-        file_uri=file_uri,
-    )
-    session.commit()
-    session.refresh(score)
-
-    if payload.storage_type == 's3':
-        return {
-            "score_id": score.id,
-            "upload_url": presign_put(candidate_file_uri, 900) if created else None,
-            "download_url": presign_score_download(file_uri),
-            "s3_key": file_uri,
-            "reused_song": not created,
-        }
-
-    return {
-        "score_id": score.id,
-        "church_id": score.church_id,
-        "week_of": score.week_of,
-        "title": score.title,
-        "file_uri": score.file_uri,
-        "created_at": score.created_at,
-        "reused_song": not created,
-    }
 
 @router.get("/scores", response_model=list[ScoreResponse])
 def list_scores(session: Session = Depends(get_session)):
@@ -195,8 +114,7 @@ def get_score(
 
     Authenticated even though the list above is not, and the difference is not
     an oversight. list_scores filters on week_of IS NOT NULL, which keeps the
-    saved-score uploads — the ones the UI calls a personal library — out of the
-    public answer. This route had no filter and no dependency, so it handed
+    legacy weekless library uploads out of the public answer. This route had no filter and no dependency, so it handed
     those to anyone who could name the id.
 
     No client ever called it: the Flutter app makes exactly one request, GET
@@ -396,11 +314,9 @@ def update_score(
         if normalized_week_of != score.week_of:
             attach_usage(session, score, normalized_week_of)
     if payload.file_uri is not None:
-        # Both ways in get the same gate. Checking only on create would let the
-        # caller file a harmless score and then point it at a foreign key.
         _reject_foreign_object_key(payload.file_uri, score.church_id)
         # object_url, not the key itself — the column holds a URL everywhere
-        # else (create_score does the same at the s3 branch) and every client
+        # else (the library upload does the same) and every client
         # reads it as `download_url ?? file_url`. Storing the bare key survives
         # only because the gate above forces the scores/ prefix, which is
         # exactly what makes presign_score_download sign it and hide the fallback.

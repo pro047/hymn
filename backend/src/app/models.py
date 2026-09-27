@@ -90,9 +90,6 @@ class User(Base):
 
     church: Mapped["Church"] = relationship(back_populates="users")
     uploaded_scores: Mapped[list["Score"]] = relationship(back_populates="uploader")
-    saved_scores: Mapped[list["SavedScore"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
 
 
 class RefreshToken(Base):
@@ -229,27 +226,11 @@ class ScoreAsset(Base):
 
     score: Mapped["Score"] = relationship(back_populates="assets")
 
-class SavedScore(Base):
-    """A song a user keeps in their library to file on later Sundays.
+# `saved_scores` still exists in the database but is no longer mapped: the
+# library became the church's songs (routes/song.py), and this release stops
+# every deployed image from naming the table, which is what lets the next one
+# drop it (tests/test_saved_score_unmapped_columns.py).
 
-    Keyed by song, not by the usage it was saved from: taking that one Sunday
-    off must not take the entry with it, and "last sung" / "how often" are
-    read off all of the song's usages (routes/saved_score.py).
-    """
-
-    __tablename__ = "saved_scores"
-    __table_args__ = (
-        UniqueConstraint("user_id", "song_id", name="uq_saved_scores_user_song"),
-        )
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    song_id: Mapped[str] = mapped_column(
-        ForeignKey("songs.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
-
-    user: Mapped["User"] = relationship(back_populates="saved_scores")
-    song: Mapped["Song"] = relationship()
 
 class Week(Base):
     __tablename__ = "weeks"

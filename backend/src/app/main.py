@@ -9,7 +9,6 @@ from app.rate_limit import limiter, rate_limit_handler
 from app.routes.auth import PASSWORD_RESET_ENABLED, password_reset_router
 from app.routes.auth import router as auth_router
 from app.routes.conti import router as conti_router
-from app.routes.saved_score import router as saved_score_router
 from app.routes.score import router as score_router
 from app.routes.song import router as song_router
 from app.utils.email import require_deliverable_transport
@@ -55,7 +54,6 @@ app.add_middleware(
 
 app.include_router(score_router)
 app.include_router(auth_router)
-app.include_router(saved_score_router)
 app.include_router(song_router)
 app.include_router(conti_router)
 if PASSWORD_RESET_ENABLED:

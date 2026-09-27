@@ -239,6 +239,15 @@ describe("업로드 결과 처리", () => {
 });
 
 describe("주차 달력 제한", () => {
+  it("보관함에서 고를 때도 오늘 이전 날짜를 비활성화해야 한다", () => {
+    renderDialog({ initialMode: "library" });
+
+    const passed = screen.getByTestId("week-disabled").textContent;
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    expect(passed).toBe(midnight.toISOString());
+  });
+
   it("오늘 이전 날짜를 비활성화하도록 전달해야 한다", () => {
     renderDialog();
     fireEvent.click(placeNowBox());

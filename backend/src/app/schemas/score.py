@@ -1,6 +1,6 @@
 import json
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -22,41 +22,11 @@ def current_week_start(today: date | None = None) -> date:
 
 
 def reject_past_week(value: date | None) -> date | None:
-    """Shared by create and update; both write the same column."""
+    """Shared by placement and update; both write the same column."""
     if value is not None and value < current_week_start():
         raise ValueError(PAST_WEEK_MESSAGE)
     return value
 
-
-class ScoreCreate(BaseModel):
-    # No church field, deliberately. The church comes from the caller's token,
-    # so it cannot be chosen by the request — naming it here was what let an
-    # unauthenticated caller write into any church, or invent a new one.
-    # Length caps mirror the columns (title varchar(255), file_uri varchar(1024)).
-    # Without them an oversized value passes validation and blows up at commit
-    # as a DataError, which surfaces as a 500 instead of a 422.
-    title: str = Field(..., min_length=1, max_length=255)
-    week_of: date
-    storage_type: Literal['s3', 'local']
-
-    _reject_past_week = field_validator('week_of')(reject_past_week)
-    # s3
-    filename: str | None = None  # optional original filename for extension hint
-    content_type: str | None = None
-    note: str | None = None
-    # local
-    file_uri: str | None = Field(None, max_length=1024)
-
-class ScoreCreateResponse(BaseModel):
-    score_id: str
-    upload_url: str | None = None
-    download_url: str | None = None
-    s3_key: str | None = None
-    file_uri: str | None = None
-    created_at: datetime | None = None
-    # Defaults False so a consumer that does not know this key yet (an older
-    # frontend build) keeps behaving as if every create were brand new.
-    reused_song: bool = False
 
 class ScoreResponse(BaseModel):
     id: str
@@ -71,9 +41,7 @@ class ScoreResponse(BaseModel):
     song_id: str | None = None
 
 class ScoreFileUploadRequest(BaseModel):
-    # Required here, unlike ScoreCreate where the s3 branch checks it at
-    # runtime: that model also serves the `local` branch, which has no filename.
-    # This route has one branch and nothing to do without one.
+    # Required: this route has nothing to sign without one.
     filename: str = Field(..., min_length=1, max_length=1024)
     content_type: str | None = None
 

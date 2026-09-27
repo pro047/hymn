@@ -15,6 +15,7 @@ from datetime import date, timedelta
 
 from app.models import Score, Song
 from app.schemas.score import current_week_start
+from song_helpers import file_usage
 
 
 def _this_week_sunday() -> date:
@@ -49,13 +50,7 @@ OTHER_CHURCH_PAYLOAD = {
     "church": "Other Church",
 }
 
-NEW_SCORE = {
-    "title": "Amazing Grace",
-    "week_of": THIS_WEEK.isoformat(),
-    "storage_type": "s3",
-    "filename": "score.pdf",
-    "content_type": "application/pdf",
-}
+NEW_SCORE = {"title": "Amazing Grace", "week": THIS_WEEK.isoformat()}
 
 
 def _register(client, payload: dict) -> dict:
@@ -65,13 +60,20 @@ def _register(client, payload: dict) -> dict:
 
 
 def _create_score(client, headers: dict) -> str:
-    response = client.post("/scores", json=NEW_SCORE, headers=headers)
-    assert response.status_code == 200, response.text
-    return response.json()["score_id"]
+    return file_usage(client, headers, **NEW_SCORE).json()["score_id"]
 
 
-def test_creating_a_score_without_a_token_should_return_401(client):
-    response = client.post("/scores", json=NEW_SCORE)
+def test_uploading_a_song_without_a_token_should_return_401(client):
+    response = client.post("/songs", json={"title": "Amazing Grace", "filename": "score.pdf"})
+
+    assert response.status_code == 401, response.text
+
+
+def test_placing_a_song_without_a_token_should_return_401(client):
+    _create_score(client, _register(client, SIGNUP_PAYLOAD))
+    song_id = client.get("/scores").json()[0]["song_id"]
+
+    response = client.post(f"/songs/{song_id}/usages", json={"week_of": THIS_WEEK.isoformat()})
 
     assert response.status_code == 401, response.text
 
@@ -104,21 +106,27 @@ def test_a_created_score_should_belong_to_the_church_on_the_token(client):
     assert created.json()["church_id"] == session.json()["user"]["church_id"]
 
 
-def test_a_church_name_in_the_body_should_be_ignored_rather_than_honoured(client):
-    """The old field is gone; pydantic drops unknown keys rather than erroring,
-    so the risk is that it is silently honoured. It must not be."""
+def test_a_church_in_the_upload_body_should_be_ignored_rather_than_honoured(client):
+    """pydantic drops unknown keys rather than erroring, so the risk is that a
+    church named in the body is silently honoured. It must not be."""
     headers = _register(client, SIGNUP_PAYLOAD)
 
     response = client.post(
-        "/scores",
-        json={**NEW_SCORE, "church_name": "Somebody Elses Church", "church_id": "forged"},
+        "/songs",
+        json={
+            "title": "Amazing Grace",
+            "filename": "score.pdf",
+            "church_name": "Somebody Elses Church",
+            "church_id": "forged",
+        },
         headers=headers,
     )
 
-    assert response.status_code == 200, response.text
-    created = client.get(f"/scores/{response.json()['score_id']}", headers=headers)
-    assert created.json()["church_id"] != "forged"
-    assert "Somebody Elses Church" not in created.text
+    assert response.status_code == 201, response.text
+    assert [song["title"] for song in client.get("/songs", headers=headers).json()] == [
+        "Amazing Grace"
+    ]
+    assert f"scores/{_church_id_of(client, headers)}/" in response.json()["s3_key"]
 
 
 def test_updating_a_score_of_another_church_should_return_404(client):
@@ -160,9 +168,9 @@ def test_listing_scores_should_stay_open_to_anonymous_callers(client):
 def test_reading_one_score_without_a_token_should_return_401(client):
     """The list above stays open; this route does not, and the split is on purpose.
 
-    list_scores filters on week_of IS NOT NULL, which keeps saved-score uploads
-    — what the UI calls a personal library — out of the public answer. This
-    route had no filter, so it handed those to anyone who could name the id.
+    list_scores filters on week_of IS NOT NULL, which keeps the legacy weekless
+    library uploads out of the public answer. This route had no filter, so it
+    handed those to anyone who could name the id.
 
     Nothing calls it: the Flutter app makes exactly one request, GET /scores
     (hymn_app/lib/data/scores_api.dart:12), and the web uses this path for
@@ -187,47 +195,24 @@ def test_reading_one_score_of_another_church_should_return_404(client):
     assert response.status_code == 404, response.text
 
 
-def _local_score(file_uri: str) -> dict:
-    """The `local` branch, which is the one that takes a key from the caller."""
-    return {
-        "title": "Amazing Grace",
-        "week_of": THIS_WEEK.isoformat(),
-        "storage_type": "local",
-        "file_uri": file_uri,
-    }
-
-
 def _church_id_of(client, headers: dict) -> str:
     return client.get("/auth/me", headers=headers).json()["user"]["church_id"]
 
 
-def test_filing_a_score_against_another_churchs_object_key_should_return_400(client):
+def test_repointing_an_own_score_at_a_foreign_key_should_return_400(client):
     """The route must not sign a key its caller does not own.
 
-    file_uri is written through from the body and _download_url signs anything
-    under scores/, so without this the route is a signing oracle: name another
-    church's key and the response carries a presigned GET for their PDF. It
-    outlives any fix to the read routes, because the URL is minted from a key
-    rather than read off a row — which is why the gate is on the way in.
+    file_uri is written through from the body and presign_score_download signs
+    anything under scores/, so without this the route is a signing oracle:
+    point a score at another church's key and the response carries a presigned
+    GET for their file. The URL is minted from a key rather than read off a
+    row, which is why the gate is on the way in.
     """
     victim = _register(client, SIGNUP_PAYLOAD)
     attacker = _register(client, OTHER_CHURCH_PAYLOAD)
     victim_key = f"scores/{_church_id_of(client, victim)}/secret.pdf"
-
-    response = client.post("/scores", json=_local_score(victim_key), headers=attacker)
-
-    assert response.status_code == 400, response.text
-
-
-def test_repointing_an_own_score_at_a_foreign_key_should_return_400(client):
-    """Create and update need the same gate, or the create one is a speed bump."""
-    victim = _register(client, SIGNUP_PAYLOAD)
-    attacker = _register(client, OTHER_CHURCH_PAYLOAD)
-    victim_key = f"scores/{_church_id_of(client, victim)}/secret.pdf"
-    own_key = f"scores/{_church_id_of(client, attacker)}/mine.pdf"
-    created = client.post("/scores", json=_local_score(own_key), headers=attacker)
-    assert created.status_code == 200, created.text
-    score_id = created.json()["score_id"]
+    score_id = _create_score(client, attacker)
+    own_key = client.get(f"/scores/{score_id}", headers=attacker).json()["file_uri"]
 
     response = client.patch(f"/scores/{score_id}", json={"file_uri": victim_key}, headers=attacker)
 
@@ -236,22 +221,24 @@ def test_repointing_an_own_score_at_a_foreign_key_should_return_400(client):
     assert unchanged.json()["file_uri"] == own_key
 
 
-def test_a_key_outside_the_scores_prefix_should_return_400(client):
+def test_repointing_at_a_key_outside_the_scores_prefix_should_return_400(client):
     """`scores/` alone was the whole check, so anything under it could be signed
     — including a traversal-shaped key that leaves the church folder."""
     attacker = _register(client, OTHER_CHURCH_PAYLOAD)
+    score_id = _create_score(client, attacker)
 
     for key in ("scores/", "scores/../secrets/keys.pdf", "etc/passwd"):
-        response = client.post("/scores", json=_local_score(key), headers=attacker)
+        response = client.patch(f"/scores/{score_id}", json={"file_uri": key}, headers=attacker)
         assert response.status_code == 400, f"{key}: {response.text}"
 
 
-def test_filing_a_score_against_an_own_object_key_should_be_accepted(client):
+def test_repointing_at_an_own_object_key_should_be_accepted(client):
     """The gate must not close the legitimate path with it."""
     headers = _register(client, SIGNUP_PAYLOAD)
+    score_id = _create_score(client, headers)
     own_key = f"scores/{_church_id_of(client, headers)}/mine.pdf"
 
-    response = client.post("/scores", json=_local_score(own_key), headers=headers)
+    response = client.patch(f"/scores/{score_id}", json={"file_uri": own_key}, headers=headers)
 
     assert response.status_code == 200, response.text
 
@@ -283,18 +270,17 @@ def test_editing_the_title_of_a_legacy_score_should_still_work(client, db_sessio
     assert response.json()["download_url"] is None
 
 
-def test_creating_a_score_for_a_past_week_should_return_422(client):
+def test_placing_a_song_on_a_past_week_should_return_422(client):
     """A week that has already gone by is a mis-click, not a filing."""
     headers = _register(client, SIGNUP_PAYLOAD)
     last_week = (THIS_WEEK - timedelta(days=7)).isoformat()
 
-    response = client.post("/scores", json={**NEW_SCORE, "week_of": last_week}, headers=headers)
+    file_usage(client, headers, title="Amazing Grace", week=last_week, expect=422)
 
-    assert response.status_code == 422, response.text
-    assert "지난 주차" in response.text
+    assert client.get("/scores").json() == []
 
 
-def test_creating_a_score_for_the_current_week_should_be_accepted(client):
+def test_placing_a_song_on_the_current_week_should_be_accepted(client):
     """The floor is this week's Sunday, not today.
 
     A week is named by its Sunday, so mid-week that Sunday is already past by
@@ -302,15 +288,11 @@ def test_creating_a_score_for_the_current_week_should_be_accepted(client):
     """
     headers = _register(client, SIGNUP_PAYLOAD)
 
-    response = client.post(
-        "/scores", json={**NEW_SCORE, "week_of": THIS_WEEK.isoformat()}, headers=headers
-    )
-
-    assert response.status_code == 200, response.text
+    file_usage(client, headers, title="Amazing Grace", week=THIS_WEEK.isoformat())
 
 
 def test_moving_a_score_into_a_past_week_should_return_422(client):
-    """Otherwise the rule is trivially sidestepped by creating then editing."""
+    """Otherwise the rule is trivially sidestepped by placing then editing."""
     headers = _register(client, SIGNUP_PAYLOAD)
     score_id = _create_score(client, headers)
     last_week = (THIS_WEEK - timedelta(days=7)).isoformat()

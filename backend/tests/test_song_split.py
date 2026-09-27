@@ -3,10 +3,11 @@
 A `Song` is now the canonical title+file a church sings; a `Score` row is one
 week's use of it. The properties fixed here are the ones the design bought:
 
-- Reuse is the default and it never touches the song's file (D5). The failure
-  this guards is not cosmetic: with 44% of weekly uploads hitting an existing
-  title, a same-titled upload that updated the file would rewrite every past
-  week about twice a week.
+- A title the church already has is never uploaded again (409), so a
+  same-titled upload cannot touch the song's file (D5). The failure this guards
+  is not cosmetic: with 44% of weekly uploads hitting an existing title, a
+  same-titled upload that updated the file would rewrite every past week about
+  twice a week.
 - A PATCH is the only way to change the file/title, and it changes every week
   (D3/D8) — that is the "reupload fixes only one week" bug this split closes.
 - GET /scores keeps its Flutter contract: row-per-usage, created_at ascending,
@@ -16,6 +17,7 @@ week's use of it. The properties fixed here are the ones the design bought:
 from datetime import date, timedelta
 
 from app.models import Score, SetItem, Song
+from song_helpers import file_usage
 
 
 def _this_week_sunday() -> date:
@@ -52,24 +54,14 @@ def _register(client, payload: dict = SIGNUP) -> dict:
 
 
 def _post_score(client, headers, *, title, week, filename="score.png", expect=200):
-    response = client.post(
-        "/scores",
-        json={
-            "title": title,
-            "week_of": week,
-            "storage_type": "s3",
-            "filename": filename,
-            "content_type": "image/png",
-        },
-        headers=headers,
-    )
-    assert response.status_code == expect, response.text
+    """Files `title` on `week` through the library; the placement response."""
+    response = file_usage(client, headers, title=title, week=week, filename=filename, expect=expect)
     return response
 
 
 def _upload_saved(client, headers, *, title, filename="library.png", expect=201):
     response = client.post(
-        "/me/saved-scores/upload",
+        "/songs",
         json={"title": title, "filename": filename, "content_type": "image/png"},
         headers=headers,
     )
@@ -94,11 +86,8 @@ def test_same_title_in_a_second_week_should_reuse_the_song(client, db_session):
         client, headers, title="주 은혜임을", week=_week(1), filename="other.png"
     ).json()
 
-    # Assert — one song, two usages, and the reuse is announced
-    assert first["reused_song"] is False
-    assert first["upload_url"]
-    assert second["reused_song"] is True
-    assert second["upload_url"] is None
+    # Assert — one song, two usages
+    assert first["song_id"] == second["song_id"]
     songs = _songs(db_session)
     assert len(songs) == 1
     assert db_session.query(Score).count() == 2
@@ -107,37 +96,34 @@ def test_same_title_in_a_second_week_should_reuse_the_song(client, db_session):
     assert listed[0]["song_id"] == listed[1]["song_id"] == songs[0].id
 
 
-def test_a_reused_create_should_point_at_the_songs_existing_file(client, db_session):
-    """The candidate key minted for the second call was never uploaded to, so
-    answering with it would hand the client a download_url that 404s."""
+def test_a_second_weeks_usage_should_point_at_the_songs_existing_file(client, db_session):
+    """A usage's snapshot is the song's file; a second Sunday must not point at
+    a key nobody uploaded to."""
     # Arrange
     headers = _register(client)
     first = _post_score(client, headers, title="주 은혜임을", week=_week(0)).json()
+    song = db_session.get(Song, first["song_id"])
 
     # Act
-    second = _post_score(
-        client, headers, title="주 은혜임을", week=_week(1), filename="other.png"
-    ).json()
+    second = _post_score(client, headers, title="주 은혜임을", week=_week(1)).json()
 
-    # Assert — response and usage snapshot both carry the song's real file
-    assert second["s3_key"] == first["s3_key"]
-    assert first["s3_key"] in (second["download_url"] or "")
+    # Assert
     snapshot = db_session.get(Score, second["score_id"])
-    assert snapshot.file_uri == first["s3_key"]
+    assert snapshot.file_uri == song.file_uri
 
 
 # --- case 2: reuse must not update the file (the core of D5) -----------------
 
 
-def test_reusing_a_song_should_not_replace_its_file(client, db_session):
+def test_uploading_a_known_title_again_should_not_replace_its_file(client, db_session):
     """If this breaks, the accidental-overwrite path is back: a same-titled
     upload with a different file would rewrite what every past week shows."""
     # Arrange
     headers = _register(client)
-    first = _post_score(client, headers, title="주만 바라볼찌라", week=_week(0)).json()
+    first = _upload_saved(client, headers, title="주만 바라볼찌라").json()
 
     # Act
-    _post_score(client, headers, title="주만 바라볼찌라", week=_week(1), filename="v2.jpg")
+    _upload_saved(client, headers, title="주만 바라볼찌라", filename="v2.jpg", expect=409)
 
     # Assert
     song = _songs(db_session)[0]
@@ -249,13 +235,12 @@ def test_the_same_title_in_another_church_should_make_its_own_song(client, db_se
     ours = _register(client)
     theirs = _register(client, OTHER_CHURCH)
 
-    # Act
-    mine = _post_score(client, ours, title="은혜", week=_week(0)).json()
-    other = _post_score(client, theirs, title="은혜", week=_week(0)).json()
+    # Act — both uploads are new songs: no cross-church 409
+    mine = _upload_saved(client, ours, title="은혜").json()
+    other = _upload_saved(client, theirs, title="은혜").json()
 
-    # Assert — no cross-church reuse, and no cross-church 409 either
-    assert mine["reused_song"] is False
-    assert other["reused_song"] is False
+    # Assert — no cross-church reuse
+    assert mine["song_id"] != other["song_id"]
     assert len(_songs(db_session)) == 2
 
 
@@ -374,46 +359,41 @@ def test_get_one_score_should_serve_the_songs_file_not_the_snapshot(client, db_s
     assert body["file_url"].endswith(new_key)
 
 
-# --- case 8 / 8-a: the saved-scores path -------------------------------------
+# --- case 8 / 8-a: the library path ------------------------------------------
 
 
-def test_a_saved_score_upload_should_carry_a_song_and_apply_should_publish_it(
-    client, db_session
-):
+def test_an_uploaded_song_should_reach_get_scores_only_once_placed(client, db_session):
     # Arrange
     headers = _register(client)
     body = _upload_saved(client, headers, title="보관곡").json()
     assert db_session.get(Song, body["song_id"]) is not None
+    assert client.get("/scores").json() == []
 
     # Act
-    applied = client.post(
-        f"/me/saved-scores/{body['song_id']}/apply",
+    placed = client.post(
+        f"/songs/{body['song_id']}/usages",
         json={"week_of": _week(0)},
         headers=headers,
     )
 
     # Assert
-    assert applied.status_code == 200, applied.text
+    assert placed.status_code == 200, placed.text
     listed = [item for item in client.get("/scores").json() if item["song_id"] == body["song_id"]]
     assert [item["week_of"][:10] for item in listed] == [_week(0)]
 
 
-def test_reuploading_a_saved_score_should_return_409(client, db_session):
-    """D10: unlike POST /scores, the library answers a duplicate with 409 —
-    its response schema has no room for a reused_song signal and issuing a
-    presign anyway is what filled the bucket with orphans."""
+def test_reuploading_a_library_song_should_return_409(client, db_session):
+    """The library answers a duplicate with 409: issuing a presign anyway is
+    what filled the bucket with orphans."""
     # Arrange
     headers = _register(client)
-    first = _upload_saved(client, headers, title="보관곡").json()
-
-    # Assert — the success schema was not widened to carry the web's signal
-    assert "reused_song" not in first
+    _upload_saved(client, headers, title="보관곡")
 
     # Act
     response = _upload_saved(client, headers, title="보관곡", expect=409)
 
     # Assert
-    assert "이미 등록된 곡" in response.text
+    assert "이미 보관함에 있는 곡" in response.text
     assert len(_songs(db_session)) == 1
 
 
@@ -423,14 +403,14 @@ def test_the_library_should_follow_the_song_after_a_rename_or_file_swap(client, 
     every_week deliberately freezes as history. Reading score.title/file_uri
     here left the two tabs disagreeing after a PATCH on any other week, and the
     superseded S3 key still resolves, so nothing surfaced the drift."""
-    # Arrange — one saved song, plus a week's usage of it
+    # Arrange — one library song, plus a week's usage of it
     headers = _register(client)
     library_id = _upload_saved(client, headers, title="보관곡").json()["song_id"]
     usage_id = _post_score(client, headers, title="보관곡", week=_week(0)).json()["score_id"]
     church_id = db_session.get(Score, usage_id).church_id
     new_key = f"scores/{church_id}/renamed.png"
 
-    # Act — patch the week's usage; the saved entry itself is never touched
+    # Act — patch the week's usage; the library itself is never touched
     patched = client.patch(
         f"/scores/{usage_id}",
         json={"title": "새 보관곡", "file_uri": new_key},
@@ -439,7 +419,7 @@ def test_the_library_should_follow_the_song_after_a_rename_or_file_swap(client, 
     assert patched.status_code == 200, patched.text
 
     # Assert
-    listed = client.get("/me/saved-scores", headers=headers)
+    listed = client.get("/songs", headers=headers)
     assert listed.status_code == 200, listed.text
     items = {item["song_id"]: item for item in listed.json()}
     assert items[library_id]["title"] == "새 보관곡"
@@ -461,14 +441,16 @@ def test_spacing_and_case_variants_should_all_be_the_same_song(client, db_sessio
         "참  아름다워라",
     ]
 
-    # Act — each in its own week so only the title decides reuse
-    responses = [
-        _post_score(client, headers, title=title, week=_week(i)).json()
+    # Act
+    statuses = [
+        _upload_saved(client, headers, title=title, expect=201 if i == 0 else 409).status_code
         for i, title in enumerate(variants)
     ]
+    for i, title in enumerate(variants):
+        _post_score(client, headers, title=title, week=_week(i))
 
     # Assert — one song, and the display title is the first registration's own
-    assert [r["reused_song"] for r in responses] == [False, True, True, True]
+    assert statuses == [201, 409, 409, 409]
     assert len(_songs(db_session)) == 1
     titles = {item["title"] for item in client.get("/scores").json()}
     assert titles == {"참 아름다워라"}
@@ -480,10 +462,10 @@ def test_title_case_should_not_split_a_song(client, db_session):
     _post_score(client, headers, title="Amazing Grace", week=_week(0))
 
     # Act
-    second = _post_score(client, headers, title="amazing grace", week=_week(1)).json()
+    _upload_saved(client, headers, title="amazing grace", expect=409)
+    _post_score(client, headers, title="amazing grace", week=_week(1))
 
     # Assert
-    assert second["reused_song"] is True
     assert len(_songs(db_session)) == 1
     assert {item["title"] for item in client.get("/scores").json()} == {"Amazing Grace"}
 
@@ -500,15 +482,7 @@ def test_fullwidth_space_and_nbsp_should_normalize_too(client, db_session):
     headers = _register(client)
     _post_score(client, headers, title="참 아름다워라", week=_week(0))
 
-    # Act
-    with_fullwidth = _post_score(
-        client, headers, title="참" + fullwidth_space + "아름다워라", week=_week(1)
-    ).json()
-    with_nbsp = _post_score(
-        client, headers, title="참" + nbsp + "아름다워라", week=_week(2)
-    ).json()
-
-    # Assert
-    assert with_fullwidth["reused_song"] is True
-    assert with_nbsp["reused_song"] is True
+    # Act / Assert — both are the title the church already has
+    _upload_saved(client, headers, title="참" + fullwidth_space + "아름다워라", expect=409)
+    _upload_saved(client, headers, title="참" + nbsp + "아름다워라", expect=409)
     assert len(_songs(db_session)) == 1

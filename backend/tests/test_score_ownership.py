@@ -14,6 +14,7 @@ exists, and that account leads its church.
 from datetime import date, timedelta
 
 from app.models import Score
+from song_helpers import file_usage
 
 
 def _this_week_sunday() -> date:
@@ -33,13 +34,7 @@ LEADER_PAYLOAD = {
     "agreed_terms": True,
 }
 
-NEW_SCORE = {
-    "title": "Amazing Grace",
-    "week_of": THIS_WEEK.isoformat(),
-    "storage_type": "s3",
-    "filename": "score.pdf",
-    "content_type": "application/pdf",
-}
+NEW_SCORE = {"title": "Amazing Grace", "week_of": THIS_WEEK.isoformat()}
 
 
 def _headers(body: dict) -> dict:
@@ -65,9 +60,9 @@ def _join_member(client, code: str, email: str) -> dict:
 
 
 def _create_score(client, headers: dict, score: dict = NEW_SCORE) -> str:
-    response = client.post("/scores", json=score, headers=headers)
-    assert response.status_code == 200, response.text
-    return response.json()["score_id"]
+    return file_usage(client, headers, title=score["title"], week=score["week_of"]).json()[
+        "score_id"
+    ]
 
 
 def _user_id(client, headers: dict) -> str:
@@ -78,27 +73,6 @@ def test_a_created_score_should_carry_its_uploader(client, db_session):
     leader, _ = _found_church(client)
 
     score_id = _create_score(client, leader)
-
-    row = db_session.get(Score, score_id)
-    assert row.uploader_id == _user_id(client, leader)
-
-
-def test_a_local_score_should_carry_its_uploader_too(client, db_session):
-    """The route creates the row in two branches; each must set the field, or
-    ownership silently regresses for one storage type only."""
-    leader, _ = _found_church(client)
-    church_id = client.get("/auth/me", headers=leader).json()["user"]["church_id"]
-
-    score_id = _create_score(
-        client,
-        leader,
-        {
-            "title": "local upload",
-            "week_of": THIS_WEEK.isoformat(),
-            "storage_type": "local",
-            "file_uri": f"scores/{church_id}/mine.pdf",
-        },
-    )
 
     row = db_session.get(Score, score_id)
     assert row.uploader_id == _user_id(client, leader)

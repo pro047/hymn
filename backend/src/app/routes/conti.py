@@ -37,7 +37,7 @@ def get_week_conti_pdf(
     read_object: ObjectReader = Depends(get_object_reader),
 ) -> Response:
     # Every write path files a Score under the week's Sunday
-    # (routes/score.py, routes/saved_score.py), so a raw weekday here would
+    # (routes/score.py, routes/song.py), so a raw weekday here would
     # ask about a week that cannot exist in the table: a 404 that looks like
     # "nothing filed" when the songs are right there under Sunday's date.
     week_of = normalize_week_date(week_of)

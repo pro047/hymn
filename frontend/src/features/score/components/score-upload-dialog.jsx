@@ -186,7 +186,12 @@ export default function ScoreUploadDialog({
 
               <div className="space-y-2">
                 <Label>주차 선택</Label>
-                <DatePicker value={weekOf} onChange={setWeekOf} />
+                {/* The server refuses a Sunday already past (422). */}
+                <DatePicker
+                  value={weekOf}
+                  onChange={setWeekOf}
+                  disabled={{ before: startOfToday() }}
+                />
               </div>
             </>
           ) : (
