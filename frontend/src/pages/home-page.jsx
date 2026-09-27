@@ -37,11 +37,11 @@ export default function HomePage({ headerActions = null }) {
     scores,
     totalSongs,
     savedScores,
-    savedScoreIds,
+    savedSongIds,
     error,
     isUploading,
     isUpdating,
-    pendingSaveScoreId,
+    pendingSaveSongId,
     isApplyingSavedScore,
     createScoreWithUpload,
     updateScore,
@@ -154,8 +154,8 @@ export default function HomePage({ headerActions = null }) {
               weekOf={upcomingSundayWeekOf}
               onUpdate={setEditingScore}
               onDelete={deleteScore}
-              savedScoreIds={savedScoreIds}
-              pendingSaveScoreId={pendingSaveScoreId}
+              savedSongIds={savedSongIds}
+              pendingSaveSongId={pendingSaveSongId}
               onToggleSave={toggleSavedScore}
             />
           ) : (
@@ -171,7 +171,7 @@ export default function HomePage({ headerActions = null }) {
                 })
               }
               onRemove={removeSavedScore}
-              pendingSaveScoreId={pendingSaveScoreId}
+              pendingSaveSongId={pendingSaveSongId}
             />
           )}
         </main>

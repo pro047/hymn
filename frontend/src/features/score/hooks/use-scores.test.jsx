@@ -341,11 +341,36 @@ it("보관함 적용 409의 서버 detail을 메시지로 올려야 한다", asy
   let outcome;
   await act(async () => {
     outcome = await result.current.applySavedScoreToWeek({
-      scoreId: "score-1",
+      songId: "song-1",
       weekOf: "2026-10-04",
     });
   });
 
   // Assert
   expect(outcome).toEqual({ ok: false, message: "이 곡은 이미 그 주차에 등록되어 있습니다." });
+});
+
+it("보관 토글은 곡 id로 부르고, 저장된 곡 집합은 song_id로 만들어야 한다", async () => {
+  // Arrange — one saved song in the library
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    if (String(url).includes("saved-scores") && (options.method ?? "GET") === "GET") {
+      return ok([{ song_id: "song-1", title: "은혜", use_count: 1 }]);
+    }
+    return { ok: true, status: 204, json: async () => ({}) };
+  });
+  const { result } = renderHook(() => useScores());
+  await waitFor(() => expect(result.current.savedSongIds.has("song-1")).toBe(true));
+
+  // Act — a saved song toggles off, another toggles on
+  await act(async () => {
+    await result.current.toggleSavedScore("song-1");
+    await result.current.toggleSavedScore("song-2");
+  });
+
+  // Assert
+  const writes = calls
+    .filter((call) => /^(POST|DELETE) /.test(call))
+    .map((call) => call.replace(/ .*\/me\//, " /me/"));
+  expect(writes).toEqual(["DELETE /me/saved-scores/song-1", "POST /me/saved-scores/song-2"]);
 });

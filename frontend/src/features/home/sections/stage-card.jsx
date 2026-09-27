@@ -8,8 +8,8 @@ export default function StageCard({
   weekOf,
   onUpdate,
   onDelete,
-  savedScoreIds,
-  pendingSaveScoreId,
+  savedSongIds,
+  pendingSaveSongId,
   onToggleSave,
 }) {
   const stageScores = scores.slice(0, 5);
@@ -57,10 +57,10 @@ export default function StageCard({
                     variant="ghost"
                     size="sm"
                     type="button"
-                    disabled={pendingSaveScoreId === score.id}
-                    onClick={() => onToggleSave(score.id)}
+                    disabled={pendingSaveSongId === score.song_id}
+                    onClick={() => onToggleSave(score.song_id)}
                   >
-                    {savedScoreIds.has(score.id) ? "저장 해제" : "저장"}
+                    {savedSongIds.has(score.song_id) ? "저장 해제" : "저장"}
                   </Button>
                 ) : null}
                 <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score)}>

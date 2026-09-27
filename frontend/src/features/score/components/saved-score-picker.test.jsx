@@ -5,20 +5,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import SavedScorePicker from "./saved-score-picker";
 
-const saved = (id, title, useCount, lastUsedAt = null) => ({
-  score_id: id,
+const saved = (id, title, useCount, lastWeekOf = null) => ({
+  song_id: id,
   title,
   download_url: `https://example.test/${id}.png`,
   file_url: null,
   use_count: useCount,
-  last_used_at: lastUsedAt,
-  week_of: null,
+  last_week_of: lastWeekOf,
 });
 
 const SCORES = [
-  saved("a", "은혜 아니면", 1, "2026-09-01T00:00:00"),
-  saved("b", "주만 바라볼찌라", 5, "2026-08-01T00:00:00"),
-  saved("c", "은혜로다", 5, "2026-09-20T00:00:00"),
+  saved("a", "은혜 아니면", 1, "2026-09-06"),
+  saved("b", "주만 바라볼찌라", 5, "2026-08-02"),
+  saved("c", "은혜로다", 5, "2026-09-20"),
 ];
 
 function renderPicker(overrides = {}) {

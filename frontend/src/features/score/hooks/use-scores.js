@@ -11,11 +11,12 @@ export function useScores() {
   const [error, setError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [pendingSaveScoreId, setPendingSaveScoreId] = useState(null);
+  const [pendingSaveSongId, setPendingSaveSongId] = useState(null);
   const [isApplyingSavedScore, setIsApplyingSavedScore] = useState(false);
 
-  const savedScoreIds = useMemo(
-    () => new Set(savedScores.map((score) => score.score_id)),
+  // The library holds songs: every week's usage of a saved song shows as saved.
+  const savedSongIds = useMemo(
+    () => new Set(savedScores.map((score) => score.song_id)),
     [savedScores]
   );
 
@@ -135,7 +136,10 @@ export function useScores() {
       }
 
       await Promise.all([fetchScores(), saveToLibrary ? fetchSavedScores() : Promise.resolve()]);
-      return { ok: true, scoreId: data.score_id };
+      // A library upload files no Sunday, so it answers with the song instead.
+      return saveToLibrary
+        ? { ok: true, songId: data.song_id }
+        : { ok: true, scoreId: data.score_id };
     } catch (err) {
       setError(err.message);
       return { ok: false, message: err.message };
@@ -227,14 +231,14 @@ export function useScores() {
     }
   };
 
-  const saveScore = async (scoreId) => {
+  const saveScore = async (songId) => {
     if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return;
     }
-    setPendingSaveScoreId(scoreId);
+    setPendingSaveSongId(songId);
     try {
-      const response = await apiFetch(API_PATHS.savedScore(scoreId), {
+      const response = await apiFetch(API_PATHS.savedScore(songId), {
         method: "POST",
       });
       if (!response.ok) {
@@ -244,18 +248,18 @@ export function useScores() {
     } catch (err) {
       setError(err.message);
     } finally {
-      setPendingSaveScoreId(null);
+      setPendingSaveSongId(null);
     }
   };
 
-  const removeSavedScore = async (scoreId) => {
+  const removeSavedScore = async (songId) => {
     if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return;
     }
-    setPendingSaveScoreId(scoreId);
+    setPendingSaveSongId(songId);
     try {
-      const response = await apiFetch(API_PATHS.savedScore(scoreId), {
+      const response = await apiFetch(API_PATHS.savedScore(songId), {
         method: "DELETE",
       });
       if (!response.ok) {
@@ -265,26 +269,26 @@ export function useScores() {
     } catch (err) {
       setError(err.message);
     } finally {
-      setPendingSaveScoreId(null);
+      setPendingSaveSongId(null);
     }
   };
 
-  const toggleSavedScore = async (scoreId) => {
-    if (savedScoreIds.has(scoreId)) {
-      await removeSavedScore(scoreId);
+  const toggleSavedScore = async (songId) => {
+    if (savedSongIds.has(songId)) {
+      await removeSavedScore(songId);
       return;
     }
-    await saveScore(scoreId);
+    await saveScore(songId);
   };
 
-  const applySavedScoreToWeek = async ({ scoreId, weekOf }) => {
+  const applySavedScoreToWeek = async ({ songId, weekOf }) => {
     if (!isAuthenticated()) {
       setError("로그인이 필요합니다.");
       return { ok: false };
     }
     setIsApplyingSavedScore(true);
     try {
-      const response = await apiFetch(API_PATHS.applySavedScore(scoreId), {
+      const response = await apiFetch(API_PATHS.applySavedScore(songId), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -315,11 +319,11 @@ export function useScores() {
     scores,
     totalSongs,
     savedScores,
-    savedScoreIds,
+    savedSongIds,
     error,
     isUploading,
     isUpdating,
-    pendingSaveScoreId,
+    pendingSaveSongId,
     isApplyingSavedScore,
     createScoreWithUpload,
     updateScore,

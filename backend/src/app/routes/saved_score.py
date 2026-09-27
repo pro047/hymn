@@ -1,9 +1,8 @@
-import datetime as dt
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.db import get_session
@@ -18,7 +17,6 @@ from app.schemas.saved_score import (
 )
 from app.services.song import (
     add_usage,
-    attach_usage,
     get_or_reuse_song,
     has_usage_in_week,
     normalize_week_date,
@@ -31,12 +29,19 @@ router = APIRouter(prefix="/me/saved-scores", tags=["saved-scores"])
 
 
 
-def _get_saved_score(session: Session, user_id: str, score_id: str) -> SavedScore | None:
+def _get_saved_song(session: Session, user_id: str, song_id: str) -> SavedScore | None:
     return (
         session.query(SavedScore)
-        .filter(SavedScore.user_id == user_id, SavedScore.score_id == score_id)
+        .filter(SavedScore.user_id == user_id, SavedScore.song_id == song_id)
         .first()
     )
+
+
+def _church_song_or_404(session: Session, user: User, song_id: str) -> Song:
+    song = session.get(Song, song_id)
+    if not song or song.church_id != user.church_id:
+        raise HTTPException(status_code=404, detail="Song not found")
+    return song
 
 
 @router.get("", response_model=list[SavedScoreItem])
@@ -45,41 +50,48 @@ def list_saved_scores(
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    # Joined to Song, not read off the Score snapshot: a PATCH on *any* week's
-    # usage rewrites the song's title/file (D3/D8), and the library would
-    # otherwise keep serving the superseded title and the old S3 key — which
-    # still resolves, so the disagreement is silent. Score.song_id is NOT NULL,
-    # so the inner join cannot drop a saved row.
+    # "Used" means filed on a Sunday, however it got there -- an upload or an
+    # apply -- so both figures come off the song's usages rather than a counter
+    # that only the library's own apply ever bumped.
+    usage = (
+        session.query(
+            Score.song_id.label("song_id"),
+            func.count(Score.id).label("use_count"),
+            func.max(Score.week_of).label("last_week_of"),
+        )
+        .filter(Score.church_id == user.church_id, Score.week_of.is_not(None))
+        .group_by(Score.song_id)
+        .subquery()
+    )
+    use_count = func.coalesce(usage.c.use_count, 0)
     query = (
-        session.query(SavedScore, Score, Song)
-        .join(Score, Score.id == SavedScore.score_id)
-        .join(Song, Song.id == Score.song_id)
+        session.query(SavedScore, Song, use_count, usage.c.last_week_of)
+        .join(Song, Song.id == SavedScore.song_id)
+        .outerjoin(usage, usage.c.song_id == Song.id)
         .filter(SavedScore.user_id == user.id)
     )
 
     if sort == "frequent":
         query = query.order_by(
-            desc(SavedScore.use_count),
-            desc(SavedScore.last_used_at),
+            desc(use_count),
+            usage.c.last_week_of.desc().nulls_last(),
             desc(SavedScore.created_at),
         )
     else:
         query = query.order_by(desc(SavedScore.created_at))
 
-    rows = query.all()
     return [
         SavedScoreItem(
-            score_id=score.id,
+            song_id=song.id,
             title=song.title,
-            week_of=score.week_of,
             file_url=song.file_url,
             file_uri=song.file_uri,
             download_url=presign_score_download(song.file_uri),
             saved_at=saved.created_at,
-            last_used_at=saved.last_used_at,
-            use_count=saved.use_count,
+            last_week_of=last_week_of,
+            use_count=count,
         )
-        for saved, score, song in rows
+        for saved, song, count, last_week_of in query.all()
     ]
 
 
@@ -110,55 +122,40 @@ def upload_saved_score(
             detail="이미 등록된 곡입니다. 악보를 바꾸려면 [수정]을 사용해 주세요.",
         )
 
-    score = Score(
-        church_id=user.church_id,
-        uploader_id=user.id,
-        song_id=song.id,
-        title=payload.title,
-        week_of=None,
-        file_url=object_url(key),
-        file_uri=key,
-        status="draft",
-    )
-    session.add(score)
-    session.flush()
-    session.add(SavedScore(user_id=user.id, score_id=score.id))
+    # A song and an entry, no Sunday: it is filed on one when it is applied.
+    session.add(SavedScore(user_id=user.id, song_id=song.id))
     session.commit()
 
     return SavedScoreUploadResponse(
-        score_id=score.id,
+        song_id=song.id,
         upload_url=presign_put(key, 900),
         download_url=presign_get(key),
         s3_key=key,
     )
 
 
-@router.post("/{score_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/{song_id}", status_code=status.HTTP_204_NO_CONTENT)
 def save_score(
-    score_id: str,
+    song_id: str,
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    score = session.get(Score, score_id)
-    if not score or score.church_id != user.church_id:
-        raise HTTPException(status_code=404, detail="Score not found")
-
-    existing = _get_saved_score(session, user.id, score_id)
-    if existing:
+    _church_song_or_404(session, user, song_id)
+    if _get_saved_song(session, user.id, song_id):
         return
 
-    session.add(SavedScore(user_id=user.id, score_id=score_id))
+    session.add(SavedScore(user_id=user.id, song_id=song_id))
     session.commit()
     return
 
 
-@router.delete("/{score_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{song_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_saved_score(
-    score_id: str,
+    song_id: str,
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    saved = _get_saved_score(session, user.id, score_id)
+    saved = _get_saved_song(session, user.id, song_id)
     if not saved:
         return
 
@@ -167,47 +164,29 @@ def remove_saved_score(
     return
 
 
-@router.post("/{score_id}/apply", response_model=SavedScoreUseResponse)
+@router.post("/{song_id}/apply", response_model=SavedScoreUseResponse)
 def apply_saved_score(
-    score_id: str,
+    song_id: str,
     payload: SavedScoreApplyRequest,
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    saved = _get_saved_score(session, user.id, score_id)
-    if not saved:
+    if not _get_saved_song(session, user.id, song_id):
         raise HTTPException(status_code=404, detail="Saved score not found")
+    song = _church_song_or_404(session, user, song_id)
 
-    score = session.get(Score, score_id)
-    if not score or score.church_id != user.church_id:
-        raise HTTPException(status_code=404, detail="Score not found")
-
-    normalized_week_of = normalize_week_date(payload.week_of)
-    # One song, many Sundays: reusing it next week must not take it off the
-    # week it was already on, so a row that has a week stays there and a new
-    # usage is filed. Only a library upload, which has never been on a week,
-    # is filed in place -- this is its first use.
-    if has_usage_in_week(session, song_id=score.song_id, week_of=normalized_week_of):
+    # One song, many Sundays: a new usage is filed and the Sundays the song is
+    # already on keep it.
+    week_of = normalize_week_date(payload.week_of)
+    if has_usage_in_week(session, song_id=song.id, week_of=week_of):
         raise HTTPException(status_code=409, detail="이 곡은 이미 그 주차에 등록되어 있습니다.")
-    if score.week_of is None:
-        attach_usage(session, score, normalized_week_of)
-    else:
-        add_usage(
-            session,
-            score.song,
-            church_id=score.church_id,
-            uploader_id=user.id,
-            week_of=normalized_week_of,
-        )
-
-    saved.use_count += 1
-    saved.last_used_at = dt.datetime.utcnow()
-
-    session.commit()
-    session.refresh(saved)
-
-    return SavedScoreUseResponse(
-        score_id=score.id,
-        use_count=saved.use_count,
-        last_used_at=saved.last_used_at,
+    score = add_usage(
+        session,
+        song,
+        church_id=user.church_id,
+        uploader_id=user.id,
+        week_of=week_of,
     )
+    session.commit()
+
+    return SavedScoreUseResponse(song_id=song.id, score_id=score.id)
