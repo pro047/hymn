@@ -35,13 +35,13 @@ it("바뀔 수 없는 상태·버전 타일을 보여주지 않아야 한다", (
   expect(screen.queryByText("버전")).toBeNull();
 });
 
-it("업로드 버튼은 핸들러를 불러야 한다", () => {
+it("콘티에 곡 추가 버튼은 핸들러를 불러야 한다", () => {
   // Arrange
   const onUpload = vi.fn();
   render(<HeroSection totalSongs={0} onUpload={onUpload} />);
 
   // Act
-  fireEvent.click(screen.getByRole("button", { name: "악보 업로드" }));
+  fireEvent.click(screen.getByRole("button", { name: "콘티에 곡 추가" }));
 
   // Assert
   expect(onUpload).toHaveBeenCalledTimes(1);

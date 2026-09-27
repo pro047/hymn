@@ -85,4 +85,29 @@ describe("SavedScorePicker", () => {
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "없는곡" } });
     expect(screen.getByText("검색 결과가 없습니다.")).toBeTruthy();
   });
+
+  it("should offer to upload the searched title when nothing matched", () => {
+    const onUploadNew = vi.fn();
+    renderPicker({ onUploadNew });
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: " 새 노래 " } });
+    fireEvent.click(screen.getByRole("button", { name: "보관함에 새 악보 올리기" }));
+
+    expect(onUploadNew).toHaveBeenCalledWith("새 노래");
+  });
+
+  it("should offer to upload when the library is empty", () => {
+    const onUploadNew = vi.fn();
+    renderPicker({ scores: [], onUploadNew });
+
+    fireEvent.click(screen.getByRole("button", { name: "보관함에 새 악보 올리기" }));
+
+    expect(onUploadNew).toHaveBeenCalledWith("");
+  });
+
+  it("should not offer an upload while the search still has matches", () => {
+    renderPicker({ onUploadNew: vi.fn() });
+
+    expect(screen.queryByRole("button", { name: "보관함에 새 악보 올리기" })).toBeNull();
+  });
 });

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Check } from "lucide-react";
 
+import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { matchesTitle } from "../../../lib/korean-search";
 
@@ -12,17 +13,26 @@ function byMostUsed(a, b) {
   return String(b.last_week_of ?? "").localeCompare(String(a.last_week_of ?? ""));
 }
 
-export default function SavedScorePicker({ scores, selectedId, onSelect }) {
+export default function SavedScorePicker({ scores, selectedId, onSelect, onUploadNew }) {
   const [query, setQuery] = useState("");
 
   const visible = useMemo(() => {
     return [...scores].filter((score) => matchesTitle(score.title, query)).sort(byMostUsed);
   }, [scores, query]);
 
+  // Nothing to pick means the song is not in the library yet, and placing
+  // only picks from the library, so the way on is uploading it.
+  const uploadNew = onUploadNew ? (
+    <Button type="button" variant="outline" size="sm" onClick={() => onUploadNew(query.trim())}>
+      보관함에 새 악보 올리기
+    </Button>
+  ) : null;
+
   if (scores.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-stone-300 p-4 text-sm text-stone-500">
-        보관함이 비어 있습니다.
+      <div className="space-y-3 rounded-md border border-dashed border-stone-300 p-4 text-sm text-stone-500">
+        <p>보관함이 비어 있습니다.</p>
+        {uploadNew}
       </div>
     );
   }
@@ -37,7 +47,10 @@ export default function SavedScorePicker({ scores, selectedId, onSelect }) {
         aria-label="보관함 악보 검색"
       />
       {visible.length === 0 ? (
-        <p className="py-6 text-center text-sm text-stone-500">검색 결과가 없습니다.</p>
+        <div className="flex flex-col items-center gap-3 py-6 text-sm text-stone-500">
+          <p>검색 결과가 없습니다.</p>
+          {uploadNew}
+        </div>
       ) : (
         <div className="grid max-h-96 grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3">
           {visible.map((score) => {
