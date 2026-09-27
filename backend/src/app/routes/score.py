@@ -20,6 +20,7 @@ from app.schemas.score import (
 from app.services.score_edit import clear_edit, save_edit
 from app.services.song import (
     SongTitleTaken,
+    add_usage,
     attach_usage,
     get_or_reuse_song,
     has_usage_in_week,
@@ -125,19 +126,16 @@ def create_score(
     file_url = candidate_file_url if created else song.file_url
     file_uri = candidate_file_uri if created else song.file_uri
 
-    score = Score(
+    score = add_usage(
+        session,
+        song,
         church_id=church_id,
         uploader_id=user.id,
-        song_id=song.id,
-        title=payload.title,
         week_of=normalized_week_of,
+        title=payload.title,
         file_url=file_url,
         file_uri=file_uri,
-        status='draft',
     )
-    session.add(score)
-    session.flush()
-    attach_usage(session, score, normalized_week_of)
     session.commit()
     session.refresh(score)
 

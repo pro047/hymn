@@ -16,7 +16,13 @@ from app.schemas.saved_score import (
     SavedScoreUploadResponse,
     SavedScoreUseResponse,
 )
-from app.services.song import attach_usage, get_or_reuse_song, normalize_week_date
+from app.services.song import (
+    add_usage,
+    attach_usage,
+    get_or_reuse_song,
+    has_usage_in_week,
+    normalize_week_date,
+)
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_get, presign_put, presign_score_download
 
@@ -177,7 +183,22 @@ def apply_saved_score(
         raise HTTPException(status_code=404, detail="Score not found")
 
     normalized_week_of = normalize_week_date(payload.week_of)
-    attach_usage(session, score, normalized_week_of)
+    # One song, many Sundays: reusing it next week must not take it off the
+    # week it was already on, so a row that has a week stays there and a new
+    # usage is filed. Only a library upload, which has never been on a week,
+    # is filed in place -- this is its first use.
+    if has_usage_in_week(session, song_id=score.song_id, week_of=normalized_week_of):
+        raise HTTPException(status_code=409, detail="이 곡은 이미 그 주차에 등록되어 있습니다.")
+    if score.week_of is None:
+        attach_usage(session, score, normalized_week_of)
+    else:
+        add_usage(
+            session,
+            score.song,
+            church_id=score.church_id,
+            uploader_id=user.id,
+            week_of=normalized_week_of,
+        )
 
     saved.use_count += 1
     saved.last_used_at = dt.datetime.utcnow()
