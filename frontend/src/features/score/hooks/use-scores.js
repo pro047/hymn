@@ -4,7 +4,6 @@ import { apiFetch } from "../../../api/client";
 import { API_PATHS } from "../../../api/paths";
 import { alertMessageOf, readApiError } from "../../../lib/api-error";
 import { isAuthenticated } from "../../../lib/auth-storage";
-import { SAVED_SCORES_ENABLED } from "../feature-flags";
 
 export function useScores() {
   const [scores, setScores] = useState([]);
@@ -42,9 +41,7 @@ export function useScores() {
   }, []);
 
   const fetchSavedScores = useCallback(async () => {
-    // Nothing renders saved scores while the flag is off, so this request only
-    // cost a round trip on every mount and threw its answer away.
-    if (!SAVED_SCORES_ENABLED || !isAuthenticated()) {
+    if (!isAuthenticated()) {
       setSavedScores([]);
       return;
     }
@@ -295,13 +292,20 @@ export function useScores() {
         body: JSON.stringify({ week_of: weekOf }),
       });
       if (!response.ok) {
-        throw new Error("저장소 악보를 주차에 반영하지 못했습니다.");
+        // The week-clash 409 carries a detail the leader can act on (pick
+        // another week); the generic text hid it. Same reader as the upload.
+        const apiError = await readApiError(
+          response,
+          "저장소 악보를 주차에 반영하지 못했습니다.",
+          []
+        );
+        throw new Error(alertMessageOf(apiError));
       }
       await Promise.all([fetchScores(), fetchSavedScores()]);
       return { ok: true };
     } catch (err) {
       setError(err.message);
-      return { ok: false };
+      return { ok: false, message: err.message };
     } finally {
       setIsApplyingSavedScore(false);
     }

@@ -41,9 +41,8 @@ function ProtectedHomePage() {
   }
 
   // Handed to the page instead of layered over it. As a `fixed` sibling the
-  // group stayed put while the header scrolled away, and it only cleared the
-  // header's own right-hand side because the tab bar is hidden while
-  // SAVED_SCORES_ENABLED is off — turning the flag on would have collided.
+  // group stayed put while the header scrolled away and collided with the tab
+  // bar that now shares the header.
   return (
     <HomePage
       headerActions={
