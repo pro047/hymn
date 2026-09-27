@@ -226,12 +226,6 @@ class ScoreAsset(Base):
 
     score: Mapped["Score"] = relationship(back_populates="assets")
 
-# `saved_scores` still exists in the database but is no longer mapped: the
-# library became the church's songs (routes/song.py), and this release stops
-# every deployed image from naming the table, which is what lets the next one
-# drop it (tests/test_saved_score_unmapped_columns.py).
-
-
 class Week(Base):
     __tablename__ = "weeks"
 

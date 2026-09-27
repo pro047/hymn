@@ -5,10 +5,11 @@ Deploy runs `alembic upgrade head` and only then swaps containers
 deployed image names it -- otherwise the still-running old image queries a
 table that is gone, and a rollback to that image 500s for good.
 
-The library became the church's songs (routes/song.py) and this release stops
-mapping saved_scores; a later one drops it. While the table still exists,
-nothing else in the suite fails if a mapping comes back, so the drop migration
-would then break production with every test green. These tests are that alarm.
+The library became the church's songs (routes/song.py); 294694b stopped
+mapping saved_scores and migration 0ffde4301ddb dropped it a release later.
+Before the drop nothing else in the suite noticed a restored mapping. Now the
+test database has no such table, so a restored one breaks whatever reads it --
+and these two are the ones that say why.
 """
 
 from app.main import app
