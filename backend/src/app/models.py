@@ -246,10 +246,6 @@ class SavedScore(Base):
     song_id: Mapped[str] = mapped_column(
         ForeignKey("songs.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # `score_id`, `use_count` and `last_used_at` still exist in the database
-    # but are no longer mapped: this release stops every deployed image from
-    # naming them, which is what lets the next one drop them (migration
-    # b7e3d1f9a2c4, tests/test_saved_score_unmapped_columns.py).
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="saved_scores")

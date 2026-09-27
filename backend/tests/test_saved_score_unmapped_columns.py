@@ -5,10 +5,11 @@ Deploy runs `alembic upgrade head` and only then swaps containers
 deployed image names it -- otherwise the still-running old image SELECTs a
 column that is gone, and a rollback to that image 500s for good.
 
-Migration b7e3d1f9a2c4 moved the library onto songs and this release stops
-mapping the usage-era columns; a later one drops them. While they still exist,
-nothing else in the suite fails if a mapping comes back, so the drop migration
-would then break production with every test green. These tests are that alarm.
+Migration b7e3d1f9a2c4 moved the library onto songs and stopped mapping the
+usage-era columns; migration 18af83d5c624 dropped them a release later. Before
+the drop nothing else in the suite noticed a restored mapping. Now that the
+test database is at head, a restored one breaks every test that reads
+saved_scores -- and these two are the ones that say why.
 """
 
 from sqlalchemy import select
