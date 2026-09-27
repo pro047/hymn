@@ -19,7 +19,7 @@ export default function HeroSection({ totalSongs, onUpload }) {
             </p>
           </div>
           <Button type="button" onClick={onUpload}>
-            악보 업로드
+            콘티에 곡 추가
           </Button>
         </div>
         {/* One tile, not three. "상태: Draft" and "버전: v1" were fixed strings:

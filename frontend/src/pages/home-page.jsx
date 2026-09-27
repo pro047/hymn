@@ -27,7 +27,6 @@ export default function HomePage({ headerActions = null }) {
     mode: null,
     file: null,
     savedScore: null,
-    lockMode: false,
     sessionKey: 0,
   });
   const [editingScore, setEditingScore] = useState(null);
@@ -52,18 +51,12 @@ export default function HomePage({ headerActions = null }) {
     return scores.filter((score) => String(score.week_of).slice(0, 10) === upcomingSundayWeekOf);
   }, [scores, upcomingSundayWeekOf]);
 
-  const openUploadDialog = ({
-    mode = null,
-    file = null,
-    savedScore = null,
-    lockMode = false,
-  } = {}) => {
+  const openUploadDialog = ({ mode = null, file = null, savedScore = null } = {}) => {
     setUploadDialogState({
       open: true,
       mode,
       file,
       savedScore,
-      lockMode,
       sessionKey: Date.now(),
     });
   };
@@ -74,7 +67,6 @@ export default function HomePage({ headerActions = null }) {
       mode: null,
       file: null,
       savedScore: null,
-      lockMode: false,
       sessionKey: 0,
     });
   };
@@ -122,7 +114,10 @@ export default function HomePage({ headerActions = null }) {
       </header>
 
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
-        <HeroSection totalSongs={totalSongs} onUpload={() => openUploadDialog()} />
+        <HeroSection
+          totalSongs={totalSongs}
+          onUpload={() => openUploadDialog({ mode: "library" })}
+        />
 
         {error ? (
           <Alert variant="destructive">
@@ -155,7 +150,6 @@ export default function HomePage({ headerActions = null }) {
                 openUploadDialog({
                   mode: "pc",
                   file,
-                  lockMode: true,
                 })
               }
             />
@@ -188,7 +182,6 @@ export default function HomePage({ headerActions = null }) {
         initialMode={uploadDialogState.mode}
         initialFile={uploadDialogState.file}
         initialSavedScore={uploadDialogState.savedScore}
-        lockMode={uploadDialogState.lockMode}
       />
     </div>
   );

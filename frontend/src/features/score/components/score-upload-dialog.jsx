@@ -34,7 +34,6 @@ export default function ScoreUploadDialog({
   initialMode,
   initialFile,
   initialSavedScore,
-  lockMode = false,
 }) {
   const [mode, setMode] = useState(getInitialMode(initialMode));
   const [title, setTitle] = useState(() => getInitialTitle(initialFile));
@@ -117,7 +116,7 @@ export default function ScoreUploadDialog({
 
     window.alert(
       mode === "library"
-        ? "선택한 악보를 반영했습니다."
+        ? "콘티에 추가했습니다."
         : placeNow
           ? "보관함에 올리고 주차에 배치했습니다."
           : "보관함에 업로드되었습니다."
@@ -130,11 +129,11 @@ export default function ScoreUploadDialog({
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.12em] text-stone-500">
-              악보 업로드
+              {mode === "library" ? "콘티에 곡 추가" : "보관함에 업로드"}
             </p>
             <h2 className="mt-1 text-xl font-semibold text-stone-950">
               {mode === "library"
-                ? "보관함 악보를 주차에 반영하세요"
+                ? "보관함에서 곡을 골라 콘티에 추가하세요"
                 : "보관함에 새 악보를 추가하세요"}
             </h2>
           </div>
@@ -144,28 +143,6 @@ export default function ScoreUploadDialog({
         </div>
 
         <form className="space-y-4" onSubmit={handleSubmit}>
-          {!lockMode ? (
-            <div className="space-y-2">
-              <Label>추가 방식</Label>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant={mode === "library" ? "default" : "outline"}
-                  onClick={() => setMode("library")}
-                >
-                  보관함
-                </Button>
-                <Button
-                  type="button"
-                  variant={mode === "pc" ? "default" : "outline"}
-                  onClick={() => setMode("pc")}
-                >
-                  PC 업로드
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
           {mode === "library" ? (
             <>
               <div className="space-y-2">
@@ -174,6 +151,13 @@ export default function ScoreUploadDialog({
                   scores={savedScores}
                   selectedId={selectedSongId}
                   onSelect={setSelectedSongId}
+                  onUploadNew={(query) => {
+                    // A song the library does not have yet is uploaded first;
+                    // the typed search is the likeliest title for it.
+                    setMode("pc");
+                    setTitle(query);
+                    setSubmitError("");
+                  }}
                 />
               </div>
 
@@ -284,8 +268,8 @@ export default function ScoreUploadDialog({
             >
               {mode === "library"
                 ? applyLoading
-                  ? "반영 중..."
-                  : "주차 반영"
+                  ? "추가 중..."
+                  : "콘티에 추가"
                 : uploadLoading
                   ? "업로드 중..."
                   : "업로드"}

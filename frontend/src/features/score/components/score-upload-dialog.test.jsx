@@ -146,12 +146,36 @@ describe("제출 payload", () => {
   });
 });
 
-describe("추가 방식 선택", () => {
-  it("'보관함'과 'PC 업로드'를 둘 다 고를 수 있어야 한다", () => {
-    renderDialog();
+describe("모드", () => {
+  it("보관함과 PC 업로드를 오가는 전환 버튼이 없어야 한다", () => {
+    renderDialog({ initialMode: "library" });
 
-    expect(screen.getByRole("button", { name: "보관함" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "PC 업로드" })).toBeTruthy();
+    // The caller decides: placing opens on the library, uploading on the file
+    // form. A switch here was a second way to upload that skipped the library.
+    expect(screen.queryByRole("button", { name: "PC 업로드" })).toBeNull();
+    expect(screen.queryByText("추가 방식")).toBeNull();
+  });
+
+  it("보관함에서 고르면 콘티에 추가로 읽혀야 한다", () => {
+    renderDialog({ initialMode: "library" });
+
+    expect(screen.getByText("보관함에서 곡을 골라 콘티에 추가하세요")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "콘티에 추가" })).toBeTruthy();
+  });
+
+  it("찾는 곡이 없으면 검색어를 제목으로 채워 업로드로 넘어가야 한다", () => {
+    renderDialog({
+      initialMode: "library",
+      savedScores: [
+        { song_id: "s1", title: "은혜", use_count: 1, last_week_of: null, download_url: null },
+      ],
+    });
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "새 노래" } });
+    fireEvent.click(screen.getByRole("button", { name: "보관함에 새 악보 올리기" }));
+
+    expect(screen.getByText("보관함에 새 악보를 추가하세요")).toBeTruthy();
+    expect(screen.getByLabelText("악보 제목").value).toBe("새 노래");
   });
 });
 
