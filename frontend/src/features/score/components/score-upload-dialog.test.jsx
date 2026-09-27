@@ -139,12 +139,10 @@ describe("제출 payload", () => {
 });
 
 describe("추가 방식 선택", () => {
-  it("보관함 플래그가 꺼져 있으면 'PC 업로드'가 유일한 선택지여야 한다", () => {
+  it("'보관함'과 'PC 업로드'를 둘 다 고를 수 있어야 한다", () => {
     renderDialog();
 
-    // And "pc" is already the initial mode, so clicking it changes nothing —
-    // the button looks unresponsive because there is nothing to switch to.
-    expect(screen.queryByRole("button", { name: "보관함" })).toBeNull();
+    expect(screen.getByRole("button", { name: "보관함" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "PC 업로드" })).toBeTruthy();
   });
 });

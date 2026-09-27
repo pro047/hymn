@@ -78,6 +78,39 @@ def has_usage_in_week(session: Session, *, song_id: str, week_of: dt.date | None
     )
 
 
+def add_usage(
+    session: Session,
+    song: Song,
+    *,
+    church_id: str,
+    uploader_id: str,
+    week_of: dt.date,
+    title: str | None = None,
+    file_url: str | None = None,
+    file_uri: str | None = None,
+) -> Score:
+    """A new usage of `song` filed under `week_of`, set item included.
+
+    Title and file are the usage's snapshot and default to the song's own;
+    POST /scores passes what the leader typed and, for a brand-new song, the
+    key its upload is about to fill.
+    """
+    score = Score(
+        church_id=church_id,
+        uploader_id=uploader_id,
+        song_id=song.id,
+        title=title if title is not None else song.title,
+        week_of=week_of,
+        file_url=file_url if file_url is not None else song.file_url,
+        file_uri=file_uri if file_uri is not None else song.file_uri,
+        status="draft",
+    )
+    session.add(score)
+    session.flush()
+    attach_usage(session, score, week_of)
+    return score
+
+
 def replace_song_file(session: Session, song: Song, *, file_url: str, file_uri: str | None) -> None:
     song.file_url = file_url
     song.file_uri = file_uri
@@ -140,9 +173,7 @@ def attach_usage(session: Session, score: Score, week_of: dt.date) -> None:
     #
     # Only when the week actually changes, and the check lives here rather
     # than in the callers because they do not agree: update_score already
-    # guards this call, apply_saved_score calls it every time, and re-applying
-    # a score to the week it is already on would otherwise throw the edit away
-    # without moving anything.
+    # guards this call, and the other callers file a row that has no week yet.
     if score.week_of != week_of:
         clear_edit(score)
     score.week_of = week_of

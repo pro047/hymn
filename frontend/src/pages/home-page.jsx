@@ -9,16 +9,12 @@ import StageCard from "../features/home/sections/stage-card";
 import SavedScoresCard from "../features/score/components/saved-scores-card";
 import ScoreEditDialog from "../features/score/components/score-edit-dialog";
 import ScoreUploadDialog from "../features/score/components/score-upload-dialog";
-import { SAVED_SCORES_ENABLED } from "../features/score/feature-flags";
 import { useScores } from "../features/score/hooks/use-scores";
 
 // 주차·설정 are gone: both rendered "준비 중인 탭입니다" and nothing else.
-// What remains is a tab bar only when there is more than one destination —
-// with the library flag off, "악보" is the whole page and a one-tab bar is
-// furniture. Turning SAVED_SCORES_ENABLED on brings the bar back.
 const tabs = [
   { id: "scores", label: "악보" },
-  ...(SAVED_SCORES_ENABLED ? [{ id: "library", label: "보관함" }] : []),
+  { id: "library", label: "보관함" },
 ];
 
 // headerActions is a slot, not a role flag: who may see 교회 관리 and what
@@ -160,12 +156,9 @@ export default function HomePage({ headerActions = null }) {
               onDelete={deleteScore}
               savedScoreIds={savedScoreIds}
               pendingSaveScoreId={pendingSaveScoreId}
-              onToggleSave={SAVED_SCORES_ENABLED ? toggleSavedScore : null}
+              onToggleSave={toggleSavedScore}
             />
           ) : (
-            /* Reachable only with SAVED_SCORES_ENABLED on — that flag is what
-               puts the 보관함 tab in the bar at all. There is no third branch
-               now that 주차·설정 are gone. */
             <SavedScoresCard
               scores={savedScores}
               onApplyRequest={(score) => openUploadDialog({ mode: "library", savedScore: score })}
