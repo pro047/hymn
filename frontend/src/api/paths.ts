@@ -16,8 +16,8 @@ export const API_PATHS = {
   scoreEditedFile: (scoreId: string) => `${API_BASE}/scores/${scoreId}/edited-file`,
   savedScores: `${API_BASE}/me/saved-scores`,
   savedScoreUpload: `${API_BASE}/me/saved-scores/upload`,
-  savedScore: (scoreId: string) => `${API_BASE}/me/saved-scores/${scoreId}`,
-  applySavedScore: (scoreId: string) => `${API_BASE}/me/saved-scores/${scoreId}/apply`,
+  savedScore: (songId: string) => `${API_BASE}/me/saved-scores/${songId}`,
+  applySavedScore: (songId: string) => `${API_BASE}/me/saved-scores/${songId}/apply`,
   // The address goes in the query string, so it must be escaped: `+` and `&` are
   // legal in a local part and would otherwise be read as syntax.
   authCheckEmail: (email: string) =>

@@ -5,11 +5,11 @@ import { Input } from "../../../components/ui/input";
 import { matchesTitle } from "../../../lib/korean-search";
 
 // Picking songs for a Sunday favors the ones sung most, so the most used lead
-// and the more recently used break a tie. The library tab keeps its own
+// and the more recently sung break a tie. The library tab keeps its own
 // newest-first order; this re-sorts the list it already fetched.
 function byMostUsed(a, b) {
   if (b.use_count !== a.use_count) return b.use_count - a.use_count;
-  return String(b.last_used_at ?? "").localeCompare(String(a.last_used_at ?? ""));
+  return String(b.last_week_of ?? "").localeCompare(String(a.last_week_of ?? ""));
 }
 
 export default function SavedScorePicker({ scores, selectedId, onSelect }) {
@@ -41,13 +41,13 @@ export default function SavedScorePicker({ scores, selectedId, onSelect }) {
       ) : (
         <div className="grid max-h-96 grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3">
           {visible.map((score) => {
-            const selected = score.score_id === selectedId;
+            const selected = score.song_id === selectedId;
             return (
               <button
-                key={score.score_id}
+                key={score.song_id}
                 type="button"
                 aria-pressed={selected}
-                onClick={() => onSelect(score.score_id)}
+                onClick={() => onSelect(score.song_id)}
                 className={`relative overflow-hidden rounded-lg border bg-white text-left transition ${
                   selected
                     ? "border-stone-900 ring-2 ring-stone-900"

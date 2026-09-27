@@ -285,44 +285,29 @@ def _set_items_of(db_session, score_id: str) -> list[SetItem]:
     return db_session.query(SetItem).filter(SetItem.score_id == score_id).all()
 
 
-def test_patching_a_week_onto_a_library_row_should_create_its_set_item(client, db_session):
+def test_patching_a_week_onto_a_weekless_row_should_create_its_set_item(client, db_session):
     """The old PATCH did nothing when no SetItem existed (`if items:`); the
-    unified attach_usage inserts one, and that change is deliberate — a library
-    row moved into a week must end up in that week's set either way."""
-    # Arrange — a library upload has week_of NULL and no SetItem
+    unified attach_usage inserts one, and that change is deliberate — a row
+    moved into a week must end up in that week's set either way. Library
+    uploads no longer make such rows, but older ones exist (dev has two)."""
+    # Arrange — a week_of NULL usage with no SetItem, as legacy library rows are
     headers = _register(client)
-    score_id = _upload_saved(client, headers, title="보관곡").json()["score_id"]
+    score_id = _post_score(client, headers, title="주차없음", week=_week(0)).json()["score_id"]
+    db_session.query(SetItem).filter(SetItem.score_id == score_id).delete()
+    db_session.get(Score, score_id).week_of = None
+    db_session.commit()
     assert _set_items_of(db_session, score_id) == []
 
     # Act
     response = client.patch(
-        f"/scores/{score_id}", json={"week_of": _week(0)}, headers=headers
+        f"/scores/{score_id}", json={"week_of": _week(1)}, headers=headers
     )
 
     # Assert
     assert response.status_code == 200, response.text
     items = _set_items_of(db_session, score_id)
     assert len(items) == 1
-    assert items[0].week_date.isoformat() == _week(0)
-
-
-def test_patch_and_apply_should_file_a_library_row_the_same_way(client, db_session):
-    """D11's point: the result must not depend on which door the row came
-    through. Same fixture, other door, same outcome as the test above."""
-    # Arrange
-    headers = _register(client)
-    score_id = _upload_saved(client, headers, title="보관곡 둘").json()["score_id"]
-
-    # Act
-    response = client.post(
-        f"/me/saved-scores/{score_id}/apply", json={"week_of": _week(0)}, headers=headers
-    )
-
-    # Assert — one SetItem in the same week, exactly like the PATCH door
-    assert response.status_code == 200, response.text
-    items = _set_items_of(db_session, score_id)
-    assert len(items) == 1
-    assert items[0].week_date.isoformat() == _week(0)
+    assert items[0].week_date.isoformat() == _week(1)
 
 
 # --- case 7: the GET /scores contract ----------------------------------------
@@ -340,13 +325,13 @@ CONTRACT_KEYS = {
 
 
 def test_get_scores_should_keep_the_flutter_contract(client):
-    # Arrange — three usages in creation order, plus one library row
+    # Arrange — three usages in creation order, plus one library-only song
     headers = _register(client)
     ids = [
         _post_score(client, headers, title=f"곡{i}", week=_week(i)).json()["score_id"]
         for i in range(3)
     ]
-    library_id = _upload_saved(client, headers, title="비공개 보관곡").json()["score_id"]
+    library_song = _upload_saved(client, headers, title="비공개 보관곡").json()["song_id"]
 
     # Act — anonymous, exactly as the tablets call it
     response = client.get("/scores")
@@ -359,8 +344,8 @@ def test_get_scores_should_keep_the_flutter_contract(client):
         assert item["song_id"] is not None
     # created_at ascending == creation order; a join must not reshuffle it
     assert [item["id"] for item in items] == ids
-    # week_of NULL rows are the personal library and stay out of the answer
-    assert library_id not in {item["id"] for item in items}
+    # A song only in someone's library has no Sunday and stays out of the answer
+    assert library_song not in {item["song_id"] for item in items}
 
 
 def test_get_one_score_should_serve_the_songs_file_not_the_snapshot(client, db_session):
@@ -398,21 +383,19 @@ def test_a_saved_score_upload_should_carry_a_song_and_apply_should_publish_it(
     # Arrange
     headers = _register(client)
     body = _upload_saved(client, headers, title="보관곡").json()
-    score = db_session.get(Score, body["score_id"])
-    assert score.song_id is not None
+    assert db_session.get(Song, body["song_id"]) is not None
 
     # Act
     applied = client.post(
-        f"/me/saved-scores/{body['score_id']}/apply",
+        f"/me/saved-scores/{body['song_id']}/apply",
         json={"week_of": _week(0)},
         headers=headers,
     )
 
     # Assert
     assert applied.status_code == 200, applied.text
-    listed = {item["id"]: item for item in client.get("/scores").json()}
-    assert body["score_id"] in listed
-    assert listed[body["score_id"]]["song_id"] == score.song_id
+    listed = [item for item in client.get("/scores").json() if item["song_id"] == body["song_id"]]
+    assert [item["week_of"][:10] for item in listed] == [_week(0)]
 
 
 def test_reuploading_a_saved_score_should_return_409(client, db_session):
@@ -440,14 +423,14 @@ def test_the_library_should_follow_the_song_after_a_rename_or_file_swap(client, 
     every_week deliberately freezes as history. Reading score.title/file_uri
     here left the two tabs disagreeing after a PATCH on any other week, and the
     superseded S3 key still resolves, so nothing surfaced the drift."""
-    # Arrange — one saved row, plus a separate week's usage of the same song
+    # Arrange — one saved song, plus a week's usage of it
     headers = _register(client)
-    library_id = _upload_saved(client, headers, title="보관곡").json()["score_id"]
+    library_id = _upload_saved(client, headers, title="보관곡").json()["song_id"]
     usage_id = _post_score(client, headers, title="보관곡", week=_week(0)).json()["score_id"]
     church_id = db_session.get(Score, usage_id).church_id
     new_key = f"scores/{church_id}/renamed.png"
 
-    # Act — patch the *other* week; the saved row itself is never touched
+    # Act — patch the week's usage; the saved entry itself is never touched
     patched = client.patch(
         f"/scores/{usage_id}",
         json={"title": "새 보관곡", "file_uri": new_key},
@@ -458,7 +441,7 @@ def test_the_library_should_follow_the_song_after_a_rename_or_file_swap(client, 
     # Assert
     listed = client.get("/me/saved-scores", headers=headers)
     assert listed.status_code == 200, listed.text
-    items = {item["score_id"]: item for item in listed.json()}
+    items = {item["song_id"]: item for item in listed.json()}
     assert items[library_id]["title"] == "새 보관곡"
     assert items[library_id]["file_uri"] == new_key
     assert items[library_id]["file_url"].endswith(new_key)

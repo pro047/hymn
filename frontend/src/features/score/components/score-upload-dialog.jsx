@@ -19,8 +19,8 @@ function getInitialTitle(file) {
 }
 
 function getSavedScoreWeekLabel(score) {
-  if (!score?.week_of) return "주차 미지정";
-  return String(score.week_of).slice(0, 10);
+  if (!score?.last_week_of) return "아직 없음";
+  return String(score.last_week_of).slice(0, 10);
 }
 
 export default function ScoreUploadDialog({
@@ -41,9 +41,7 @@ export default function ScoreUploadDialog({
   const [title, setTitle] = useState(() => getInitialTitle(initialFile));
   const [weekOf, setWeekOf] = useState(null);
   const [file, setFile] = useState(initialFile ?? null);
-  const [selectedSavedScoreId, setSelectedSavedScoreId] = useState(
-    initialSavedScore?.score_id ?? ""
-  );
+  const [selectedSongId, setSelectedSongId] = useState(initialSavedScore?.song_id ?? "");
   const [submitError, setSubmitError] = useState("");
   const previewUrl = useMemo(() => {
     if (!file) return "";
@@ -65,8 +63,7 @@ export default function ScoreUploadDialog({
 
   if (!open) return null;
 
-  const selectedSavedScore =
-    savedScores.find((score) => score.score_id === selectedSavedScoreId) ?? null;
+  const selectedSavedScore = savedScores.find((score) => score.song_id === selectedSongId) ?? null;
   const isSubmitting = mode === "library" ? applyLoading : uploadLoading;
   const isLibraryUpload = mode === "pc" && saveToLibrary;
 
@@ -75,9 +72,9 @@ export default function ScoreUploadDialog({
     let result = null;
 
     if (mode === "library") {
-      if (!selectedSavedScoreId || !weekLabel) return;
+      if (!selectedSongId || !weekLabel) return;
       result = await onApplySavedScore({
-        scoreId: selectedSavedScoreId,
+        songId: selectedSongId,
         weekOf: weekLabel,
       });
     } else {
@@ -102,7 +99,7 @@ export default function ScoreUploadDialog({
     setTitle("");
     setWeekOf(null);
     setFile(null);
-    setSelectedSavedScoreId("");
+    setSelectedSongId("");
     setSubmitError("");
 
     if (result.reused) {
@@ -172,8 +169,8 @@ export default function ScoreUploadDialog({
                 <Label>보관함 악보</Label>
                 <SavedScorePicker
                   scores={savedScores}
-                  selectedId={selectedSavedScoreId}
-                  onSelect={setSelectedSavedScoreId}
+                  selectedId={selectedSongId}
+                  onSelect={setSelectedSongId}
                 />
               </div>
 
@@ -266,7 +263,7 @@ export default function ScoreUploadDialog({
               disabled={
                 isSubmitting ||
                 (mode === "library"
-                  ? !selectedSavedScoreId || !weekLabel
+                  ? !selectedSongId || !weekLabel
                   : !title || !file || (!isLibraryUpload && !weekLabel))
               }
             >

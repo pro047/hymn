@@ -217,9 +217,6 @@ class Score(Base):
     song: Mapped["Song"] = relationship(back_populates="usages")
     assets: Mapped[list["ScoreAsset"]] = relationship(back_populates="score", cascade="all, delete-orphan")
     set_items: Mapped[list["SetItem"]] = relationship(back_populates="score", cascade="all, delete-orphan")
-    saved_by: Mapped[list["SavedScore"]] = relationship(
-        back_populates="score", cascade="all, delete-orphan"
-    )
 
 class ScoreAsset(Base):
     __tablename__ = "score_assets"
@@ -233,19 +230,30 @@ class ScoreAsset(Base):
     score: Mapped["Score"] = relationship(back_populates="assets")
 
 class SavedScore(Base):
+    """A song a user keeps in their library to file on later Sundays.
+
+    Keyed by song, not by the usage it was saved from: taking that one Sunday
+    off must not take the entry with it, and "last sung" / "how often" are
+    read off all of the song's usages (routes/saved_score.py).
+    """
+
     __tablename__ = "saved_scores"
     __table_args__ = (
-        UniqueConstraint("user_id", "score_id", name="uq_saved_scores_user_score"),
+        UniqueConstraint("user_id", "song_id", name="uq_saved_scores_user_song"),
         )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    score_id: Mapped[str] = mapped_column(ForeignKey("scores.id", ondelete="CASCADE"), nullable=False)
-    use_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    song_id: Mapped[str] = mapped_column(
+        ForeignKey("songs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # `score_id`, `use_count` and `last_used_at` still exist in the database
+    # but are no longer mapped: this release stops every deployed image from
+    # naming them, which is what lets the next one drop them (migration
+    # b7e3d1f9a2c4, tests/test_saved_score_unmapped_columns.py).
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
-    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="saved_scores")
-    score: Mapped["Score"] = relationship(back_populates="saved_by")
+    song: Mapped["Song"] = relationship()
 
 class Week(Base):
     __tablename__ = "weeks"

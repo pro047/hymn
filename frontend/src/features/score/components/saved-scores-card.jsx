@@ -9,7 +9,7 @@ export default function SavedScoresCard({
   onApplyRequest,
   onRemove,
   onQuickUpload,
-  pendingSaveScoreId,
+  pendingSaveSongId,
 }) {
   const fileInputRef = useRef(null);
 
@@ -51,7 +51,7 @@ export default function SavedScoresCard({
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
             {scores.map((score) => (
-              <div key={score.score_id} className="group relative min-w-0">
+              <div key={score.song_id} className="group relative min-w-0">
                 <button
                   type="button"
                   className="block w-full text-left"
@@ -75,10 +75,10 @@ export default function SavedScoresCard({
                   size="icon"
                   type="button"
                   className="absolute right-2 top-2 h-8 w-8 rounded-full border-stone-200 bg-white/95 opacity-0 shadow-sm transition group-hover:opacity-100"
-                  disabled={pendingSaveScoreId === score.score_id}
+                  disabled={pendingSaveSongId === score.song_id}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onRemove(score.score_id);
+                    onRemove(score.song_id);
                   }}
                 >
                   <Trash2 className="h-4 w-4" />
