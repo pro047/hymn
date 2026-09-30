@@ -3,14 +3,14 @@
 #
 # 역할 분리:
 #   이 스크립트  = 오케스트레이터. 진행 결정권을 독점한다.
-#   advisor.sh   = 상담역. 읽기 전용. 진행 권한 없음.
+#   런처 세션    = 실행·전달·y 중계만 한다. 진행 결정권 없음 (launcher-protocol.md).
 #   사람         = 유일하게 게이트 버튼을 누르는 주체.
 #
 # 사용법:
 #   ./orchestrate.sh <feature-name>
 #   AUTO=1 ./orchestrate.sh <feature-name>            # 사람 게이트 건너뜀 (무인)
 #   MAX_RETRY=3 ./orchestrate.sh <feature-name>
-#   RESUME_FROM=verify ./orchestrate.sh <feature-name>  # impl 건너뛰고 verify 부터
+#   RESUME_FROM=impl ./orchestrate.sh <feature-name>    # verify(테스트) 재사용, impl 부터
 #   PREFLIGHT_CMD="npm run build" ./orchestrate.sh <f>  # 에이전트 전 환경 기준선 검사
 
 set -euo pipefail
@@ -28,55 +28,64 @@ AUTO="${AUTO:-0}"
 # 설계를 새로 뽑고 싶으면 FRESH_DESIGN=1
 FRESH_DESIGN="${FRESH_DESIGN:-0}"
 
-# ── RESUME_FROM=verify ──────────────────────────────
-# 첫 바퀴에서 impl 을 건너뛰고 verify 부터 시작한다.
-# 계기(2026-08-30): verify 가 계정 세션 한도(api_error)로 죽었다. 코드는 impl 이
-# STATUS: DONE 으로 남긴 그대로인데, 재시도 루프가 impl→verify 를 한 쌍으로 묶고
-# 있어서 재실행하면 impl 부터 다시 돈다 (design·judge 에만 재사용 로직이 있다).
+# ── RESUME_FROM=impl ────────────────────────────────
+# verify(테스트 선작성)를 건너뛰고 이전 주행의 테스트로 impl 부터 시작한다.
+# 계기: 테스트를 다 쓴 뒤 impl 이 계정 한도(api_error)로 죽으면 재실행이 verify 부터
+# 다시 돈다 (design·judge 에만 재사용 로직이 있다). 예전 RESUME_FROM=verify 의 자리다 —
+# 2026-09-30 red→green 으로 verify 가 impl 앞으로 옮겨 갔다.
 #
-# **자동 판정을 넣지 않는 이유**: 루프는 두 실패를 구분해야 한다 —
-#   검증 명령 실패(테스트가 빨감) → impl 재주행이 **필요하다**
-#   단계 자체가 사망(예산·API 오류)   → impl 재주행이 **불필요하다**
-# 셸이 이 둘을 안전하게 가르지 못한다. 그래서 사람이 명시할 때만 건너뛴다.
+# **자동 판정을 넣지 않는 이유**: 이전 주행의 impl 이 소스를 반쯤 고쳤을 수 있어 red 를 다시
+# 확인할 수 없다. 테스트를 그대로 믿어도 되는지는 사람이 정한다. 그래서 명시할 때만 건너뛴다.
 RESUME_FROM="${RESUME_FROM:-}"
 
 # ── 검증 명령 ────────────────────────────────────────
-# 프로젝트마다 다르다. 기본값 npm test 가 그 저장소에서 성공 불가면 재시도 루프가
-# 예산만 태운다 (2026-08-28 hymn, ~$39). 각색할 때 **반드시** 이 저장소에서 실제로
-# 통과하는 명령으로 바꿔라. 테스트 파일이 0개일 때 실패하는 러너여야 한다 —
-# 검증 단계가 테스트를 안 쓰고 넘어간 것을 게이트가 통과시키면 안 된다.
-# hymn 각색: 기본값 npm test 는 이 저장소에 루트 package.json 이 없어 성공 불가다.
-#
-# ★ 한 줄에 한 명령. run_verify 가 줄 단위로 갈라 따로 돌린다 (아래 함수 참조).
-# && 로 잇지 않는 이유: 이으면 실패했을 때 VERIFY_FAILED 에 사슬 전체가 들어가
-# FAIL_LOG 를 읽는 impl 이 어느 검사가 깨졌는지 모른다. 시간 상한도 명령별로 걸린다.
-#
-# 목록은 .github/workflows/ci.yml 과 **같아야 한다** — 게이트가 CI 보다 느슨하면
-# 파이프라인이 "통과" 시킨 코드가 push 후에 깨진다. 2026-09-08 에 두 번 밟았다
-# (react-hooks 위반 1건 · prettier 위반 1건). 대응: ci.yml:47,50(백엔드)
-# · :80,83,86,89,92(프론트). CI 에 단계를 추가하면 여기에도 추가할 것.
-# build 의 VITE_API_BASE_URL 도 CI 를 따른 것이다 (ci.yml:94). paths.ts:1 이 이 값을
-# 검증 없이 읽어 번들에 박으므로, 안 주면 게이트와 CI 가 서로 다른 입력으로 빌드한다.
-#
-# ★★ 이 여러 줄 형식은 hymn 전용이다 — 스킬 정본은 아직 단일 문자열 + && 다
-# (SKILL.md:323). 현장 복사본 재동기화 때 run_verify 골격이 정본으로 덮이면
-# 이 값만 남아 **여러 줄이 통째로 한 명령으로 실행된다** (조용히 첫 줄만 돌거나 문법 오류).
-# 재동기화 시 run_verify 의 줄 분할이 살아 있는지 반드시 확인할 것.
-DEFAULT_TEST_CMD=$(cat <<'EOF'
-(cd backend && .venv/bin/ruff check src tests alembic)
+# 프로젝트마다 다르므로 **기본값을 두지 않는다.** 예전에는 npm test 가 기본값이었는데,
+# 그 저장소에서 성공 불가인 채로 재시도 루프가 예산만 태웠다 (2026-08-28 실측, ~$39).
+# 그렇다고 "기본값 그대로면 경고"로는 못 잡는다 — 진짜 npm 저장소에서는 npm test 가
+# 정답이라, 각색을 안 한 것과 각색이 맞은 것이 문자열로 구분되지 않는다.
+# 그래서 탐지하지 않고 **선언을 강제한다**: 비어 있으면 에이전트를 띄우기 전에 죽는다($0).
+# 테스트 파일이 0개일 때 실패하는 러너여야 한다 — 검증 단계가 테스트를 안 쓰고 넘어간
+# 것을 게이트가 통과시키면 안 된다.
+TEST_CMD_WAS_SET="${TEST_CMD+x}"   # hymn 각색: 아래 DEFAULT_TEST_CMDS 판정용
+TEST_CMD="${TEST_CMD:-}"
+
+# ── 검증 명령이 여럿일 때 ────────────────────────────
+# 줄바꿈으로 나열한다. `&&` 로 잇지 마라 — run_verify 가 체인 전체를 명령 하나로 보므로
+# 어느 검사가 깨졌는지 FAIL_LOG 에 안 남고, 다음 구현 시도가 그걸 읽는다.
+# CI 가 도는 검사 전부를 넣는다. 테스트만 넣고 린트·타입 검사를 빼면 게이트가 초록이어도
+# "넣은 명령이 통과했다"는 뜻일 뿐이다.
+#   TEST_CMDS="pytest -q
+#   npm run lint
+#   npm run typecheck"
+# 비어 있으면 $TEST_CMD 하나를 쓴다 (하위호환). 앞뒤 공백과 빈 줄은 무시한다.
+# hymn 각색: .github/workflows/ci.yml 과 **같아야 한다** — 게이트가 CI 보다 느슨하면
+# 파이프라인이 "통과" 시킨 코드가 push 후에 깨진다 (2026-09-08 두 번 밟음: react-hooks·prettier).
+# 대응: ci.yml:47,50(백엔드) · :80,83,86,89,92(프론트). CI 에 단계를 추가하면 여기에도 추가할 것.
+# build 의 VITE_API_BASE_URL 은 CI 를 따른 것이다(ci.yml:94) — 안 주면 게이트와 CI 가 다른 입력으로 빌드한다.
+# 순서는 CI 와 다르게 **테스트 먼저**다. run_verify 는 첫 실패에서 멈추고 red 게이트는 어느 명령이
+# 실패해도 red 로 친다 — 린트가 앞이면 verify 가 쓴 테스트 파일의 import 순서 하나로 red 가 "확인"되고,
+# impl 은 테스트 파일을 못 고치니 green 에 영영 못 간다 (2026-09-30 /code-review 지적).
+DEFAULT_TEST_CMDS=$(cat <<'EOF'
 (cd backend && .venv/bin/python -m pytest -q)
+(cd frontend && pnpm test)
+(cd backend && .venv/bin/ruff check src tests alembic)
 (cd frontend && pnpm lint)
 (cd frontend && pnpm format:check)
 (cd frontend && pnpm typecheck)
-(cd frontend && pnpm test)
 (cd frontend && VITE_API_BASE_URL=/api pnpm build)
 EOF
 )
-TEST_CMD="${TEST_CMD:-$DEFAULT_TEST_CMD}"
+# 둘 다 **설정되지 않았을 때만** 기본값을 쓴다 — `:-` 가 아니라 `+x` 인 이유: 게이트 테스트는
+# TEST_CMD 만 주고 돌며(TEST_CMDS 가 이기면 hymn 명령이 가짜 리포에서 돈다), 미선언 케이스는
+# 둘 다 "" 로 명시해 정본의 exit 2 를 기대한다 (test/run-tests.sh 미선언 케이스).
+if [ -z "${TEST_CMDS+x}" ] && [ -z "${TEST_CMD_WAS_SET:-}" ]; then
+  TEST_CMDS="$DEFAULT_TEST_CMDS"
+fi
+TEST_CMDS="${TEST_CMDS:-}"
 
 # ── 프리플라이트 (선택) ──────────────────────────────
 # 에이전트를 **띄우기 전에** 환경 기준선을 판정하는 명령. 여기서 죽으면 비용이 $0 이다.
-# 계기(DMS 실측): .env 가 없는 체크아웃에서 npm run build 가 원래 안 되는데, 셸이
+# 계기(2026-08 실측): .env 가 없는 체크아웃에서 npm run build 가 원래 안 되는데, 셸이
 # 그걸 impl 이 만든 실패로 오인해 impl+verify 사이클을 3회 태웠다. 그리고 다른 주행에서는
 # phase:DONE 이 떴는데 타입 검사가 한 번도 안 돌았다 — 기준선이 녹색이어야 "이후 실패는
 # 에이전트가 만든 것"이라고 말할 수 있다.
@@ -111,11 +120,11 @@ PROTECTED_FILES="${PROTECTED_FILES:-package.json package-lock.json pnpm-lock.yam
 # 기본값은 git 읽기 4개. 각색 시 이 저장소의 테스트 러너를 **정확한 형태로** 추가한다
 # (예: "Bash(.venv/bin/python -m pytest:*)", "Bash(cd frontend && pnpm test:*)").
 # 쉼표 구분 한 줄. 넓게 열지 마라 — 범위 게이트가 백스톱이지만 임의 실행은 그 밖이다.
-# hymn 각색: 뒤 3개가 이 저장소의 러너다 (mvp b30b9a9 이식, 커밋 18d2378).
-# 헤드리스라 ask 는 곧 거부고, 확인 불가는 BLOCKED 가 된다 —
+# hymn 각색: git 4개 뒤가 이 저장소의 러너·검사기다 — 전부 **읽기(확인)** 명령이다. `pnpm format` 처럼
+# 쓰는 명령은 넣지 않는다 (소스까지 고쳐 범위·단계별 쓰기 게이트에 걸린다). 헤드리스라 ask 는 곧 거부고, 확인 불가는 BLOCKED 가 된다 —
 # 2026-08-30 token-sweep-a impl 이 실제로 여기서 멈췄다.
 # python 허용은 임의 실행과 동급이지만, 범위 게이트(목록 밖 변경 = 즉사)가 백스톱이다.
-AGENT_TOOLS="${AGENT_TOOLS:-Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git ls-files:*),Bash(backend/.venv/bin/python:*),Bash(cd backend && .venv/bin/python:*),Bash(cd frontend && pnpm test:*)}"
+AGENT_TOOLS="${AGENT_TOOLS:-Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git ls-files:*),Bash(backend/.venv/bin/python:*),Bash(cd backend && .venv/bin/python:*),Bash(cd frontend && pnpm test:*),Bash(cd backend && .venv/bin/ruff check:*),Bash(cd frontend && pnpm lint:*),Bash(cd frontend && pnpm format:check:*),Bash(cd frontend && pnpm typecheck:*)}"
 
 # ── 정본 문서 주입 (선택) ────────────────────────────
 # 설계 프롬프트 끝에 여기 적힌 파일의 본문을 `cat -n` 으로 이어 붙인다. "읽어라"는 부탁이고
@@ -138,35 +147,56 @@ ADD_DIRS="${ADD_DIRS:-}"
 # ── 모델 티어링 ──────────────────────────────────────
 # 별칭 대신 풀 ID를 박는다. 별칭은 어느 날 조용히 다른 모델을 가리킨다.
 #
-#   설계  : 상위(Opus). 2026-09-05 최상위에서 내림 — Opus 설계 3주행 재시도 0건, 재가격 $4.38→$2.59.
-#   판단검증: 최상위(Fable). 설계를 반박하는 일이고, 설계와 **다른 모델**이 감사해야 맹점을
-#           공유하지 않는다 (design-notes §6). 유일하게 최상위를 남기는 자리다.
-#   구현  : 설계가 확정돼 있으면 난이도가 내려간다. 중간 티어로 충분.
-#   검증  : 상위(Opus). 2026-09-05 최상위에서 내림. **Opus 검증 품질은 미측정**(과거 8건 전부
-#           Fable) — 3주행 뒤 재판단. 되돌리려면 MODEL_VERIFY=claude-fable-5-1.
+#   설계  : 상위(Opus 5.5).
+#   판단검증: codex(gpt-6.1-sol → gpt-6-astra). 설계와 **다른 회사 모델**이 감사한다
+#           (design-notes §6). claude 로 돌릴 때의 기준 모델은 Opus 5.5 — 아래 "엔진 접두사".
+#   구현  : 중간(Sonnet 5.5). 설계가 확정돼 있으면 난이도가 내려간다.
+#   검증  : 상위(Opus 5.5). **Opus 검증 품질은 미측정**(과거 8건 전부 Fable).
 #
-# 근거는 실적 재가격이다 (2026-09-05, 45 단계주행). Fable→Opus 는 단계당 42% 절감이지 50% 가
-# 아니다 — 캐시 읽기 단가($0.25 vs $0.50)가 반대 방향이라서다. 전체 주행 기준 $13.1 → $9.9.
-# effort 는 이 변경과 분리해서 다음 단계에 잰다 — 두 변수를 같이 바꾸면 절감 출처를 못 가른다.
+# 2026-09-30 세대 교체: opus-5 → opus-5-5, sonnet-5 → sonnet-5-5 (사용자 결정). 비용 실적은
+# 5 세대 기준(2026-09-05 재가격, 전체 주행 $13.1 → $9.9)이라 5.5 세대로 다시 재야 한다.
+# effort 는 이 변경과 분리해서 잰다 — 두 변수를 같이 바꾸면 차이의 출처를 못 가른다.
 #
 # FALLBACK_* 은 가용성 폴백(529 과부하 등) **그리고** 레이트리밋 순환 체인이다.
 # --fallback-model 은 과부하·부재만 받고 창 소진 거부는 셸이 감지해 다음 항목으로
 # 갈아탄다 (rate_limited 참조). 안전 분류기에 의한 모델 교체는 둘 다로 막을 수 없다 —
 # MODEL_LOG.md 로 감시한다.
-MODEL_DESIGN="${MODEL_DESIGN:-claude-opus-5}"
-MODEL_JUDGE="${MODEL_JUDGE:-claude-fable-5-1}"
-MODEL_IMPL="${MODEL_IMPL:-claude-sonnet-5}"
-MODEL_VERIFY="${MODEL_VERIFY:-claude-opus-5}"
+MODEL_DESIGN="${MODEL_DESIGN:-claude-opus-5-5}"
+MODEL_JUDGE="${MODEL_JUDGE:-codex:gpt-6.1-sol}"
+MODEL_IMPL="${MODEL_IMPL:-claude-sonnet-5-5}"
+MODEL_VERIFY="${MODEL_VERIFY:-claude-opus-5-5}"
 
 # 폴백은 먼저 **위**로 간다. 과부하 때 하위 티어로 떨어뜨리면 산출물 품질이 조용히 무너진다.
 # 체인 끝의 sonnet 은 두 풀이 다 소진됐을 때 죽는 대신 돌리는 최후 수단이다 — FAIL_LOG 집계
 # (2026-09-05) 에서 Fable 리밋 5건·Opus 리밋 5건, 양쪽 풀이 다 막힌다. 주 모델이 Opus 인
 # 단계의 첫 폴백이 Fable 인 이유: 리밋으로 갈아탄 주행은 Fable 값을 내지만, 버려진 부분
-# 주행보다 싸다. 판단검증은 이미 최상위라 갈 곳이 아래뿐이다.
-FALLBACK_DESIGN="${FALLBACK_DESIGN:-claude-fable-5-1,claude-sonnet-5}"
-FALLBACK_JUDGE="${FALLBACK_JUDGE:-claude-opus-5,claude-sonnet-5}"
-FALLBACK_IMPL="${FALLBACK_IMPL:-claude-opus-5}"
-FALLBACK_VERIFY="${FALLBACK_VERIFY:-claude-fable-5-1,claude-sonnet-5}"
+# 주행보다 싸다.
+FALLBACK_DESIGN="${FALLBACK_DESIGN:-claude-fable-5-1,claude-sonnet-5-5}"
+FALLBACK_JUDGE="${FALLBACK_JUDGE:-codex:gpt-6-astra}"
+FALLBACK_IMPL="${FALLBACK_IMPL:-claude-opus-5-5}"
+FALLBACK_VERIFY="${FALLBACK_VERIFY:-claude-fable-5-1,claude-sonnet-5-5}"
+
+# ── 엔진 접두사 (judge 전용 codex 엔진) ─────────────────
+# 체인 항목은 `엔진:모델` 이다. 접두사가 없으면 claude 로 본다 (기존 설정 그대로 동작).
+#   codex:<모델>  — `codex exec` 로 돈다. **judge 에만** 쓸 수 있다: read-only 샌드박스라
+#                   파일을 못 쓰고, 셸이 최종 응답(-o)을 산출물로 저장한다. 감사 단계에
+#                   "고치지 않는다"를 프롬프트가 아니라 샌드박스로 강제하는 구조다.
+#
+# judge 기본값은 codex(GPT) 다 (2026-09-30 사용자 결정 — A 방식). 설계와 다른 회사 모델이
+# 감사해야 맹점을 덜 공유한다 (design-notes §6 의 교차 감사 근거를 모델 계열 단위로 넓힌 것).
+# 체인에 claude 항목이 없으므로 codex 가 전부 막히면 **자동으로 claude 로 넘어가지 않고**
+# exit 5 로 멈춰 사람에게 전환 여부를 묻는다. 자동 전환을 원하면 체인 끝에 claude 를 붙인다:
+#   FALLBACK_JUDGE="codex:gpt-6-astra,claude-opus-5-5"
+# codex 없이 돌리려면:
+#   MODEL_JUDGE=claude-opus-5-5 FALLBACK_JUDGE=claude-fable-5-1,claude-sonnet-5-5
+#
+# 다른 PC 호환: 사용자 codex 설정(~/.codex/config.toml)을 읽지 않는다(--ignore-user-config).
+# PC 마다 기본 effort·플러그인·notify 가 달라 judge 동작이 갈라지기 때문이다. 필요한 값은
+# 전부 명령줄로 준다. Windows 는 샌드박스 설정도 명령줄로 줘야 한다 — 사용자 설정의
+# `[windows] sandbox = "elevated"` 가 빠지면 읽기 명령까지 전부 거부된다 (2026-09-30 실측).
+CODEX_BIN="${CODEX_BIN:-codex}"
+CODEX_EFFORT="${CODEX_EFFORT:-high}"      # 사용자 설정 기본값(low)을 따르지 않는다
+CODEX_TIMEOUT="${CODEX_TIMEOUT:-2400}"    # 초. codex exec 에는 턴 상한이 없어 시간으로 막는다
 
 # ── 단계별 상한 ──────────────────────────────────────
 # 턴 상한은 무한루프 탈출용이다. 실적보다 넉넉히 둔다 — 2026-08-31 실측: 40턴 시절
@@ -198,7 +228,7 @@ BUDGET_VERIFY="${BUDGET_VERIFY:-}"
 #       git-common-dir 은 <main>/.git 을 가리킨다. 메인 체크아웃에서는 둘이 같다.
 #
 # die() 를 안 쓴다 — 아직 아무 단계도 안 돌았는데 STATE.md 에 DIED 를 남기면
-# 상담역이 "돌다가 죽었다"로 읽는다. 시작 자체를 거부한 것과는 다른 사건이다.
+# 런처가 "돌다가 죽었다"로 읽는다. 시작 자체를 거부한 것과는 다른 사건이다.
 REQUIRE_WORKTREE="${REQUIRE_WORKTREE:-1}"
 if [ "$REQUIRE_WORKTREE" = "1" ] \
    && [ "$(git -C "$ROOT" rev-parse --git-dir)" = "$(git -C "$ROOT" rev-parse --git-common-dir)" ]; then
@@ -213,7 +243,7 @@ fi
 
 mkdir -p "$WORK"
 FAIL_LOG="$WORK/FAIL_LOG.md"     # append-only
-STATE="$WORK/STATE.md"           # 상담역·런처가 읽는 유일한 실시간 창구
+STATE="$WORK/STATE.md"           # 런처가 읽는 유일한 실시간 창구
 MODEL_LOG="$WORK/MODEL_LOG.md"   # 요청 모델 vs 실제 실행 모델
 touch "$FAIL_LOG" "$MODEL_LOG"
 
@@ -222,21 +252,20 @@ touch "$FAIL_LOG" "$MODEL_LOG"
 # 에이전트에게 전달된다 (run-tests 의 "프롬프트 치환" 케이스가 이걸 잡는다).
 export FEATURE WORK ROOT TEST_CMD
 
-# 표시 전용. TEST_CMD 가 여러 줄이 되면서 갈라졌다 — 실행은 줄 단위(run_verify),
-# 표시는 한 줄이다. STATE.md 의 리스트 항목과 프롬프트의 인라인 코드가 개행을 만나면
-# 마크다운이 깨져 에이전트가 읽는 문장이 망가진다. 값이 한 줄이면 원래 값 그대로다.
-# (BSD sed 에는 \o001 이 없다. bash 3.2 의 패턴 치환이면 외부 프로세스도 필요 없다.)
-TEST_CMD_ONELINE="${TEST_CMD//$'\n'/ ; }"
-
 # STATE.md 의 검증 게이트 블록이 첫 호출부터 참조한다 (set -u).
 PREFLIGHT_STATE="건너뜀 (PREFLIGHT_CMD 비어 있음)"
 VERIFY_LAST=""
+BASELINE_STATE=""
+RED_STATE=""
 VERIFY_PASSED=""
 VERIFY_FAILED=""
 ARTIFACT_GUARD=""   # 설계 게이트 통과 후 DESIGN.md·JUDGE.md 가 들어온다
 
 log() { printf '\033[1;36m[orch]\033[0m %s\n' "$*" >&2; }
 die() {
+  # 죽으면 봉인을 푼다 — 여기서부터는 사람이 worktree 를 만지는 것이 정상이다 (되돌리기 등).
+  # 봉인 대조 자체로 죽을 때만 남긴다: 풀어 버리면 재실행이 같은 수정을 조용히 통과시킨다.
+  [ "${KEEP_SEAL:-0}" = 1 ] || rm -f "$WORK/.seal" "$WORK/.seal.at"
   state "DIED" "$*" "실패했다. $FAIL_LOG 와 위 note 를 읽고 원인을 사람에게 보고해라. 재실행 여부는 사람이 정한다 — 런처가 임의로 재실행하지 마라."
   printf '\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 2
 }
@@ -257,8 +286,8 @@ file_hash() {
   else sha256sum "$1"; fi | awk '{print $1}'
 }
 
-# ─────────────────────────────────────────── 상담역·런처용 상태 브로드캐스트
-# 셸은 대화를 못 한다. 대신 상태를 파일로 흘려서 상담역·런처 세션이 읽게 한다.
+# ─────────────────────────────────────────── 런처용 상태 브로드캐스트
+# 셸은 대화를 못 한다. 대신 상태를 파일로 흘려서 런처 세션이 읽게 한다.
 # 3번째 인자가 "## 다음 행동" 블록이 된다 — 런처 계약은 문서(SKILL.md)가 아니라
 # 런처가 실제로 읽는 이 파일에 박는다. 문서에만 적힌 계약은 안 지켜졌다(2026-08-24:
 # 런처 세션이 스크립트 stderr 의 터미널 안내를 그대로 전달하고, 정지 후 갈 길을 잃었다).
@@ -282,9 +311,11 @@ ${next:-진행 중 — 개입 불필요. 이 파일을 다시 읽으면 최신 �
 셸이 실제로 무엇을 돌렸는지. "DONE" 이 무엇을 뜻하는지는 여기를 봐야 안다.
 
 - 프리플라이트: $PREFLIGHT_STATE
-- 검증 명령: $TEST_CMD_ONELINE$([ -f "$WORK/smoke.sh" ] && printf ', bash %s' "$WORK/smoke.sh")
+- 검증 명령: $(verify_commands | paste -sd, - | sed 's/,/, /g')$([ -f "$WORK/smoke.sh" ] && printf ', bash %s' "$WORK/smoke.sh")
 - 명령별 시간 상한: ${VERIFY_TIMEOUT}초
-- 마지막 결과: ${VERIFY_LAST:-(아직 실행 안 함)}
+- 기준선(테스트 작성 전): ${BASELINE_STATE:-(아직 실행 안 함)}
+- red(구현 전 새 테스트 실패): ${RED_STATE:-(아직 실행 안 함)}
+- 마지막 결과(green): ${VERIFY_LAST:-(아직 실행 안 함)}
 
 ## 지금까지 생성된 산출물
 $(ls -1 "$WORK"/*.md 2>/dev/null | sed 's|.*/|- |' || echo "- (없음)")
@@ -306,7 +337,7 @@ emit_blocked() {   # emit_blocked <이름> <산출물> [덧붙일 사인]
     "$artifact 의 BLOCKED_REASON·BLOCKED_NEEDS 를 사람에게 보고하고 결정을 받아라. 결정 전에는 재실행하지 마라 — 같은 곳에서 또 막힌다."
   log "  ⛔ $name BLOCKED${extra:+ — $extra}"
   sed -n '/^BLOCKED_REASON:/,$p' "$artifact" >&2
-  printf '\n\033[1;33m→ 상담역(advisor.sh 또는 런처 세션)에게:\033[0m\n  "%s BLOCKED 났어. 원인 뭐야?"\n\n' "$name" >&2
+  rm -f "$WORK/.seal" "$WORK/.seal.at"   # 사람 결정이 필요하다 — die 와 같은 이유로 봉인을 푼다
   exit 3
 }
 
@@ -451,15 +482,163 @@ rate_limited() {
     | grep -qvx '0'
 }
 
+# ─────────────────────────────────────────── 사람 조치 대기 (exit 5)
+# 설치·로그인·엔진 전환처럼 **사람이 해야 풀리는** 정지. die(2) 와 가르는 이유: 2 는 "무엇이
+# 어긋났는가"를 FAIL_LOG 에서 찾으라는 신호인데, 이건 어긋난 게 아니라 할 일이 정해져 있다.
+# 할 일은 STATE.md 의 "다음 행동" 블록에 적는다 — 런처가 읽는 유일한 창구다.
+need_human() {   # need_human <phase> <note> <다음 행동>
+  state "$1" "$2" "$3"
+  {
+    printf '\033[1;33m[사람 조치 필요]\033[0m %s (exit 5)\n' "$2"
+    printf '  자세한 안내는 %s 의 "다음 행동" 블록에 있다\n' "$STATE"
+  } >&2
+  exit 5
+}
+
+# ─────────────────────────────────────────── 엔진 접두사
+chain_engine() {   # chain_engine <항목> → claude | codex
+  case "$1" in codex:*) echo codex ;; *) echo claude ;; esac
+}
+chain_model() {    # chain_model <항목> → 접두사를 뗀 모델 ID
+  local m=${1#codex:}; echo "${m#claude:}"
+}
+# claude 의 --fallback-model 에는 claude 항목만 넘긴다 (codex 모델 ID 를 넘기면 거부된다).
+claude_only() {    # claude_only <체인> → 쉼표 구분 claude 모델 ID
+  printf '%s' "$1" | tr ',' '\n' | grep -v '^codex:' | sed 's/^claude://' | paste -sd, - || true
+}
+
+CODEX_SWITCH_HINT="MODEL_JUDGE=claude-opus-5-5 FALLBACK_JUDGE=claude-fable-5-1,claude-sonnet-5-5"
+
+# 시작 전 점검 — 에이전트를 띄우기 전이라 여기서 멈추면 비용이 $0 이다.
+# 설계까지 다 돌린 뒤 judge 에서 "codex 없음"으로 죽으면 설계 비용이 버려진다.
+check_engines() {
+  local stage chain_var fb_var entry
+  for stage in DESIGN IMPL VERIFY; do
+    chain_var="MODEL_$stage"; fb_var="FALLBACK_$stage"
+    for entry in $(printf '%s,%s' "${!chain_var}" "${!fb_var}" | tr ',' ' '); do
+      [ "$(chain_engine "$entry")" = codex ] \
+        && die "codex 엔진은 judge 전용이다 ($chain_var/$fb_var 에 $entry) — read-only 샌드박스라 산출물·코드를 쓸 수 없다"
+    done
+  done
+  case ",$MODEL_JUDGE,$FALLBACK_JUDGE," in *,codex:*) ;; *) return 0 ;; esac
+
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    need_human "SETUP_NEEDED" "judge 체인에 codex 가 있는데 codex CLI 가 없다 ($CODEX_BIN)" \
+      "1) 사람에게 \"codex CLI 를 설치할까요? (y/n)\" 를 물어라 — 패키지 설치는 사람이 정한다. 2) 정확히 y 면 \`npm install -g @openai/codex\` 를 실행한다 (npm 이 없으면 Node.js 설치가 먼저라고 보고하고 멈춘다). 3) 설치 후 로그인은 사람이 직접 한다: 사람에게 프롬프트에 \`! codex login\` 을 입력하라고 안내한다 (브라우저 인증). 4) 로그인까지 끝나면 같은 명령으로 재실행한다. codex 없이 진행하려면 사람이 원할 때만: $CODEX_SWITCH_HINT 를 앞에 붙여 재실행."
+  fi
+  if ! "$CODEX_BIN" login status >/dev/null 2>&1; then
+    need_human "LOGIN_NEEDED" "codex CLI 가 로그인돼 있지 않다" \
+      "1) 사람에게 프롬프트에 \`! codex login\` 을 입력하라고 안내한다 — 브라우저 인증이라 런처가 대신할 수 없다. 2) 사람이 로그인했다고 하면 \`$CODEX_BIN login status\` 로 확인한 뒤 같은 명령으로 재실행한다. codex 없이 진행하려면 사람이 원할 때만: $CODEX_SWITCH_HINT 를 앞에 붙여 재실행."
+  fi
+  log "  ✔ codex 엔진 준비됨 ($("$CODEX_BIN" --version 2>/dev/null | head -1))"
+}
+
+# codex_unavailable <stream> <stderr> — 리밋·사용 불가로 죽었는가.
+# codex 는 claude 의 rate_limit_event 같은 구조화 신호가 없어 오류 메시지 문구로 판정한다.
+# stderr 에는 정상 주행에도 ERROR 줄(모델 목록 갱신 시간 초과 등)이 섞이므로, 호출자는
+# 단계가 실패했을 때만 이 함수를 부른다. grep -q 를 쓰지 않는다 — 일치하는 순간 grep 이 먼저 끝나
+# 앞의 cat 이 SIGPIPE 로 죽고, pipefail 이 그걸 "불일치"로 뒤집는다.
+codex_unavailable() {
+  { jq -Rr 'fromjson? // empty | select(.type? == "error" or .type? == "turn.failed")
+            | (.message // .error.message // "")' "$1" 2>/dev/null
+    cat "$2" 2>/dev/null; } \
+    | grep -iE 'usage limit|rate.?limit|too many requests|429|quota|model.{0,80}(not found|does not exist|not supported|not available|unavailable)|unsupported model' >/dev/null
+}
+
+# codex_exec <이름> <모델> <산출물> <stream> <out> — 종료 코드를 돌려준다.
+# claude 경로와 같은 모양의 result.json 을 $out 에 만든다 — 아래 부검·로그가 그걸 읽는다.
+codex_exec() {
+  local name=$1 model=$2 artifact=$3 stream=$4 out=$5
+  local last="$WORK/$name.codex-last.md" err="$WORK/$name.codex.stderr"
+  local cprompt="$WORK/$name.codex-prompt.md" rc=0
+  local -a win=()
+  local win_note=""
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      win=(-c 'windows.sandbox="elevated"')
+      # codex 는 Windows 에서 명령을 Windows PowerShell 5.1 로 돌린다. Get-Content 는 BOM 없는
+      # UTF-8 을 코드페이지로 읽고, -Encoding UTF8 을 줘도 출력이 콘솔 코드페이지로 다시
+      # 인코딩돼 한글이 깨진다. 외부 프로그램 출력은 변환 없이 넘어간다 (2026-09-30 실측:
+      # Get-Content 는 깨짐, `cmd /c type` 은 한 번에 정상). 제한 언어 모드라 인코딩 설정용
+      # 메서드 호출도 거부된다 — 그래서 명령 선택을 지시한다.
+      win_note="- **Windows 읽기·검색 규칙:** 파일 읽기는 \`cmd /c type <경로>\`, 검색은 \`git grep -n <패턴>\` 을 쓴다. PowerShell 의 \`Get-Content\`·\`Select-String\` 은 쓰지 않는다 — 한글이 깨진다. 인코딩을 바꾸려는 메서드 호출은 제한 언어 모드에서 거부된다." ;;
+  esac
+
+  # codex 에는 --append-system-prompt 가 없다. 종료 계약·거부 계약을 프롬프트 앞에 붙이고,
+  # "파일을 쓴다"는 지시를 "최종 응답이 곧 파일"로 바꾸는 블록을 뒤에 붙인다.
+  {
+    cat "$PROMPTS/_contract.md"
+    [ -f "$PROMPTS/_denial.md" ] && { echo; cat "$PROMPTS/_denial.md"; }
+    echo; cat "$WORK/$name.prompt.md"
+    cat <<EOF
+
+## 실행 환경 (codex 엔진 — 셸이 붙였다. 위 지시와 충돌하면 이 블록이 우선한다)
+이 세션은 **읽기 전용 샌드박스**에서 돈다. 파일을 쓰거나 고칠 수 없다 — 시도하면 거부된다.
+- 위 지시의 "산출물 파일을 쓴다"·"먼저 한 번 써라(중간 저장)"는 이 환경에서 **최종 응답**으로 대체한다.
+- 최종 응답 = \`$artifact\` 의 본문 전체다. 셸이 최종 응답을 그대로 그 파일에 저장한다.
+- 최종 응답의 첫 줄은 \`STATUS: DONE\` 또는 \`STATUS: BLOCKED\` 이고, 판단 검증이면 바로 다음 줄에 \`UNVERIFIED: <n> REFUTED: <n>\` 을 둔다.
+- 코드 블록(\`\`\`)으로 감싸지 말고 본문만 출력한다.
+- 읽기 명령(파일 열람·검색)은 쓸 수 있다. 쓰기가 필요한 확인(테스트 실행 등)이 거부되면 그 주장은 \`미확인\` 으로 센다.
+$win_note
+EOF
+    # 감사 대상 본문은 셸이 주입한다. 프롬프트는 stdin UTF-8 이라 OS·셸 인코딩과 무관하게 온전히
+    # 전달된다 — 실측(2026-09-30)에서 Windows judge 가 DESIGN.md 의 한글을 깨진 채 읽고 BLOCKED 됐다.
+    if [ "$name" = judge ] && [ -f "$WORK/DESIGN.md" ]; then
+      printf '\n## 감사 대상 본문 (셸이 주입했다 — %s 전체. 줄번호는 `파일:줄` 좌표로 쓴다)\n\n' "$WORK/DESIGN.md"
+      cat -n "$WORK/DESIGN.md"
+    fi
+  } > "$cprompt"
+
+  rm -f "$last"
+  local cmd
+  cmd="$(printf '%q ' "$CODEX_BIN" exec --ignore-user-config --ignore-rules --ephemeral \
+          -C "$ROOT" -m "$model" -s read-only -c "model_reasoning_effort=\"$CODEX_EFFORT\"" \
+          ${win[@]+"${win[@]}"} --json -o "$last" -)"
+  cmd="$cmd < $(printf '%q' "$cprompt") 2> $(printf '%q' "$err")"
+
+  run_with_timeout "$CODEX_TIMEOUT" "$cmd" \
+    | tee "$stream" \
+    | jq --unbuffered -Rr 'fromjson? // empty | select(.type? == "item.completed") | .item |
+        if .type == "command_execution" then
+          "  ⚙ \((.command // "") | tostring | .[0:90]) (exit \(.exit_code // "?"))"
+        elif .type == "agent_message" and ((.text // "") | length) > 0 then
+          "  💬 \(.text | gsub("\\s+"; " ") | .[0:160])"
+        else empty end' >&2
+  rc=${PIPESTATUS[0]}
+
+  local failed turns errors
+  failed=$(jq -Rn '[inputs | fromjson? | select(.type? == "turn.failed" or .type? == "error")] | length' "$stream" 2>/dev/null || echo 0)
+  turns=$(jq -Rn '[inputs | fromjson? | select(.type? == "item.completed" and .item.type? == "command_execution")] | length' "$stream" 2>/dev/null || echo 0)
+  errors=$(jq -Rrn '[inputs | fromjson? | select(.type? == "turn.failed" or .type? == "error") | (.message // .error.message // "?")] | join("; ")' "$stream" 2>/dev/null || echo "")
+  [ "$rc" -eq 124 ] && errors="${CODEX_TIMEOUT}초 시간 상한 초과${errors:+; $errors}"
+  # 턴 실패를 알렸는데 exit 0 이면 실패로 고친다 — 산출물 판정 전에 사인이 남아야 한다.
+  [ "$rc" -eq 0 ] && [ "${failed:-0}" -gt 0 ] && rc=1
+
+  if [ "$rc" -eq 0 ]; then
+    jq -n --arg m "$model" --argjson t "${turns:-0}" \
+      '{type:"result", subtype:"success", is_error:false, result:"codex exec 완료",
+        num_turns:$t, total_cost_usd:"n/a(codex)", engine:"codex", requested_model:$m}' > "$out"
+    # 최종 응답 → 산출물. 모델이 지시를 어기고 코드 블록으로 감쌌으면 바깥 울타리만 벗긴다.
+    if [ -s "$last" ]; then
+      awk 'NR==1 && /^```/ {fence=1; next} {lines[++n]=$0}
+           END { if (fence && n > 0 && lines[n] ~ /^```[[:space:]]*$/) n--; for (i=1;i<=n;i++) print lines[i] }' \
+        "$last" > "$artifact"
+    fi
+  else
+    jq -n --arg m "$model" --argjson t "${turns:-0}" --arg e "${errors:-codex exit $rc (stderr: $err)}" --arg r "codex_exit_$rc" \
+      '{type:"result", subtype:"error", is_error:true, errors:[$e], result:$e,
+        num_turns:$t, total_cost_usd:"n/a(codex)", terminal_reason:$r, engine:"codex", requested_model:$m}' > "$out"
+  fi
+  return "$rc"
+}
+
 # ─────────────────────────────────────────── 프롬프트 조립
 # build_prompt <이름> <프롬프트파일> — envsubst 한 골격 뒤에, 설계 단계면 REQUIRED_DOCS 본문을 붙인다.
 # 문서 본문은 envsubst 를 **거치지 않는다** — 문서 안의 `$VAR` 문자열이 빈 문자열로 바뀌면 안 된다.
 # "읽어라"가 아니라 "여기 있다"로 바꾸는 것이 이 함수의 전부다 (계기: 상단 REQUIRED_DOCS 주석).
 build_prompt() {
   local name=$1 prompt_file=$2 d
-  # TEST_CMD 는 한 줄로 접어 넘긴다 — prompts/design.md 가 인라인 코드로 감싸고 있어
-  # 개행이 들어가면 그 리스트 항목이 통째로 깨진다 (envsubst 는 값을 그대로 박는다).
-  TEST_CMD="$TEST_CMD_ONELINE" envsubst < "$prompt_file"
+  envsubst < "$prompt_file"
   [ "$name" = "design" ] && [ -n "$REQUIRED_DOCS" ] || return 0
   printf '\n\n## 정본 문서 (셸이 주입했다 — 아래 본문이 곧 파일 내용이다. Read 로 다시 열 필요 없다. 줄번호는 `파일:줄` 좌표로 쓴다)\n'
   for d in $REQUIRED_DOCS; do
@@ -523,22 +702,32 @@ run_stage() {
   # 갈아탄다. 리밋이 아닌 실패(예산·턴 초과, 에이전트 에러)는 갈아타지 않는다 —
   # 그건 모델을 바꾼다고 나아지는 실패가 아니고, 조용히 다른 모델로 재주행하면
   # MODEL_LOG 가 감시하려던 "다른 모델이 돌았다"를 셸이 스스로 만들어내는 꼴이 된다.
-  local chain try_model rest swap=0
-  chain="$model${fallback:+,$fallback}"
+  local chain full_chain try_model rest swap=0 engine=claude entry claude_rest limited
+  chain="$model${fallback:+,$fallback}"; full_chain="$chain"
 
   while :; do
-    try_model="${chain%%,*}"
+    entry="${chain%%,*}"
     rest="${chain#*,}"; [ "$rest" = "$chain" ] && rest=""
+    engine="$(chain_engine "$entry")"; try_model="$(chain_model "$entry")"
+    claude_rest="$(claude_only "$rest")"
 
-    state "RUNNING:$name" "model=$try_model, 턴≤$turns, $budget_desc"
-    log "▶ $name (model=$try_model, fallback=${rest:-없음}, 턴≤$turns, $budget_desc)"
+    state "RUNNING:$name" "engine=$engine, model=$try_model, 턴≤$turns, $budget_desc"
+    log "▶ $name ($engine: model=$try_model, fallback=${rest:-없음}, 턴≤$turns, $budget_desc)"
 
     set +e
     # 프롬프트는 파일로 남긴다 — 무엇이 주입됐는지가 증거로 남아야 "안 읽었다"와 "안 줬다"를 가른다.
     build_prompt "$name" "$prompt_file" > "$WORK/$name.prompt.md"
+    if [ "$engine" = codex ]; then
+      # 턴·예산 상한은 codex exec 에 없다 — CODEX_TIMEOUT 이 그 자리를 맡는다.
+      codex_exec "$name" "$try_model" "$artifact" "$stream" "$out"
+      code=$?
+    else
+    # PIPELINE_STAGE: 런처 읽기 전용 훅이 "파이프라인이 띄운 단계 에이전트"를 알아보는 표시.
+    # 봉인이 걸린 동안 그 훅은 worktree 쓰기를 막는데, 단계 에이전트는 쓰는 게 일이다.
+    PIPELINE_STAGE="$name" \
     claude -p \
       --model "$try_model" \
-      ${rest:+--fallback-model "$rest"} \
+      ${claude_rest:+--fallback-model "$claude_rest"} \
       --output-format stream-json \
       --verbose \
       --max-turns "$turns" \
@@ -557,6 +746,7 @@ run_stage() {
             "  💬 \(.text | gsub("\\s+"; " ") | .[0:160])"
           else empty end' >&2
     code=${PIPESTATUS[0]}   # [0]=claude [1]=tee [2]=jq — 판정 기준은 claude
+    fi
     set -e
 
     # 사인을 먼저 확보한다 — exit code 검사보다 **앞**이다. claude 가 0 이 아닌 코드로
@@ -567,16 +757,39 @@ run_stage() {
     # (2026-08-26 실측: MCP 서버 경고가 6번째 줄에 섞였다). jq 기본 파서는 그 한 줄에 죽고
     # tee 와 claude 가 SIGPIPE 로 연달아 죽는다 — 멀쩡히 일하던 $5 짜리 verify 가 그렇게
     # 날아갔다. fromjson? 으로 관용 파싱하되 버린 줄은 세어서 보고한다.
-    jq -Rn '[inputs | fromjson? | select(.type? == "result")] | last' "$stream" > "$out" 2>/dev/null || true
+    # codex 경로는 codex_exec 가 이미 $out 을 만들었다.
+    [ "$engine" = codex ] \
+      || jq -Rn '[inputs | fromjson? | select(.type? == "result")] | last' "$stream" > "$out" 2>/dev/null || true
+
+    # 리밋(codex 는 모델 사용 불가 포함)으로 죽었는가. codex 는 실패했을 때만 본다 —
+    # 정상 주행의 stderr 에도 ERROR 줄이 섞인다 (codex_unavailable 주석).
+    limited=0
+    if [ "$engine" = codex ]; then
+      if [ "$code" -ne 0 ] && codex_unavailable "$stream" "$WORK/$name.codex.stderr"; then limited=1; fi
+    elif rate_limited "$stream"; then
+      limited=1
+    fi
+
+    # codex 체인이 바닥났으면 claude 로 **자동으로 넘기지 않는다** — 사람이 정한다 (A 방식).
+    # 체인 끝에 claude 항목을 넣어 둔 경우는 순환이 거기로 넘어가므로 여기 오지 않는다.
+    if [ "$limited" = 1 ] && [ -z "$rest" ] && [ "$engine" = codex ]; then
+      fail_log "$name: codex 체인 전부 리밋·사용 불가 ($full_chain)" <<EOF
+마지막 시도: $try_model
+증거: $stream / $WORK/$name.codex.stderr
+EOF
+      need_human "ENGINE_EXHAUSTED:$name" "codex 체인($full_chain)이 전부 리밋·사용 불가" \
+        "1) 사람에게 이 한 가지만 물어라: \"$name 을 claude opus 5.5 로 돌릴까요? (y/n)\" 2) 정확히 y 면 원래 실행 명령 앞에 $CODEX_SWITCH_HINT 를 붙여 재실행한다 — 기존 DESIGN.md 는 재사용되므로 FRESH_DESIGN 을 주지 마라. 3) n 이면 codex 리밋이 풀린 뒤 같은 명령으로 재실행하면 된다고 보고하고 기다린다. 사인은 $FAIL_LOG 마지막 항목."
+    fi
+
     # 아직 안 써본 모델이 남아 있고 리밋으로 죽었을 때만 갈아탄다.
-    if [ -z "$rest" ] || ! rate_limited "$stream"; then break; fi
+    if [ -z "$rest" ] || [ "$limited" != 1 ]; then break; fi
 
     swap=$((swap + 1))
     mv "$stream" "$WORK/$name.ratelimit$swap.stream.jsonl" 2>/dev/null || true
     mv "$out"    "$WORK/$name.ratelimit$swap.result.json"  2>/dev/null || true
-    log "  ⚠ $try_model 레이트 리밋 거부 — ${rest%%,*} 로 갈아탄다 (증거: $name.ratelimit$swap.*)"
+    log "  ⚠ $try_model 리밋·사용 불가 — ${rest%%,*} 로 갈아탄다 (증거: $name.ratelimit$swap.*)"
     fail_log "$name: $try_model 레이트 리밋 거부 — ${rest%%,*} 로 전환" <<EOF
---fallback-model 은 과부하·부재만 받는다. 창 소진 거부는 셸이 감지해 갈아탄다.
+--fallback-model 은 과부하·부재만 받는다. 창 소진 거부(codex 는 모델 사용 불가 포함)는 셸이 감지해 갈아탄다.
 증거: $WORK/$name.ratelimit$swap.stream.jsonl
 EOF
     chain="$rest"
@@ -589,7 +802,11 @@ EOF
 
   # 모델 교체 감시는 **죽은 경로에서도** 돈다. 다른 모델이 돌다 상한에 닿은 것이라면,
   # 사람이 "이 산출물을 신뢰할까"를 판단할 때 그 사실을 알아야 한다.
-  if [ "$(jq -r 'type' "$out" 2>/dev/null)" = "object" ]; then
+  if [ "$engine" = codex ]; then
+    # codex exec --json 은 실제로 돈 모델을 보고하지 않는다 (2026-09-30 실측: 이벤트에 model 필드 없음).
+    # 추측하지 않고 "보고 없음"을 남긴다 — claude 쪽 "필드명 점검 필요" 경고와 섞지 않는다.
+    echo "- $(date -Iseconds) | $name | codex $try_model — 실제 모델은 codex 가 보고하지 않음" >> "$MODEL_LOG"
+  elif [ "$(jq -r 'type' "$out" 2>/dev/null)" = "object" ]; then
     if [ "$code" -eq 0 ]; then check_model_swap "$name" "$out" "$try_model" 1
     else                       check_model_swap "$name" "$out" "$try_model" 0
     fi
@@ -627,7 +844,7 @@ EOF
 }
 
 # ─────────────────────────────────────────── 사람 게이트
-# 상담역은 여기에 손댈 수 없다. 판단은 사람만 한다.
+# 런처는 여기서 판단하지 않는다 (y 중계만). 판단은 사람만 한다.
 # gate_human <메시지> <검토파일> [force] [승인명령]
 #
 # 4번째 인자는 tty 없는 경로(exit 4)에서 "사람이 y 라고 답하면 실행할 명령"이다.
@@ -668,7 +885,6 @@ gate_human() {
 
 $(printf '\033[1;33m[게이트]\033[0m') $msg
   검토 대상: $file
-  상담역에게: "$(basename "$file") 봐줘"
 
   y = 진행   e = 열어보기   n = 중단
 EOF
@@ -901,6 +1117,49 @@ check_stage_writes() {
   die "$stage 단계가 $what 를 수정함: $(printf '%s' "$bad" | tr '\n' ' ')— 이 단계의 권한 밖이다. impl 이면 테스트를 고쳐 통과시킨 것이고 verify 면 소스를 고쳐 통과시킨 것이다 → $FAIL_LOG"
 }
 
+# ─────────────────────────────────────────── 단계 사이 봉인
+# 게이트는 전부 "이 단계가 무엇을 바꿨는가"를 단계 **직전** 기준선으로 본다. 그래서 단계와
+# 단계 **사이**의 수정 — 사람 승인을 기다리는 동안, exit 4 로 멈췄다 재실행하기 전 — 은
+# 다음 단계의 기준선에 흡수돼 어느 게이트에도 안 잡힌다. 그 틈에 깨어 있는 것은 런처 세션과
+# 사람이다 (2026-09-30: 상담역 제거로 런처가 쓰기 도구를 가진 채 대화하게 됐다).
+#
+# 봉인 = worktree 에서 HEAD 대비 바뀐 파일(.pipeline/ 제외)의 지문. 시작과 각 단계 게이트
+# 통과 직후에 찍고, 다음 단계 직전과 다음 실행 시작 때 대조한다. 누가 고쳤는지는 묻지 않는다
+# — 에디터든 다른 세션이든 사람이든 "어느 단계도 쓰지 않은 수정"이면 게이트가 판정할 수 없다.
+#
+# 봉인은 exit 4(승인 대기)·5(사람 조치)에서 **유지**되고 DONE·die·BLOCKED 에서 풀린다.
+# 런처 읽기 전용 훅(hooks/pipeline-launcher-guard.sh)도 이 파일로 "실행 중"을 판정한다.
+SEAL="$WORK/.seal"
+
+worktree_fingerprint() {
+  local rec f
+  {
+    while IFS= read -r -d '' rec; do
+      printf '%s\n' "${rec:3}"
+      case "${rec:0:1}" in R|C) IFS= read -r -d '' rec && printf '%s\n' "$rec" ;; esac
+    done < <(git -C "$ROOT" -c core.quotePath=false status --porcelain -z -uall)
+  } | sed 's|^\./||' | { grep -v '^\.pipeline/' || true; } | sort -u \
+    | while IFS= read -r f; do
+        if [ -f "$ROOT/$f" ]; then printf '%s %s\n' "$f" "$(file_hash "$ROOT/$f")"
+        else printf '%s (없음)\n' "$f"; fi
+      done
+}
+
+seal_worktree() {   # seal_worktree <어느 시점인지>
+  worktree_fingerprint > "$SEAL"
+  printf '%s\n' "$1" > "$SEAL.at"
+}
+
+check_seal() {      # check_seal <지금 시작하려는 것>
+  [ -f "$SEAL" ] || return 0
+  local changed at
+  changed="$(changed_paths "$(cat "$SEAL")" "$(worktree_fingerprint)")"
+  [ -n "$changed" ] || return 0
+  at="$(cat "$SEAL.at" 2>/dev/null || echo '?')"
+  printf '%s\n' "$changed" | fail_log "단계 사이 수정 감지 ($at 이후, $1 전)"
+  KEEP_SEAL=1 die "단계 사이에 worktree 가 바뀌었다 ($at 이후, $1 전): $(printf '%s' "$changed" | tr '\n' ' ')— 어느 단계도 쓰지 않은 수정이라 게이트가 판정할 수 없다. 런처는 되돌리거나 봉인을 풀지 말고 사람에게 보고해라. 사람이 의도한 수정이라고 확인하면 rm '$SEAL' 뒤 재실행, 아니면 사람이 되돌린 뒤 재실행"
+}
+
 # ─────────────────────────────────────────── 검증 실행
 # run_with_timeout <초> <명령> — 상한 초과면 124 를 돌려준다 (timeout(1) 과 같은 약속).
 # coreutils timeout 이 없는 macOS 에서도 상한이 걸려야 하므로 bash 워치독으로 대체한다.
@@ -916,7 +1175,7 @@ run_with_timeout() {
   ( sleep "$secs"
     if kill -0 "$pid" 2>/dev/null; then
       touch "$flag"; kill -TERM "$pid" 2>/dev/null; sleep 2; kill -KILL "$pid" 2>/dev/null
-    fi ) & wd=$!
+    fi ) >/dev/null 2>&1 & wd=$!  # the orphaned sleep must not hold the caller's pipe open
   wait "$pid" || rc=$?
   kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null || true
   if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
@@ -926,29 +1185,25 @@ run_with_timeout() {
 # 검증 목록 = $TEST_CMD + (있으면) 기능 폴더의 smoke.sh. 순서대로 돌리고 첫 실패에서 멈춘다.
 # smoke.sh 를 여기 붙이는 이유: 오케스트레이터는 기능 중립이어야 하므로 라우트나 포트를
 # 하드코딩하지 않고, 기능별 스모크는 파일이 있을 때만 마지막에 돈다.
-run_verify() {
-  local cmd rc line
-  # TEST_CMD 는 한 줄에 한 명령이다. 갈라서 따로 돌려야 test_out.txt 에 명령별로
-  # 찍히고, 실패했을 때 VERIFY_FAILED 가 깨진 명령 하나를 가리킨다.
-  local -a cmds=()
-  # IFS= 를 일부러 빼놨다 — read 가 앞뒤 공백을 잘라줘야 공백만 있는 줄이 "" 가 된다.
-  # IFS= 로 받으면 "   " 가 -n 을 통과해 bash -c "   " 로 실행되고, 그건 exit 0 이다
-  # (2026-09-08 코드리뷰 실측: TEST_CMD="   " 로 phase:DONE 이 나왔다).
-  # # 주석도 거른다. 히어독에 구획 주석을 넣고 싶어지는 형식인데, bash -c "# x" 역시
-  # exit 0 이라 돌지도 않은 줄이 STATE.md 의 "통과" 목록에 실린다.
-  while read -r line; do
-    case "$line" in ''|'#'*) continue ;; esac
-    cmds+=("$line")
-  done <<< "$TEST_CMD"
-  # 빈 TEST_CMD 를 통과로 읽지 않는다. 옛 코드는 원소가 빈 문자열 하나여서 셸이
-  # exit 0 을 냈고, 검증을 한 번도 안 돌린 주행이 "통과"로 기록됐다.
-  if [ "${#cmds[@]}" -eq 0 ]; then
-    VERIFY_PASSED=""
-    VERIFY_FAILED="TEST_CMD 가 비어 있다 — 검증 없이 통과시키지 않는다"
-    : > "$WORK/test_out.txt"
-    echo "→ TEST_CMD 가 비어 있다." >> "$WORK/test_out.txt"
-    return 1
+verify_commands() {
+  local line
+  if [ -n "$TEST_CMDS" ]; then
+    while IFS= read -r line; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      [ -n "$line" ] && printf '%s\n' "$line"
+    done <<< "$TEST_CMDS"
+  else
+    printf '%s\n' "$TEST_CMD"
   fi
+}
+
+run_verify() {
+  local cmd rc
+  local -a cmds=()
+  while IFS= read -r cmd; do cmds+=("$cmd"); done < <(verify_commands)
+  # 빈 목록을 통과로 취급하면 게이트가 사라진 걸 아무도 모른다 — 실패보다 나쁘다.
+  [ "${#cmds[@]}" -gt 0 ] || die 2 "검증 명령이 하나도 없다 (TEST_CMDS 가 공백뿐이다)"
   [ -f "$WORK/smoke.sh" ] && cmds+=("bash '$WORK/smoke.sh'")
 
   VERIFY_PASSED=""
@@ -1003,7 +1258,18 @@ ATTEMPT=0
 state "START"
 log "=== $FEATURE 시작 ==="
 log "상태는 $STATE 에 실시간으로 쓴다 — 런처 세션은 이 파일만 읽으면 된다"
-log "대화형 상담역이 필요하면 다른 터미널에서: ./advisor.sh $FEATURE"
+
+# 검증 명령이 선언되지 않았으면 여기서 죽는다. 이 게이트가 없으면 "각색을 안 한 저장소"가
+# 조용히 남의 기본값으로 돌고, 초록이어도 무엇을 통과한 건지 아무도 모른다.
+if [ -z "$TEST_CMD" ] && [ -z "$TEST_CMDS" ]; then
+  die 2 "검증 명령이 선언되지 않았다 — orchestrate.sh 상단의 TEST_CMD 또는 TEST_CMDS 를 이 저장소에 맞게 채워라 (CI 가 도는 검사 전부)"
+fi
+
+# 이전 실행이 봉인을 남기고 멈췄다면(exit 4·5) 그 사이의 수정부터 본다 — 아무것도 하기 전에.
+check_seal "이번 실행 시작"
+
+# 엔진 준비(codex 설치·로그인)는 에이전트를 띄우기 전에 본다 — 설계 비용을 버리지 않기 위해서다.
+check_engines
 
 preflight
 
@@ -1014,15 +1280,18 @@ done
 
 # 보호 파일 기준선 — 어떤 run_stage 보다 위에 있어야 한다 (위 check_protected 주석).
 PROTECTED_BASELINE="$(protected_fingerprint)"
+seal_worktree "실행 시작"
 
 # RESUME_FROM 은 건너뛰기다. 근거가 없으면 조용히 넘어가는 대신 여기서 죽는다 —
 # 오타(RESUME_FROM=verfiy)가 "그냥 impl 이 또 돌았다"로 나타나면 알아채지 못한다.
 if [ -n "$RESUME_FROM" ]; then
-  [ "$RESUME_FROM" = "verify" ] \
-    || die "RESUME_FROM 은 verify 만 지원한다 (받은 값: $RESUME_FROM)"
-  [ -f "$WORK/IMPL.md" ] \
-    && [ "$(grep -m1 '^STATUS:' "$WORK/IMPL.md" | awk '{print $2}')" = "DONE" ] \
-    || die "RESUME_FROM=verify 인데 $WORK/IMPL.md 가 없거나 STATUS: DONE 이 아니다 — 건너뛸 근거가 없다"
+  [ "$RESUME_FROM" != "verify" ] \
+    || die "RESUME_FROM=verify 는 없어졌다 — verify 는 이제 impl 앞에서 돈다 (2026-09-30 red→green). 테스트를 재사용하고 impl 부터 돌리려면 RESUME_FROM=impl"
+  [ "$RESUME_FROM" = "impl" ] \
+    || die "RESUME_FROM 은 impl 만 지원한다 (받은 값: $RESUME_FROM)"
+  [ -f "$WORK/VERIFY.md" ] \
+    && [ "$(grep -m1 '^STATUS:' "$WORK/VERIFY.md" | awk '{print $2}')" = "DONE" ] \
+    || die "RESUME_FROM=impl 인데 $WORK/VERIFY.md 가 없거나 STATUS: DONE 이 아니다 — 건너뛸 근거가 없다"
 fi
 
 if [ "$FRESH_DESIGN" != "1" ] && [ -f "$WORK/DESIGN.md" ] \
@@ -1040,6 +1309,7 @@ check_protected design
 gate_contract
 # 이번 주행이 설계를 돌렸을 때만 — 재사용한 설계의 스트림은 이번 것이 아니다.
 [ "$DESIGN_RAN" = "1" ] && check_design_reads
+seal_worktree "design 게이트 통과"
 
 # ─────────────────────────────────────────── 판단 검증
 # 설계의 '주장'을 별 프로세스가 감사한다. 구현물에는 테스트·게이트가 있는데
@@ -1050,6 +1320,7 @@ if [ -f "$WORK/JUDGE.md" ] && [ "$WORK/JUDGE.md" -nt "$WORK/DESIGN.md" ] \
   log "↺ 기존 JUDGE.md 재사용 (DESIGN.md 보다 최신)"
   state "REUSED:judge" "기존 산출물 재사용"
 else
+  check_seal "judge"
   run_stage judge "$MODEL_JUDGE" "$FALLBACK_JUDGE" "$PROMPTS/judge.md" "$WORK/JUDGE.md"
 fi
 
@@ -1057,6 +1328,9 @@ fi
 # 카운트 게이트보다 먼저 본다: judge 가 파일을 건드렸다면 사람이 y 를 누르기 전에 드러나야 한다.
 gate_scope judge
 check_protected judge
+# 이 봉인이 가장 긴 틈을 덮는다 — 아래 사람 게이트(설계 검토·반박)는 exit 4 로 멈췄다가
+# 런처가 승인을 중계하고 재실행하는 경로다.
+seal_worktree "judge 게이트 통과"
 
 # ★ 판정권은 셸에 있다. 에이전트가 쓴 '판정' 문장을 읽지 않고, 자기가 신고한
 #   카운트 한 줄만 파싱한다. 형식이 없으면 그것도 게이트 위반이다.
@@ -1101,43 +1375,108 @@ log "승인 범위 $(wc -l < "$WORK/allowed_files.txt" | tr -d ' ')개 파일을
 extract_test_files "$WORK/test_files.txt"
 comm -23 "$WORK/allowed_files.txt" "$WORK/test_files.txt" > "$WORK/source_files.txt"
 
+# ─────────────────────────────────────────── 테스트 선작성 (verify → red)
+# verify 는 **구현 전에** 돈다 (2026-09-30). 예전 순서(impl → verify)에서는 테스트가 구현을 보고
+# 쓰였고, 셸은 그 테스트가 무엇을 검사하는지 가를 방법이 없었다 — 항상 참인 단언이나 구현을
+# 그대로 베낀 기대값도 초록이면 통과였다. 판정권은 셸에 있었지만 판정 **재료**는 에이전트가
+# 만들었다. 이제 셸이 재료도 검사한다:
+#   기준선  : 테스트를 쓰기 전 검증 명령이 초록이어야 한다 — 그래야 이후 빨강이 새 테스트 탓이다
+#   red     : 테스트를 쓴 뒤, 구현 전 코드에서 검증 명령이 **실패해야** 한다
+#   green   : 구현 뒤 같은 명령이 통과해야 한다 (아래 재시도 루프)
+# 구현 전에도 통과하는 테스트는 바뀔 동작을 검사하지 않거나, 러너가 새 테스트를 안 도는 것이다.
+# 설계가 TEST_FILES 를 비워 뒀으면(테스트 없는 변경) 기준선·red 는 해당 없음으로 남긴다.
+#
+# 한계: 셸은 "왜 실패했는가"를 모른다. 테스트 파일의 문법 오류도 red 다 — 그런 테스트는 impl 이
+# 고칠 수 없으므로(TEST_FILES 쓰기 금지) green 에서 막히고 BLOCKED·재시도 소진으로 드러난다.
+# 그래서 red 출력(red_out.txt)을 STATE.md 에 남겨 사람이 실패 이유를 볼 수 있게 한다.
+red_gate() {
+  if [ ! -s "$WORK/test_files.txt" ]; then
+    RED_STATE="해당 없음 (설계가 TEST_FILES 를 비워 둠)"
+    log "  · red→green 해당 없음 — 설계가 테스트 파일을 선언하지 않았다"
+    return 0
+  fi
+  state "TESTING_RED" "구현 전 코드에서 새 테스트가 실패하는지 확인"
+  local rc=0
+  run_verify || rc=$?
+  cp "$WORK/test_out.txt" "$WORK/red_out.txt"
+  if [ "$rc" -eq 0 ]; then
+    RED_STATE="실패: 구현 전인데 전부 통과 ($VERIFY_PASSED)"
+    fail_log "red 게이트: 구현 전인데 검증 명령이 전부 통과" <<EOF
+새 테스트 파일: $(tr '\n' ' ' < "$WORK/test_files.txt")
+통과한 명령: $VERIFY_PASSED
+EOF
+    die "red 게이트: 테스트를 썼는데 구현 전 코드에서 검증 명령이 전부 통과했다 — 새 테스트가 바뀔 동작을 검사하지 않거나 러너가 새 테스트를 돌지 않는다 → $WORK/red_out.txt"
+  fi
+  case "$VERIFY_FAILED" in
+    *"시간 초과"*)
+      RED_STATE="확인 불가: $VERIFY_FAILED"
+      die "red 게이트: 검증 명령이 시간 상한 안에 돌아오지 않았다 — 실패가 아니라 대기라서 red 로 치지 않는다 ($VERIFY_FAILED) → $WORK/red_out.txt" ;;
+  esac
+  RED_STATE="확인: 구현 전 $VERIFY_FAILED 실패 (출력: red_out.txt)"
+  log "  ✔ red — 구현 전 코드에서 $VERIFY_FAILED 가 실패한다"
+}
+
+if [ "$RESUME_FROM" = "impl" ]; then
+  # 보호 파일 검사의 사각을 git 으로 메운다. check_protected 는 "이번 실행이 바꿨는가"를
+  # 보는데, verify 를 이번에 안 돌리면 이전 실행의 결과가 이미 기준선에 들어가 있다.
+  RESUMED_DIRTY="$(cd "$ROOT" && git status --porcelain -- $PROTECTED_FILES 2>/dev/null | awk '{print $2}' | tr '\n' ' ')"
+  [ -z "$RESUMED_DIRTY" ] \
+    || die "RESUME_FROM=impl — 보호 파일이 커밋 기준으로 변경돼 있다: $RESUMED_DIRTY. 이전 주행이 건드렸는지 확인하고 git checkout 으로 되돌린 뒤 다시 실행해라 (의도한 변경이면 커밋한 뒤 실행)"
+  BASELINE_STATE="건너뜀 (RESUME_FROM=impl)"
+  RED_STATE="건너뜀 (RESUME_FROM=impl — 이전 주행의 테스트 재사용)"
+  log "↺ RESUME_FROM=impl — verify 건너뜀 (기존 VERIFY.md·테스트 재사용, 보호 파일 git 대조 통과)"
+  state "REUSED:verify" "RESUME_FROM=impl — 기존 VERIFY.md 재사용"
+else
+  if [ -s "$WORK/test_files.txt" ]; then
+    state "TESTING_BASELINE" "테스트를 쓰기 전 검증 명령 기준선"
+    BASELINE_RC=0; run_verify || BASELINE_RC=$?
+    cp "$WORK/test_out.txt" "$WORK/baseline_out.txt"
+    if [ "$BASELINE_RC" -ne 0 ]; then
+      BASELINE_STATE="실패: $VERIFY_FAILED"
+      die "기준선이 이미 빨갛다 ($VERIFY_FAILED) — 테스트를 쓰기 전부터 실패하면 red→green 을 새 테스트 탓으로 판정할 수 없다. 환경이거나 워킹트리에 이미 있던 코드다. 고친 뒤 재실행하면 DESIGN.md·JUDGE.md 는 재사용된다 → $WORK/baseline_out.txt"
+    fi
+    BASELINE_STATE="통과: $VERIFY_PASSED"
+    log "  ✔ 기준선 녹색 — 이후 빨강은 새 테스트가 만든 것이다"
+    seal_worktree "기준선 실행"
+  else
+    BASELINE_STATE="해당 없음 (설계가 TEST_FILES 를 비워 둠)"
+  fi
+
+  check_seal "verify"
+  VERIFY_BASELINE="$(stage_baseline)"
+  run_stage verify "$MODEL_VERIFY" "$FALLBACK_VERIFY" "$PROMPTS/verify.md" "$WORK/VERIFY.md"
+  gate_scope verify
+  # 통과시키려고 러너 설정을 손대는 것이 가장 값싼 부정행위 경로다.
+  check_protected verify
+  # 테스트 파일 밖은 verify 의 권한이 아니다 — 구현을 미리 써 두면 red 가 사라진다.
+  check_stage_writes verify "$VERIFY_BASELINE" "$WORK/source_files.txt" "소스 파일"
+  red_gate
+  seal_worktree "verify·red 게이트 통과"
+fi
+
+# ─────────────────────────────────────────── 구현 → green (재시도 루프)
+# 재시도는 impl 만 다시 돈다. 테스트는 red 로 검증된 채 고정된다 — impl 은 TEST_FILES 를 못 쓴다.
+# 테스트 자체가 틀렸다고 판단되면 impl 이 BLOCKED 로 올리고 사람이 정한다.
 while :; do
   ATTEMPT=$((ATTEMPT + 1))
   log "── 시도 $ATTEMPT/$((MAX_RETRY + 1))"
 
-  if [ "$RESUME_FROM" = "verify" ] && [ "$ATTEMPT" = 1 ]; then
-    # 보호 파일 검사의 사각을 git 으로 메운다. check_protected 는 "이번 실행이 바꿨는가"를
-    # 보는데, impl 을 이번에 안 돌리면 이전 실행의 결과가 이미 기준선에 들어가 있다.
-    RESUMED_DIRTY="$(cd "$ROOT" && git status --porcelain -- $PROTECTED_FILES 2>/dev/null | awk '{print $2}' | tr '\n' ' ')"
-    [ -z "$RESUMED_DIRTY" ] \
-      || die "RESUME_FROM=verify — 보호 파일이 커밋 기준으로 변경돼 있다: $RESUMED_DIRTY. 이전 impl 이 건드렸는지 확인하고 git checkout 으로 되돌린 뒤 다시 실행해라 (의도한 변경이면 커밋한 뒤 실행)"
-    log "↺ RESUME_FROM=verify — impl 건너뜀 (기존 IMPL.md 재사용, 보호 파일 git 대조 통과)"
-    state "REUSED:impl" "RESUME_FROM=verify — 기존 IMPL.md 재사용"
-  else
-    # 기준선은 impl **직전**에 찍는다 — 재시도 2차는 1차 verify 의 테스트 변경을 이미 안고 시작한다.
-    IMPL_BASELINE="$(stage_baseline)"
-    run_stage impl   "$MODEL_IMPL"   "$FALLBACK_IMPL"   "$PROMPTS/impl.md"   "$WORK/IMPL.md"
-    gate_scope impl
-    # 구현 직후에 검사한다. 검증 단계까지 흘려보내면 그 위에 테스트가 쌓여서
-    # 되돌리는 비용이 올라간다.
-    check_protected impl
-    check_stage_writes impl "$IMPL_BASELINE" "$WORK/test_files.txt" "테스트 파일"
-  fi
-
-  VERIFY_BASELINE="$(stage_baseline)"
-  run_stage verify "$MODEL_VERIFY" "$FALLBACK_VERIFY" "$PROMPTS/verify.md" "$WORK/VERIFY.md"
-  gate_scope verify
-  # 검증 단계도 같은 검사를 받는다. 통과시키려고 러너 설정을 손대는 것이 가장 값싼
-  # 부정행위 경로다.
-  check_protected verify
-  # 그다음으로 값싼 경로가 소스 땜질이다 — 테스트 파일 밖은 verify 의 권한이 아니다.
-  check_stage_writes verify "$VERIFY_BASELINE" "$WORK/source_files.txt" "소스 파일"
+  check_seal "impl (시도 $ATTEMPT)"
+  # 기준선은 impl **직전**에 찍는다 — 재시도 2차는 1차 impl 과 검증 명령이 남긴 것을 안고 시작한다.
+  IMPL_BASELINE="$(stage_baseline)"
+  run_stage impl   "$MODEL_IMPL"   "$FALLBACK_IMPL"   "$PROMPTS/impl.md"   "$WORK/IMPL.md"
+  gate_scope impl
+  check_protected impl
+  check_stage_writes impl "$IMPL_BASELINE" "$WORK/test_files.txt" "테스트 파일"
 
   # ★ 최종 판정은 셸이 한다. 에이전트에게 안 맡긴다.
-  state "TESTING" "$TEST_CMD_ONELINE"
-  if run_verify; then
+  state "TESTING" "$TEST_CMD"
+  VERIFY_RC=0; run_verify || VERIFY_RC=$?
+  # 검증 명령이 남긴 것(캐시·리포트)까지 봉인한다 — 안 그러면 재시도 직전 대조가 오탐한다.
+  seal_worktree "impl·검증 명령 실행 (시도 $ATTEMPT)"
+  if [ "$VERIFY_RC" -eq 0 ]; then
     VERIFY_LAST="통과: $VERIFY_PASSED"
-    log "✅ 검증 통과 ($VERIFY_PASSED)"
+    log "✅ green — 검증 통과 ($VERIFY_PASSED)"
     break
   fi
 
@@ -1162,9 +1501,10 @@ while :; do
   [ "$ATTEMPT" -gt "$MAX_RETRY" ] \
     && die "검증 ${MAX_RETRY}회 재시도 후에도 실패 (마지막: $VERIFY_FAILED) → $FAIL_LOG"
 
-  gate_human "재시도 $((ATTEMPT + 1)) 진행? (상담역에게 FAIL_LOG 물어봐도 됨)" "$FAIL_LOG"
+  gate_human "재시도 $((ATTEMPT + 1)) 진행? (실패 원인은 FAIL_LOG 마지막 항목)" "$FAIL_LOG"
 done
 
+rm -f "$SEAL" "$SEAL.at"   # 완주 — 런처 훅의 "실행 중" 판정도 여기서 풀린다
 state "DONE" "통과: $VERIFY_PASSED" \
   "완주다. 산출물($WORK/{DESIGN,JUDGE,IMPL,VERIFY}.md)과 위 '검증 게이트' 블록이 말하는 통과 범위를 사람에게 보고해라."
 log "=== $FEATURE 완료 ==="

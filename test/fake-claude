@@ -40,7 +40,7 @@
 #
 # 단계별로 다르게 하려면 FAKE_SCENARIO_<STAGE> 를 쓴다. 예: FAKE_SCENARIO_IMPL=no_status
 #
-# 레이트 리밋: FAKE_RATELIMIT_MODELS="claude-fable-5-1 claude-opus-5" 에 든 모델로 불리면
+# 레이트 리밋: FAKE_RATELIMIT_MODELS="claude-fable-5-1 claude-opus-5-5" 에 든 모델로 불리면
 # 시나리오와 무관하게 리밋 거부 이벤트를 흘리고 exit 1 로 죽는다. 셸이 다음 모델로
 # 갈아타야 정상이다. 목록 밖 모델은 원래 시나리오대로 동작한다.
 
@@ -94,7 +94,7 @@ SC="${!var:-${FAKE_SCENARIO:-$DEFAULT_SC}}"
 # 그때도 "무엇을 받고 죽었는지"는 남아야 한다. 레이트리밋 순환 때는 마지막 호출이 남는다.
 if [ -n "$ARTIFACT" ]; then
   mkdir -p "$(dirname "$ARTIFACT")"
-  printf 'model=%s turns=%s budget=%s\nadd_dir=%s\ntools=%s\n' "$MODEL" "$TURNS" "$BUDGET" "$ADD_DIR" "$TOOLS" \
+  printf 'model=%s turns=%s budget=%s\nadd_dir=%s\ntools=%s\nstage_env=%s\n' "$MODEL" "$TURNS" "$BUDGET" "$ADD_DIR" "$TOOLS" "${PIPELINE_STAGE:-}" \
     > "$(dirname "$ARTIFACT")/$STAGE.args"
   printf '%s\n' "$PROMPT" > "$(dirname "$ARTIFACT")/$STAGE.prompt.txt"
 fi
@@ -163,6 +163,11 @@ write_artifact() {  # write_artifact <status-block>
 case "$SC" in
   ok)
     write_artifact "STATUS: DONE"
+    # 성실한 검증(테스트 선작성): 설계가 선언한 테스트 파일에 테스트를 쓴다. 테스트 쪽 검증 명령
+    # ($RG — run-tests.sh)은 이 줄이 있고 IMPL.md 가 없으면 실패한다 = 구현 전 red.
+    if [ "$STAGE" = "VERIFY" ]; then
+      for f in ${FAKE_TEST_FILES:-}; do echo "(verify 가 테스트를 씀)" >> "${ROOT:-.}/$f"; done
+    fi
     emit false "$MODEL" ;;
 
   no_status)
