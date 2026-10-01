@@ -1,0 +1,22 @@
+# serial-agent-pipeline 저장소 설정 — KEY=value, 값은 글자 그대로 (셸 확장 없음). sap doctor 로 점검.
+# 엔진 기본값과 다른 것만 둔다.
+
+# .github/workflows/ci.yml 과 같아야 한다 (백엔드 ruff·pytest, 프론트 lint·format:check·typecheck·test·build).
+# 순서는 CI 와 달리 테스트 먼저 — 린트가 앞이면 테스트 파일 형식 하나로 red 가 "확인"된다.
+# build 의 VITE_API_BASE_URL 은 CI(ci.yml 의 Build 단계)를 따른 것이다.
+TEST_CMDS=(cd backend && .venv/bin/python -m pytest -q)
+TEST_CMDS=(cd frontend && pnpm test)
+TEST_CMDS=(cd backend && .venv/bin/ruff check src tests alembic)
+TEST_CMDS=(cd frontend && pnpm lint)
+TEST_CMDS=(cd frontend && pnpm format:check)
+TEST_CMDS=(cd frontend && pnpm typecheck)
+TEST_CMDS=(cd frontend && VITE_API_BASE_URL=/api pnpm build)
+
+# git 읽기 4개 뒤가 이 저장소의 러너·검사기 — 전부 읽기(확인) 명령. `pnpm format` 처럼 쓰는 명령은 넣지 않는다.
+AGENT_TOOLS=Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git ls-files:*),Bash(backend/.venv/bin/python:*),Bash(cd backend && .venv/bin/python:*),Bash(cd frontend && pnpm test:*),Bash(cd backend && .venv/bin/ruff check:*),Bash(cd frontend && pnpm lint:*),Bash(cd frontend && pnpm format:check:*),Bash(cd frontend && pnpm typecheck:*)
+
+# `sap worktree` 가 읽는 값 (옛 pipeline-worktree.sh 사본에 박혀 있던 것).
+# 루트에 lock 파일이 없어 자동 판별이 설치를 건너뛰고, .claude/ 는 gitignore 라 handoff 가 worktree 에 안 따라온다
+# (설계는 handoff 가 없으면 BLOCKED).
+SETUP_CMD=(cd backend && python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt) && (cd frontend && pnpm install --frozen-lockfile)
+EXTRA_FILES=.claude/handoff.md .claude/plan-community.md .claude/plan-hymn-app-auth.md .claude/research-interview-community-2026-09-29.md .claude/research-similar-services-2026-09-29.md
