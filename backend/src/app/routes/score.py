@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_session
-from app.deps import get_current_user
+from app.deps import get_current_user, get_optional_user
 from app.models import Score, User
 from app.schemas.score import (
     ScoreEditRequest,
@@ -45,8 +45,24 @@ def _reject_foreign_object_key(file_uri: str, church_id: str) -> None:
     do not match the prefix and already resolve to download_url=None, and
     rejecting them here would make a title-only edit fail on an old score.
     """
-    if not file_uri.startswith(f"scores/{church_id}/"):
+    if not is_church_object_key(file_uri, church_id):
         raise HTTPException(400, "잘못된 파일 경로입니다.")
+
+
+def is_church_object_key(file_uri: str, church_id: str) -> bool:
+    """Whether a key has exactly the shape the server issues for this church:
+    scores/{church_id}/{name}.
+
+    Segments rather than a prefix: scores/{mine}/../{theirs}/x.png starts with
+    this church's prefix too. Whether S3 would resolve that to the other
+    church's object was never established, so the key is refused on its shape
+    instead of on what the store might do with it.
+    """
+    parts = file_uri.split("/")
+    if len(parts) != 3:
+        return False
+    root, owner, name = parts
+    return root == "scores" and owner == church_id and name not in ("", ".", "..")
 
 
 def _own_score_or_404(session: Session, score_id: str, user: User) -> Score:
@@ -78,14 +94,17 @@ def _writable_score_or_error(session: Session, score_id: str, user: User) -> Sco
     return score
 
 @router.get("/scores", response_model=list[ScoreResponse])
-def list_scores(session: Session = Depends(get_session)):
-    scores = (
-        session.query(Score)
-        .options(joinedload(Score.song))
-        .filter(Score.week_of.is_not(None))
-        .order_by(Score.created_at.asc())
-        .all()
-    )
+def list_scores(
+    session: Session = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    query = session.query(Score).options(joinedload(Score.song)).filter(Score.week_of.is_not(None))
+    # A signed-in caller sees their own church. Without a token the answer is
+    # still every church's: the tablets cannot sign in yet, and closing that
+    # waits on an app release (.claude/plan-community.md, M4).
+    if user is not None:
+        query = query.filter(Score.church_id == user.church_id)
+    scores = query.order_by(Score.created_at.asc()).all()
     return [
         ScoreResponse(
             id=s.id,

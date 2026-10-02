@@ -55,6 +55,24 @@ def get_current_user(
     return user
 
 
+def get_optional_user(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    session: Session = Depends(get_session),
+) -> User | None:
+    """None when no Authorization header was sent; otherwise get_current_user.
+
+    For the one route that still answers anonymous callers (GET /scores, which
+    the tablets call without a login). The split is on the header's presence,
+    not its validity: a header that is there but stale gets the same 401 as on
+    any protected route. Falling back to anonymous instead would show a leader
+    with an expired token every church's scores without a word, and the web
+    client would never see the 401 that makes it refresh.
+    """
+    if authorization is None:
+        return None
+    return get_current_user(authorization=authorization, session=session)
+
+
 ObjectReader = Callable[[str], bytes]
 
 

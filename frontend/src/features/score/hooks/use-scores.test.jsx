@@ -16,6 +16,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { apiFetch } from "../../../api/client";
+import { API_PATHS } from "../../../api/paths";
 import { useScores } from "./use-scores";
 
 vi.mock("../../../api/client", () => ({ apiFetch: vi.fn() }));
@@ -33,17 +34,33 @@ function trace(method, url) {
   calls.push(`${method} ${String(url).replace(/^.*?(?=\/scores|\/songs|https:)/, "")}`);
 }
 
+const isScoreListRequest = (url, options = {}) =>
+  String(url).endsWith("/scores") && (options.method ?? "GET") === "GET";
+
+/** The default apiFetch, with the score list answering `items`. */
+function apiFetchListing(items) {
+  return async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    if (String(url).endsWith("/file")) return ok(SIGNED);
+    // The mount fetches both lists through apiFetch, and the hook keeps
+    // whatever comes back: the score list is mapped over on every render, the
+    // library is what the library tab and the dialog draw.
+    if (isScoreListRequest(url, options)) return ok(items);
+    if (String(url).endsWith("/songs") && (options.method ?? "GET") === "GET") return ok([]);
+    return ok({ id: "score-1" });
+  };
+}
+
+/** The body of the PATCH, wherever it falls among the calls around it. */
+function patchBody() {
+  const patch = apiFetch.mock.calls.find(([, options]) => options?.method === "PATCH");
+  return JSON.parse(patch[1].body);
+}
+
 beforeEach(() => {
   calls = [];
   apiFetch.mockReset();
-  apiFetch.mockImplementation(async (url, options = {}) => {
-    trace(options.method ?? "GET", url);
-    if (String(url).endsWith("/file")) return ok(SIGNED);
-    // The mount fetches the library through apiFetch too, and the hook keeps
-    // whatever comes back as the list the library tab and the dialog draw.
-    if (String(url).endsWith("/songs") && (options.method ?? "GET") === "GET") return ok([]);
-    return ok({ id: "score-1" });
-  });
+  apiFetch.mockImplementation(apiFetchListing([]));
   globalThis.fetch = vi.fn(async (url, options = {}) => {
     trace(options.method ?? "GET", url);
     return ok([]);
@@ -52,10 +69,53 @@ beforeEach(() => {
 
 async function mountedHook() {
   const { result } = renderHook(() => useScores());
-  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+  await waitFor(() => expect(calls).toEqual(expect.arrayContaining(["GET /scores", "GET /songs"])));
   calls = [];
   return result;
 }
+
+it("마운트하면 악보 목록을 토큰을 싣는 apiFetch로 불러야 한다", async () => {
+  // Arrange & Act — the bare fetch sent no token, so the server could only
+  // answer with every church's list.
+  renderHook(() => useScores());
+  await waitFor(() => expect(calls).toContain("GET /songs"));
+
+  // Assert
+  const listRequests = apiFetch.mock.calls.filter(([url, options]) =>
+    isScoreListRequest(url, options)
+  );
+  expect(listRequests.map(([url]) => url)).toEqual([API_PATHS.scores]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("수정한 뒤 목록을 다시 부를 때도 apiFetch를 써야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+
+  // Act
+  await act(async () => {
+    await result.current.updateScore({ scoreId: "score-1", title: "새 제목" });
+  });
+
+  // Assert
+  expect(calls).toEqual(["PATCH /scores/score-1", "GET /scores"]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("삭제한 뒤 목록을 다시 부를 때도 apiFetch를 써야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  // Act
+  await act(async () => {
+    await result.current.deleteScore("score-1");
+  });
+
+  // Assert
+  expect(calls).toEqual(["DELETE /scores/score-1", "GET /scores"]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
 
 it("파일 없이 수정하면 업로드 주소를 요청하지 않아야 한다", async () => {
   // Arrange
@@ -70,7 +130,7 @@ it("파일 없이 수정하면 업로드 주소를 요청하지 않아야 한다
   expect(calls.filter((call) => call.includes("/file"))).toEqual([]);
   expect(calls[0]).toBe("PATCH /scores/score-1");
   // The body must not carry file_uri at all: null would blank the column.
-  expect(JSON.parse(apiFetch.mock.calls.at(-1)[1].body)).toEqual({ title: "새 제목" });
+  expect(patchBody()).toEqual({ title: "새 제목" });
 });
 
 it("파일을 바꾸면 서명·업로드·PATCH 순서로 호출해야 한다", async () => {
@@ -88,8 +148,7 @@ it("파일을 바꾸면 서명·업로드·PATCH 순서로 호출해야 한다",
     `PUT ${SIGNED.upload_url}`,
     "PATCH /scores/score-1",
   ]);
-  const patchBody = JSON.parse(apiFetch.mock.calls.at(-1)[1].body);
-  expect(patchBody).toEqual({ title: "은혜", file_uri: SIGNED.s3_key });
+  expect(patchBody()).toEqual({ title: "은혜", file_uri: SIGNED.s3_key });
 });
 
 it("S3 업로드가 실패하면 악보를 새 파일로 옮기지 않아야 한다", async () => {
@@ -154,10 +213,7 @@ it("scores에 song_id가 있으면 곡 수를 distinct song_id로 세어야 한�
     { id: "u4", song_id: "s2", title: "B" },
     { id: "u5", song_id: "s2", title: "B" },
   ];
-  globalThis.fetch = vi.fn(async (url, options = {}) => {
-    trace(options.method ?? "GET", url);
-    return ok(items);
-  });
+  apiFetch.mockImplementation(apiFetchListing(items));
 
   // Act
   const { result } = renderHook(() => useScores());
@@ -176,10 +232,7 @@ it("song_id가 없는 항목은 title로 곡 수를 세어야 한다", async () 
     { id: "u3", title: "B" },
     { id: "u4", title: "C" },
   ];
-  globalThis.fetch = vi.fn(async (url, options = {}) => {
-    trace(options.method ?? "GET", url);
-    return ok(items);
-  });
+  apiFetch.mockImplementation(apiFetchListing(items));
 
   // Act
   const { result } = renderHook(() => useScores());

@@ -1,0 +1,36 @@
+# serial-agent-pipeline 저장소 설정 — KEY=value, 값은 글자 그대로 (셸 확장 없음). sap doctor 로 점검.
+# 엔진 기본값과 다른 것만 둔다.
+
+# .github/workflows/ci.yml 과 같아야 한다 (백엔드 ruff·pytest, 프론트 lint·format:check·typecheck·test·build).
+# 순서는 CI 와 달리 테스트 먼저 — 린트가 앞이면 테스트 파일 형식 하나로 red 가 "확인"된다.
+# build 의 VITE_API_BASE_URL 은 CI(ci.yml 의 Build 단계)를 따른 것이다.
+TEST_CMDS=(cd backend && .venv/bin/python -m pytest -q)
+TEST_CMDS=(cd frontend && pnpm test)
+TEST_CMDS=(cd backend && .venv/bin/ruff check src tests alembic)
+TEST_CMDS=(cd frontend && pnpm lint)
+TEST_CMDS=(cd frontend && pnpm format:check)
+TEST_CMDS=(cd frontend && pnpm typecheck)
+TEST_CMDS=(cd frontend && VITE_API_BASE_URL=/api pnpm build)
+
+# git 읽기 4개 뒤가 이 저장소의 러너·검사기와 읽기 명령이다. `pnpm format` 처럼 쓰는 명령은 넣지 않는다.
+#
+# ★ 규칙은 `cd … &&` 를 뗀 형태로 쓴다. Claude Code 는 `cd backend && X` 를 쪼개 조각마다 대조하므로
+#   `Bash(cd backend && .venv/bin/ruff check:*)` 는 한 번도 맞지 않는다 (2026-10-02 헤드리스 대조 실측:
+#   통짜 = 거부 "contains multiple operations", 쪼갠 형태 = 실행). sap doctor·sap test 는 이걸 못 잡는다.
+# ★ 읽기 명령(grep·rg·ls·cat·head·tail·wc·sed -n·curl)을 여는 이유: 설계 단계가 근거를 확인하다
+#   거부 한 건이면 BLOCKED 로 멈춘다 (M0 주행 5번 중 5번이 권한 거부, 게이트 위반 0건).
+#   단순 grep 은 원래 통과하지만 따옴표·`$` 가 섞이면 승인을 요구한다. `find` 는 -delete·-exec 가 있어 뺐다.
+#   curl 은 설계 덧붙임이 운영 실측(`GET /api/scores`)을 안내하기 때문이다 — 주소 제한 없이 연다(사용자 결정 10-02).
+# 허용 목록을 환경 변수로만 넘기지 말 것 — 에이전트는 이 파일을 읽고 무엇이 되는지 판단한다.
+AGENT_TOOLS=Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git ls-files:*),Bash(.venv/bin/python -m pytest:*),Bash(.venv/bin/ruff check:*),Bash(pnpm test:*),Bash(pnpm lint:*),Bash(pnpm format:check:*),Bash(pnpm typecheck:*),Bash(grep:*),Bash(rg:*),Bash(ls:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(sed -n:*),Bash(curl:*)
+
+# Flutter 앱은 리포 루트에 중첩된 별도 git 저장소라 worktree 에 따라오지 않는다. 설계가 앱 코드를
+# 못 읽으면 "앱이 무엇을 보내는가" 를 확인하지 못해 멈춘다 (M0 1차 주행). 읽기 전용 참조로 연다.
+# ★ 이 머신의 절대 경로다 — 다른 PC 에서는 환경 변수 ADD_DIRS 로 덮을 것.
+ADD_DIRS=/Users/ijinseong/Documents/hymn/hymn_app
+
+# `sap worktree` 가 읽는 값 (옛 pipeline-worktree.sh 사본에 박혀 있던 것).
+# 루트에 lock 파일이 없어 자동 판별이 설치를 건너뛰고, .claude/ 는 gitignore 라 handoff 가 worktree 에 안 따라온다
+# (설계는 handoff 가 없으면 BLOCKED).
+SETUP_CMD=(cd backend && python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt) && (cd frontend && pnpm install --frozen-lockfile)
+EXTRA_FILES=.claude/handoff.md .claude/plan-community.md .claude/plan-hymn-app-auth.md .claude/research-interview-community-2026-09-29.md .claude/research-similar-services-2026-09-29.md
