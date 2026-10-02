@@ -345,8 +345,7 @@ def me(
         raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
     user_id = claims.get("sub")
-    church_id = claims.get("church_id")
-    if not user_id or not church_id:
+    if not user_id or not claims.get("church_id"):
         raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
     user = session.get(User, user_id)
@@ -358,7 +357,10 @@ def me(
     if claims.get("tv", 0) != user.token_version:
         raise HTTPException(status_code=401, detail=SESSION_EXPIRED_MESSAGE)
 
-    church = session.get(Church, church_id)
+    # The row's church, not the token's: every other route scopes by
+    # user.church_id, and answering with the claim here would name one church
+    # while the data routes serve another.
+    church = session.get(Church, user.church_id)
     if church is None:
         raise HTTPException(status_code=404, detail=CHURCH_MISSING_MESSAGE)
 
