@@ -22,7 +22,9 @@ export function useScores() {
 
   const fetchScores = useCallback(async () => {
     try {
-      const response = await fetch(API_PATHS.scores);
+      // apiFetch, not fetch: the list is scoped to the caller's church only
+      // when the request carries the token, and anonymous it is every church's.
+      const response = await apiFetch(API_PATHS.scores);
       if (!response.ok) {
         throw new Error("악보 목록을 불러오지 못했습니다.");
       }

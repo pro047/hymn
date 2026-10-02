@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_session
-from app.deps import get_current_user
+from app.deps import get_current_user, get_optional_user
 from app.models import Score, User
 from app.schemas.score import (
     ScoreEditRequest,
@@ -94,14 +94,17 @@ def _writable_score_or_error(session: Session, score_id: str, user: User) -> Sco
     return score
 
 @router.get("/scores", response_model=list[ScoreResponse])
-def list_scores(session: Session = Depends(get_session)):
-    scores = (
-        session.query(Score)
-        .options(joinedload(Score.song))
-        .filter(Score.week_of.is_not(None))
-        .order_by(Score.created_at.asc())
-        .all()
-    )
+def list_scores(
+    session: Session = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    query = session.query(Score).options(joinedload(Score.song)).filter(Score.week_of.is_not(None))
+    # A signed-in caller sees their own church. Without a token the answer is
+    # still every church's: the tablets cannot sign in yet, and closing that
+    # waits on an app release (.claude/plan-community.md, M4).
+    if user is not None:
+        query = query.filter(Score.church_id == user.church_id)
+    scores = query.order_by(Score.created_at.asc()).all()
     return [
         ScoreResponse(
             id=s.id,
