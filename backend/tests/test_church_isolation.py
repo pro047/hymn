@@ -36,6 +36,7 @@ WEEK = THIS_WEEK.isoformat()
 NON_DATA_ROUTES = {
     ("GET", "/"),
     ("GET", "/health"),
+    ("GET", "/health/ready"),
     ("GET", "/auth/check-church"),
     ("GET", "/auth/check-email"),
     ("POST", "/auth/church/join-code"),

@@ -155,7 +155,9 @@ jobs:
           # fails to start still has the previous image on the host. Every deploy
           # pulls two images and nothing removed them: 91 had piled up to 12 GB
           # of a 29 GB disk (measured 2026-10-02). Anything built within the
-          # last week is kept, so the previous release is still local. The prune
+          # last week is kept; the filter goes by build time, so a previous
+          # release older than that is gone and a rollback pulls it from ECR
+          # again. The prune
           # sits before the nginx steps, not at the end: the invocation reports
           # the exit status of the last command, and tidying the disk must not
           # be what decides whether a deploy succeeded.

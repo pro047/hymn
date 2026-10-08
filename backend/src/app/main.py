@@ -1,17 +1,25 @@
-from fastapi import FastAPI, Request
+import logging
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
-from app.rate_limit import limiter, rate_limit_handler
+from app.db import get_session
+from app.rate_limit import HEALTH_READY_LIMIT, limiter, rate_limit_handler
 from app.routes.auth import PASSWORD_RESET_ENABLED, password_reset_router
 from app.routes.auth import router as auth_router
 from app.routes.conti import router as conti_router
 from app.routes.score import router as score_router
 from app.routes.song import router as song_router
 from app.utils.email import require_deliverable_transport
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Hymn Backend")
 
@@ -66,6 +74,27 @@ if PASSWORD_RESET_ENABLED:
 def health():
     """Lightweight liveness probe."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+@limiter.limit(HEALTH_READY_LIMIT)
+def health_ready(request: Request, session: Session = Depends(get_session)) -> JSONResponse:
+    """Whether a request that needs the database would succeed right now.
+
+    Separate from /health on purpose. The deploy script polls /health to decide
+    whether the new container came up (deploy.yml), and that question must not
+    start depending on the database; this one is for the uptime monitor, where
+    "the process is alive but nothing works" has to count as down.
+
+    The driver's message names the host and the user, so it goes to the log and
+    the caller gets only the status.
+    """
+    try:
+        session.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        logger.exception("readiness probe could not reach the database")
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    return JSONResponse(content={"status": "ok"})
 
 
 @app.get("/")
