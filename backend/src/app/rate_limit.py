@@ -102,6 +102,10 @@ CONTI_ORDER_LIMIT = "30/minute"
 REFRESH_LIMIT = "20/minute"
 LOGOUT_LIMIT = "20/minute"
 ME_LIMIT = "60/minute"
+# Unauthenticated and it touches the database, which /health never did. An
+# uptime monitor asks once every few minutes; this is room for a person
+# retrying by hand without leaving the route open as a way to hold connections.
+HEALTH_READY_LIMIT = "30/minute"
 
 RATE_LIMIT_MESSAGE = "요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요."
 
