@@ -105,3 +105,129 @@ describe("헤더", () => {
     expect(header.getByRole("button", { name: "로그아웃" })).toBeTruthy();
   });
 });
+
+describe("팀원 화면", () => {
+  // One stub per path, so a test can also ask which paths were never called.
+  const stubApi = (role) => {
+    const fetchMock = vi.fn((url) => {
+      const path = String(url);
+      const body = path.endsWith("/auth/me")
+        ? { user: { role }, church: { name: "교회", code: null } }
+        : [];
+      return Promise.resolve({ ok: true, status: 200, json: async () => body });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  };
+  const calledPaths = (fetchMock) => fetchMock.mock.calls.map(([url]) => String(url));
+
+  it("팀원에게는 보관함 탭과 곡 추가 버튼을 보여주지 않아야 한다", async () => {
+    localStorage.setItem("hymn_access_token", "token");
+    const fetchMock = stubApi("member");
+
+    renderAt("/");
+
+    // The header settles once /auth/me has answered; 계정 is there for anyone.
+    await screen.findByRole("link", { name: "계정" });
+    await vi.waitFor(() =>
+      expect(calledPaths(fetchMock).some((path) => path.endsWith("/auth/me"))).toBe(true)
+    );
+    expect(screen.queryByRole("button", { name: "보관함" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "콘티에 곡 추가" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "콘티 편집" })).toBeNull();
+  });
+
+  it("팀원 화면은 인도자 전용인 보관함 목록을 요청하지 않아야 한다", async () => {
+    localStorage.setItem("hymn_access_token", "token");
+    const fetchMock = stubApi("member");
+
+    renderAt("/");
+
+    await vi.waitFor(() =>
+      expect(calledPaths(fetchMock).some((path) => path.endsWith("/scores"))).toBe(true)
+    );
+    await vi.waitFor(() =>
+      expect(calledPaths(fetchMock).some((path) => path.endsWith("/auth/me"))).toBe(true)
+    );
+    // The server answers 403 there, and the page would show it as a failure.
+    expect(calledPaths(fetchMock).filter((path) => path.endsWith("/songs"))).toEqual([]);
+  });
+
+  it("역할을 읽지 못하면 관리 버튼을 숨기지 않아야 한다", async () => {
+    // /auth/me failing is a leader on a bad connection far more often than
+    // anything else; the server still refuses a member whatever is drawn.
+    localStorage.setItem("hymn_access_token", "token");
+    const fetchMock = vi.fn((url) => {
+      const path = String(url);
+      if (path.endsWith("/auth/me")) {
+        return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("/");
+
+    expect(await screen.findByRole("button", { name: "콘티에 곡 추가" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "보관함" })).toBeTruthy();
+    // The management link stays a known leader's only.
+    expect(screen.queryByRole("link", { name: "교회 관리" })).toBeNull();
+  });
+
+  it("인도자 홈은 악보 목록을 한 번만 요청해야 한다", async () => {
+    localStorage.setItem("hymn_access_token", "token");
+    const fetchMock = stubApi("leader");
+
+    renderAt("/");
+
+    await screen.findByRole("button", { name: "보관함" });
+    await vi.waitFor(() =>
+      expect(calledPaths(fetchMock).some((path) => path.endsWith("/songs"))).toBe(true)
+    );
+    expect(calledPaths(fetchMock).filter((path) => path.endsWith("/scores"))).toHaveLength(1);
+  });
+
+  it("팀원이 콘티 주소를 직접 열면 콘티 화면 대신 홈을 보여줘야 한다", async () => {
+    localStorage.setItem("hymn_access_token", "token");
+    const fetchMock = stubApi("member");
+
+    renderAt("/conti/2026-09-13");
+
+    // Home's header names the screen the member lands on.
+    expect(await screen.findByRole("heading", { name: "Worship Planner" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "2026-09-13 콘티" })).toBeNull();
+    // Not even asked for: the screen is the leader's, so there is no request
+    // for the server to refuse.
+    expect(calledPaths(fetchMock).filter((path) => path.includes("/weeks/"))).toEqual([]);
+  });
+
+  it("인도자가 콘티 주소를 열면 콘티 화면을 보여줘야 한다", async () => {
+    localStorage.setItem("hymn_access_token", "token");
+    const fetchMock = vi.fn((url) => {
+      const path = String(url);
+      const body = path.endsWith("/auth/me")
+        ? { user: { role: "leader" }, church: { name: "교회", code: "CODE" } }
+        : { week_of: "2026-09-13", slot_ratio: 0.75, pages: [] };
+      return Promise.resolve({ ok: true, status: 200, json: async () => body });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAt("/conti/2026-09-13");
+
+    expect(await screen.findByRole("heading", { name: "2026-09-13 콘티" })).toBeTruthy();
+  });
+
+  it("인도자에게는 보관함 탭과 곡 추가 버튼을 보여줘야 한다", async () => {
+    localStorage.setItem("hymn_access_token", "token");
+    const fetchMock = stubApi("leader");
+
+    renderAt("/");
+
+    expect(await screen.findByRole("button", { name: "보관함" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "콘티에 곡 추가" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "콘티 편집" })).toBeTruthy();
+    await vi.waitFor(() =>
+      expect(calledPaths(fetchMock).some((path) => path.endsWith("/songs"))).toBe(true)
+    );
+  });
+});

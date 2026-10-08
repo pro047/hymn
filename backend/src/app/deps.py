@@ -55,6 +55,26 @@ def get_current_user(
     return user
 
 
+# One wording for every leader-only route, for the same reason as above: the
+# client shows it as is, and a member has the same next step whichever screen
+# they were refused on.
+LEADER_ONLY_MESSAGE = "인도자만 할 수 있는 작업입니다."
+
+
+def require_leader(user: User = Depends(get_current_user)) -> User:
+    """The signed-in user if they lead their church, or 403.
+
+    A member account exists so that a person belongs to a church and can open
+    its scores; uploading, placing, editing and arranging are the leader's.
+    Checked before the route looks anything up, so a member gets the same 403
+    whether or not the id in the path names something — the refusal says
+    nothing about what exists.
+    """
+    if user.role != "leader":
+        raise HTTPException(status_code=403, detail=LEADER_ONLY_MESSAGE)
+    return user
+
+
 def get_optional_user(
     authorization: str | None = Header(default=None, alias="Authorization"),
     session: Session = Depends(get_session),

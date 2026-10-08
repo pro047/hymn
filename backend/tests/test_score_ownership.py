@@ -1,14 +1,14 @@
-"""Pins who inside a church may modify whose scores.
+"""Pins who inside a church may modify its scores: the leader, and nobody else.
 
 The church-scope check alone let any member edit or delete any score of their
-congregation — the tenancy boundary was the only boundary. Now a score carries
-its uploader, a member may modify only their own uploads, and the leader may
-modify all of the church's. Reads stay church-wide: the refusal is about the
-write, not about hiding the row from people who already share it.
+congregation — the tenancy boundary was the only boundary. A member could then
+modify their own uploads; since 2026-10 a member modifies nothing, because only
+the leader uploads and arranges (test_leader_only pins that route by route).
+Reads stay church-wide: the refusal is about the write, not about hiding the
+row from people who already share it.
 
-Rows predating uploader_id hold NULL there and so fall to the leader. That
-matches production: every legacy row was uploaded by the one account that
-exists, and that account leads its church.
+A score still records who filed it. Rows predating uploader_id hold NULL
+there, which no longer decides anything: the leader may modify every row.
 """
 
 from datetime import date, timedelta
@@ -78,52 +78,51 @@ def test_a_created_score_should_carry_its_uploader(client, db_session):
     assert row.uploader_id == _user_id(client, leader)
 
 
-def test_editing_a_fellow_members_score_should_return_403(client):
+def test_a_member_editing_a_score_should_return_403(client):
     """403 rather than 404: a member can already read the score, so its
     existence is not the secret — only the write is refused."""
-    _, code = _found_church(client)
-    uploader = _join_member(client, code, "uploader@example.com")
-    other = _join_member(client, code, "other@example.com")
-    score_id = _create_score(client, uploader)
+    leader, code = _found_church(client)
+    member = _join_member(client, code, "member@example.com")
+    score_id = _create_score(client, leader)
 
-    response = client.patch(f"/scores/{score_id}", json={"title": "hijacked"}, headers=other)
+    response = client.patch(f"/scores/{score_id}", json={"title": "hijacked"}, headers=member)
 
     assert response.status_code == 403, response.text
-    still = client.get(f"/scores/{score_id}", headers=uploader)
+    still = client.get(f"/scores/{score_id}", headers=leader)
     assert still.json()["title"] == NEW_SCORE["title"]
 
 
-def test_deleting_a_fellow_members_score_should_return_403(client):
-    _, code = _found_church(client)
-    uploader = _join_member(client, code, "uploader@example.com")
-    other = _join_member(client, code, "other@example.com")
-    score_id = _create_score(client, uploader)
+def test_a_member_deleting_a_score_should_return_403(client):
+    leader, code = _found_church(client)
+    member = _join_member(client, code, "member@example.com")
+    score_id = _create_score(client, leader)
 
-    response = client.delete(f"/scores/{score_id}", headers=other)
+    response = client.delete(f"/scores/{score_id}", headers=member)
 
     assert response.status_code == 403, response.text
-    assert client.get(f"/scores/{score_id}", headers=uploader).status_code == 200
+    assert client.get(f"/scores/{score_id}", headers=leader).status_code == 200
 
 
-def test_a_member_should_still_modify_their_own_upload(client):
-    """The gate must not close the path it exists to protect."""
+def test_a_member_should_not_file_a_score_of_their_own(client):
+    """Was "a member should still modify their own upload". A member has no
+    upload to modify any more: filing a song is itself the leader's."""
     _, code = _found_church(client)
-    uploader = _join_member(client, code, "uploader@example.com")
-    score_id = _create_score(client, uploader)
+    member = _join_member(client, code, "member@example.com")
 
-    renamed = client.patch(f"/scores/{score_id}", json={"title": "내 악보"}, headers=uploader)
-    assert renamed.status_code == 200, renamed.text
-    assert renamed.json()["title"] == "내 악보"
+    uploaded = client.post(
+        "/songs",
+        json={"title": NEW_SCORE["title"], "filename": "score.png", "content_type": "image/png"},
+        headers=member,
+    )
 
-    deleted = client.delete(f"/scores/{score_id}", headers=uploader)
-    assert deleted.status_code == 204, deleted.text
+    assert uploaded.status_code == 403, uploaded.text
+    assert client.get("/scores", headers=member).json() == []
 
 
 def test_the_leader_should_modify_any_score_of_the_church(client):
-    """The leader curates the church's library, whoever filed the row."""
-    leader, code = _found_church(client)
-    uploader = _join_member(client, code, "uploader@example.com")
-    score_id = _create_score(client, uploader)
+    """The leader curates the church's library."""
+    leader, _ = _found_church(client)
+    score_id = _create_score(client, leader)
 
     renamed = client.patch(f"/scores/{score_id}", json={"title": "정리됨"}, headers=leader)
     assert renamed.status_code == 200, renamed.text
@@ -133,8 +132,9 @@ def test_the_leader_should_modify_any_score_of_the_church(client):
 
 
 def test_a_legacy_score_with_no_uploader_should_fall_to_the_leader(client, db_session):
-    """Rows from before uploader_id existed hold NULL there. NULL matches no
-    member id, so members are refused; the leader branch never looks at it."""
+    """Rows from before uploader_id existed hold NULL there. Nothing reads the
+    column to decide a write, so such a row behaves like any other: refused to
+    a member, the leader's to modify."""
     leader, code = _found_church(client)
     member = _join_member(client, code, "member@example.com")
     score_id = _create_score(client, leader)
@@ -147,13 +147,12 @@ def test_a_legacy_score_with_no_uploader_should_fall_to_the_leader(client, db_se
     assert allowed.status_code == 200, allowed.text
 
 
-def test_a_member_should_still_read_a_fellow_members_score(client):
-    """The write gate must not narrow reads: the church shares its library."""
-    _, code = _found_church(client)
-    uploader = _join_member(client, code, "uploader@example.com")
-    other = _join_member(client, code, "other@example.com")
-    score_id = _create_score(client, uploader)
+def test_a_member_should_still_read_the_churchs_score(client):
+    """The write gate must not narrow reads: the church shares its scores."""
+    leader, code = _found_church(client)
+    member = _join_member(client, code, "member@example.com")
+    score_id = _create_score(client, leader)
 
-    response = client.get(f"/scores/{score_id}", headers=other)
+    response = client.get(f"/scores/{score_id}", headers=member)
 
     assert response.status_code == 200, response.text

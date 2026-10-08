@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_session
-from app.deps import get_current_user, get_optional_user
+from app.deps import get_current_user, get_optional_user, require_leader
 from app.models import Score, User
 from app.schemas.score import (
     ScoreEditRequest,
@@ -71,27 +71,16 @@ def _own_score_or_404(session: Session, score_id: str, user: User) -> Score:
     404 rather than 403 for a score that exists in another church: 403 would
     confirm the id is real, which is one bit more than a caller outside that
     congregation should get. Same choice the library routes make.
+
+    This is the church boundary only. Who inside the church may write is
+    decided before the route body runs, by Depends(require_leader) on every
+    route but the two reads.
     """
     score = session.get(Score, score_id)
     if score is None or score.church_id != user.church_id:
         raise HTTPException(404, "악보를 찾을 수 없습니다.")
     return score
 
-
-def _writable_score_or_error(session: Session, score_id: str, user: User) -> Score:
-    """A score the caller may modify: their own upload, or any of the church's
-    if they lead it.
-
-    403 rather than 404 inside the church, unlike the cross-church case above:
-    a member can already read the score, so its existence is not the secret —
-    only the write is refused. Rows predating uploader_id are NULL and so fall
-    to the leader, which matches production: every legacy row was uploaded by
-    the one account that exists, and that account leads its church.
-    """
-    score = _own_score_or_404(session, score_id, user)
-    if user.role != "leader" and score.uploader_id != user.id:
-        raise HTTPException(403, "본인이 올린 악보만 수정하거나 삭제할 수 있습니다.")
-    return score
 
 @router.get("/scores", response_model=list[ScoreResponse])
 def list_scores(
@@ -160,7 +149,7 @@ def create_score_file_upload(
     score_id: str,
     payload: ScoreFileUploadRequest,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
     """A presigned PUT for replacing the file of a score that already exists.
 
@@ -182,7 +171,7 @@ def create_score_file_upload(
     often a write fails and cost a few KB each; a sweep over keys absent from
     the scores table is the way to reclaim them if it ever matters.
     """
-    score = _writable_score_or_error(session, score_id, user)
+    score = _own_score_or_404(session, score_id, user)
     ext = extension_from_input(payload.filename, payload.content_type)
     key = f"scores/{score.church_id}/{uuid4()}.{ext}"
     return {"upload_url": presign_put(key, 900), "s3_key": key}
@@ -212,20 +201,20 @@ def _edit_state_of(score: Score) -> ScoreEditResponse:
 def get_score_edit(
     score_id: str,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
     """What the editor needs to open this week's sheet.
 
-    _writable_score_or_error, not _own_score_or_404: this is the read the edit
-    screen opens with, and a member who could load it only to be refused on
-    save would have drawn for nothing.
+    Leader-only like the save it leads to: this is the read the edit screen
+    opens with, and a member who could load it only to be refused on save
+    would have drawn for nothing.
 
     source_image_url is the song's file, not the edited one. The document is
     replayed over it, so the edited sheet would put every earlier marking on
     the canvas twice — once painted into the background, once as the object
     that painted it.
     """
-    score = _writable_score_or_error(session, score_id, user)
+    score = _own_score_or_404(session, score_id, user)
     return _edit_state_of(score)
 
 
@@ -233,7 +222,7 @@ def get_score_edit(
 def create_score_edit_upload(
     score_id: str,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
     """A presigned PUT for the flattened sheet the editor is about to produce.
 
@@ -249,7 +238,7 @@ def create_score_edit_upload(
     Always .png: the editor flattens a canvas, and a canvas has transparent
     pixels wherever nothing was drawn. JPEG would fill those with black.
     """
-    score = _writable_score_or_error(session, score_id, user)
+    score = _own_score_or_404(session, score_id, user)
     key = f"scores/{score.church_id}/{uuid4()}.png"
     return {"upload_url": presign_put(key, 900), "s3_key": key}
 
@@ -259,7 +248,7 @@ def save_score_edit(
     score_id: str,
     payload: ScoreEditRequest,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
     """Records a finished edit against this one week.
 
@@ -271,7 +260,7 @@ def save_score_edit(
     hand back signed GETs for it through conti — the read side signs anything
     under scores/, for reasons documented in build_week_conti_pdf.
     """
-    score = _writable_score_or_error(session, score_id, user)
+    score = _own_score_or_404(session, score_id, user)
     _reject_foreign_object_key(payload.edited_file_uri, score.church_id)
     save_edit(
         score,
@@ -291,7 +280,7 @@ def save_score_edit(
 def delete_score_edit(
     score_id: str,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
     """Takes this week back to the song's own sheet.
 
@@ -303,7 +292,7 @@ def delete_score_edit(
     is not an error — the screen wants the same body either way, and a leader
     pressing "원본으로" twice has not done anything wrong.
     """
-    score = _writable_score_or_error(session, score_id, user)
+    score = _own_score_or_404(session, score_id, user)
     clear_edit(score)
     session.commit()
     session.refresh(score)
@@ -315,9 +304,9 @@ def update_score(
     score_id: str,
     payload: ScoreUpdate,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
-    score = _writable_score_or_error(session, score_id, user)
+    score = _own_score_or_404(session, score_id, user)
     song = score.song
 
     if payload.title is not None:
@@ -371,9 +360,9 @@ def update_score(
 def delete_score(
     score_id: str,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
-    score = _writable_score_or_error(session, score_id, user)
+    score = _own_score_or_404(session, score_id, user)
     session.delete(score)
     session.commit()
     return
