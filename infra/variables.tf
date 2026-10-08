@@ -75,6 +75,14 @@ variable "image_bucket_allowed_origins" {
   default     = []
 }
 
+variable "image_bucket_versioning" {
+  # Its own switch rather than `environment == "prod"`: production runs in the
+  # workspace named stg, so that test left the live bucket unversioned.
+  description = "Keep previous versions of objects in the image bucket"
+  type        = bool
+  default     = true
+}
+
 variable "ses_domain" {
   description = "Domain to verify with SES for outbound mail (empty disables SES entirely)"
   type        = string
@@ -107,6 +115,14 @@ variable "rds_password" {
   description = "Master password for RDS"
   type        = string
   sensitive   = true
+}
+
+variable "rds_deletion_protection" {
+  # Same reason as image_bucket_versioning: on by default, off only where a
+  # throwaway environment says so in its tfvars.
+  description = "Refuse to delete the RDS instance until this is turned off"
+  type        = bool
+  default     = true
 }
 
 variable "rds_allocated_storage" {
