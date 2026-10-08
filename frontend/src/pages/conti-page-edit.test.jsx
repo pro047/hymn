@@ -210,10 +210,21 @@ const renderConti = () =>
   );
 
 /** Opens the editor and waits until fabric has the sheet on screen — every
- * control is disabled until then, so clicking earlier does nothing. */
+ * control is disabled until then, so clicking earlier does nothing.
+ *
+ * Three seconds, not waitFor's default of one. The first time a file replays a
+ * saved document, loadFromJSON pays a one-off cost: measured on CI at 418 ms,
+ * then 1150 ms once more test files ran beside this one (every later replay
+ * was 31-37 ms). That is setup, not what any test here is about, so it gets
+ * room. Kept under the 5 s test timeout so that an editor which never becomes
+ * ready still fails on this line and says so. */
+const EDITOR_READY_TIMEOUT_MS = 3000;
+
 async function openEditor(title = "은혜") {
   fireEvent.click(await screen.findByRole("button", { name: `${title} 편집` }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "저장" }).disabled).toBe(false));
+  await waitFor(() => expect(screen.getByRole("button", { name: "저장" }).disabled).toBe(false), {
+    timeout: EDITOR_READY_TIMEOUT_MS,
+  });
 }
 
 /** A png's declared size, read out of its IHDR chunk.
