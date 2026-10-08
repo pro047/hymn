@@ -51,7 +51,7 @@ module "s3_bucket" {
   environment       = var.environment
   bucket_name       = var.image_bucket_name
   allowed_origins   = var.image_bucket_allowed_origins
-  enable_versioning = var.environment == "prod" ? true : false
+  enable_versioning = var.image_bucket_versioning
   prevent_destroy   = var.environment == "prod" ? true : false
   force_destroy     = var.environment == "prod" ? false : true
 }
@@ -86,7 +86,7 @@ module "rds" {
   backup_retention_period = var.rds_backup_retention
   username                = var.rds_username
   password                = var.rds_password
-  deletion_protection     = var.environment == "prod" ? true : false
+  deletion_protection     = var.rds_deletion_protection
 }
 
 data "tls_certificate" "github_actions" {
