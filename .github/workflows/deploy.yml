@@ -150,6 +150,15 @@ jobs:
           # failure lands here — a bad ENV_FILE line, a missing variable, an
           # import error — none of which the migration step can see, because
           # `alembic upgrade head` never imports app.main.
+          #
+          # Old images are pruned only after that poll passes, so a deploy that
+          # fails to start still has the previous image on the host. Every deploy
+          # pulls two images and nothing removed them: 91 had piled up to 12 GB
+          # of a 29 GB disk (measured 2026-10-02). Anything built within the
+          # last week is kept, so the previous release is still local. The prune
+          # sits before the nginx steps, not at the end: the invocation reports
+          # the exit status of the last command, and tidying the disk must not
+          # be what decides whether a deploy succeeded.
           PARAMS=$(jq -n \
             --arg img_backend "${IMG_BACKEND}" \
             --arg img_frontend "${IMG_FRONTEND}" \
@@ -171,6 +180,7 @@ jobs:
                 "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml run --rm backend alembic upgrade head || { echo \"MIGRATION FAILED - refusing to start the new containers; the running ones are untouched\"; exit 1; }",
                 "cd /app && sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml up -d",
                 "for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && break; sleep 2; done; curl -fsS http://127.0.0.1:8000/health >/dev/null || { echo \"BACKEND DID NOT COME UP within 60s. Deploy reported success but the API is down; check: sudo docker compose --env-file /app/.env.prod -f /app/docker-compose.prod.yml logs --tail=50 backend\"; exit 1; }",
+                "echo \"images before prune: $(sudo docker image ls -q | sort -u | wc -l)\"; sudo docker image prune -af --filter until=168h >/dev/null 2>&1 || echo \"IMAGE PRUNE FAILED (non-fatal)\"; echo \"images after prune: $(sudo docker image ls -q | sort -u | wc -l)\"; df -h / | tail -n 1",
                 "sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled",
                 "cat > /tmp/score-hymn.nginx.conf <<\"NGINX\"\n" + $nginx_conf + "\nNGINX",
                 "sudo mv /tmp/score-hymn.nginx.conf /etc/nginx/sites-available/score-hymn",
