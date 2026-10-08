@@ -187,8 +187,14 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
 
     // Imported here rather than at module scope so fabric's ~300KB is fetched
     // when a leader opens the editor, not on every page of the app.
+    const diagStart = performance.now();
+    const diag = (phase) =>
+      console.log(
+        `[diag-ready] ${phase} +${Math.round(performance.now() - diagStart)}ms seed=${Boolean(seedRef.current)}`
+      );
     import("fabric")
       .then(async ({ Canvas, FabricImage, PencilBrush }) => {
+        diag("fabric-imported");
         // crossOrigin, and it has to be set before the request goes out: the
         // sheet comes from S3 on another origin, and a canvas that has drawn
         // an image fetched without CORS is tainted — toDataURL on it throws a
@@ -207,9 +213,11 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
           { crossOrigin: "anonymous" },
           { originX: "left", originY: "top", left: 0, top: 0 }
         );
+        diag("image-loaded");
         if (cancelled) return;
 
         canvas = new Canvas(element, { selection: true, preserveObjectStacking: true });
+        diag("canvas-created");
         fabricRef.current = canvas;
 
         imageRef.current = image;
@@ -229,6 +237,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
         // (a presigned URL expires; see exportSheet below).
         if (seedRef.current) {
           await canvas.loadFromJSON(seedRef.current);
+          diag("seed-replayed");
           if (cancelled) return;
         }
 
@@ -277,6 +286,7 @@ export function useFabricSheet({ canvasRef, containerRef, sourceImageUrl, editDo
         // and drop "3부" from the stack for good.
         canvas.on("object:modified", recordChange);
 
+        diag("ready");
         setIsReady(true);
       })
       .catch(() => {
