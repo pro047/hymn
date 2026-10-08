@@ -20,8 +20,15 @@ const tabs = [
 // headerActions is a slot, not a role flag: who may see 교회 관리 and what
 // 로그아웃 does are session concerns, and App already answers both. This page
 // only decides where the group sits.
-export default function HomePage({ headerActions = null }) {
+//
+// canManage is the one thing about the session the page does need: a member
+// reads this week's scores and nothing else, so the library tab, the upload
+// and every edit control are drawn only for a leader. False until App knows,
+// for the same reason the 교회 관리 link waits — showing a control that the
+// server will refuse is worse than showing it a moment late.
+export default function HomePage({ headerActions = null, canManage = false }) {
   const [activeTab, setActiveTab] = useState("scores");
+  const visibleTabs = canManage ? tabs : tabs.filter((tab) => tab.id !== "library");
   const [uploadDialogState, setUploadDialogState] = useState({
     open: false,
     mode: null,
@@ -43,7 +50,7 @@ export default function HomePage({ headerActions = null }) {
     updateScore,
     deleteScore,
     placeSongOnWeek,
-  } = useScores();
+  } = useScores({ canManage });
 
   const upcomingSundayWeekOf = useUpcomingSunday();
 
@@ -88,13 +95,13 @@ export default function HomePage({ headerActions = null }) {
               </h1>
             </div>
           </div>
-          {tabs.length > 1 || headerActions ? (
+          {visibleTabs.length > 1 || headerActions ? (
             // Two groups, one row. The outer gap is wider than the inner one so
             // navigating the page and leaving it do not read as one button row.
             <div className="flex flex-wrap items-center gap-4">
-              {tabs.length > 1 ? (
+              {visibleTabs.length > 1 ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  {tabs.map((tab) => (
+                  {visibleTabs.map((tab) => (
                     <Button
                       key={tab.id}
                       type="button"
@@ -116,7 +123,7 @@ export default function HomePage({ headerActions = null }) {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
         <HeroSection
           totalSongs={totalSongs}
-          onUpload={() => openUploadDialog({ mode: "library" })}
+          onUpload={canManage ? () => openUploadDialog({ mode: "library" }) : undefined}
         />
 
         {error ? (
@@ -127,7 +134,7 @@ export default function HomePage({ headerActions = null }) {
         ) : null}
 
         <main className="space-y-6">
-          {activeTab === "scores" ? (
+          {activeTab === "scores" || !canManage ? (
             /* 다가오는 주차·최근 악보 cards are gone. Both sliced the first
                three of a list the server sorts by created_at ASC, so they
                showed the oldest rows under names promising the newest. Fixing
@@ -141,6 +148,7 @@ export default function HomePage({ headerActions = null }) {
               weekOf={upcomingSundayWeekOf}
               onUpdate={setEditingScore}
               onDelete={deleteScore}
+              canManage={canManage}
             />
           ) : (
             <SavedScoresCard
@@ -159,30 +167,36 @@ export default function HomePage({ headerActions = null }) {
         <Separator />
       </div>
 
-      {/* Keyed on the score so picking a different row remounts the form
-          instead of carrying the previous title and file selection over. */}
-      <ScoreEditDialog
-        key={editingScore?.id ?? "none"}
-        open={Boolean(editingScore)}
-        score={editingScore}
-        onClose={() => setEditingScore(null)}
-        onSubmit={updateScore}
-        loading={isUpdating}
-      />
+      {/* Both dialogs change the week, so neither is mounted for a member:
+          nothing on their screen could open one. */}
+      {canManage ? (
+        <>
+          {/* Keyed on the score so picking a different row remounts the form
+            instead of carrying the previous title and file selection over. */}
+          <ScoreEditDialog
+            key={editingScore?.id ?? "none"}
+            open={Boolean(editingScore)}
+            score={editingScore}
+            onClose={() => setEditingScore(null)}
+            onSubmit={updateScore}
+            loading={isUpdating}
+          />
 
-      <ScoreUploadDialog
-        key={uploadDialogState.sessionKey}
-        open={uploadDialogState.open}
-        onClose={closeUploadDialog}
-        onUploadSubmit={uploadSong}
-        onApplySavedScore={placeSongOnWeek}
-        savedScores={librarySongs}
-        uploadLoading={isUploading}
-        applyLoading={isPlacingSong}
-        initialMode={uploadDialogState.mode}
-        initialFile={uploadDialogState.file}
-        initialSavedScore={uploadDialogState.savedScore}
-      />
+          <ScoreUploadDialog
+            key={uploadDialogState.sessionKey}
+            open={uploadDialogState.open}
+            onClose={closeUploadDialog}
+            onUploadSubmit={uploadSong}
+            onApplySavedScore={placeSongOnWeek}
+            savedScores={librarySongs}
+            uploadLoading={isUploading}
+            applyLoading={isPlacingSong}
+            initialMode={uploadDialogState.mode}
+            initialFile={uploadDialogState.file}
+            initialSavedScore={uploadDialogState.savedScore}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

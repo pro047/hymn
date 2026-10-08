@@ -14,17 +14,16 @@ import LoginPage from "./pages/login-page";
 import ResetPasswordPage from "./pages/reset-password-page";
 import SignupPage from "./pages/signup-page";
 
-function ProtectedHomePage() {
-  // Null until /auth/me answers, and again if it never does. The management
-  // link is offered only to a leader, so an unknown role shows nothing rather
-  // than a link that would only lead to "리더만 확인할 수 있습니다".
-  const [role, setRole] = useState(null);
-  const authenticated = isAuthenticated();
+// "pending" until /auth/me answers, then "leader" or "member" — or null when
+// the answer could not be read. Both screens below decide on the same four
+// states, so the role is read in one place.
+function useSessionRole(authenticated) {
+  const [role, setRole] = useState("pending");
 
   useEffect(() => {
     // Guarded: without a token apiFetch would take the 401 path, fail to
     // refresh, and hard-navigate to /login — replacing the router's own
-    // redirect below with a full page load.
+    // redirect with a full page load.
     if (!authenticated) return undefined;
 
     let active = true;
@@ -36,17 +35,34 @@ function ProtectedHomePage() {
     };
   }, [authenticated]);
 
+  return role;
+}
+
+function ProtectedHomePage() {
+  const authenticated = isAuthenticated();
+  const role = useSessionRole(authenticated);
+
   if (!authenticated) {
     return <Navigate to="/login" replace />;
   }
+
+  // Held back while pending and for a known member; shown to a leader and
+  // also when the session could not be read. That last case is a leader on a
+  // bad connection far more often than anything else, and taking every way to
+  // manage the week off their screen without a word is worse than offering a
+  // member controls the server will refuse anyway.
+  const canManage = role !== "pending" && role !== "member";
 
   // Handed to the page instead of layered over it. As a `fixed` sibling the
   // group stayed put while the header scrolled away and collided with the tab
   // bar that now shares the header.
   return (
     <HomePage
+      canManage={canManage}
       headerActions={
         <div className="flex flex-wrap items-center gap-2">
+          {/* A known leader only, unlike canManage: the link leads to a screen
+              that itself says "리더만 확인할 수 있습니다" to anyone else. */}
           {role === "leader" ? (
             <Button type="button" variant="outline" size="sm" asChild>
               <Link to="/church">교회 관리</Link>
@@ -81,8 +97,23 @@ function ProtectedAccountPage() {
 }
 
 function ProtectedContiPage() {
-  if (!isAuthenticated()) {
+  // The conti screen is the leader's alone. While the role is pending it is
+  // held back rather than drawn and withdrawn: mounting it sends the GET the
+  // server refuses a member, and the member would see that refusal.
+  const authenticated = isAuthenticated();
+  const role = useSessionRole(authenticated);
+
+  if (!authenticated) {
     return <Navigate to="/login" replace />;
+  }
+  if (role === "pending") {
+    return null;
+  }
+  // Only a known member is turned away. An unreadable session (null) falls
+  // through to the screen, where the server still decides and its own error
+  // is shown — a leader on a bad connection must not be bounced home.
+  if (role === "member") {
+    return <Navigate to="/" replace />;
   }
   return <ContiPage />;
 }

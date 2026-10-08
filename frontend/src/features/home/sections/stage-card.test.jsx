@@ -122,3 +122,26 @@ it("보관함은 교회의 모든 곡이라 저장 버튼을 보여주지 않아
   // Assert
   expect(screen.queryByRole("button", { name: /저장/ })).toBeNull();
 });
+
+it("관리 권한이 없으면 수정·삭제·콘티 편집을 보여주지 않아야 한다", () => {
+  // Arrange & Act
+  renderCard({ canManage: false });
+
+  // Assert — the songs are still listed; only the ways to change them are gone.
+  expect(screen.getByText("은혜")).toBeTruthy();
+  expect(screen.getByText("믿음")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "수정" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "삭제" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "콘티 편집" })).toBeNull();
+});
+
+it("관리 권한이 없으면 제목을 눌러도 수정이 열리지 않아야 한다", () => {
+  // Arrange
+  const { onUpdate } = renderCard({ canManage: false });
+
+  // Act
+  fireEvent.click(screen.getByText("은혜"));
+
+  // Assert
+  expect(onUpdate).not.toHaveBeenCalled();
+});

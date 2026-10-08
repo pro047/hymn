@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 
-export default function StageCard({ scores, weekOf, onUpdate, onDelete }) {
+export default function StageCard({ scores, weekOf, onUpdate, onDelete, canManage = true }) {
   const stageScores = scores.slice(0, 5);
 
   return (
@@ -17,9 +17,14 @@ export default function StageCard({ scores, weekOf, onUpdate, onDelete }) {
         <CardTitle>콘티</CardTitle>
         <div className="mt-1 flex items-center justify-between gap-2">
           <p className="text-xs text-stone-500">{weekOf} (돌아오는 일요일)</p>
-          <Button variant="outline" size="sm" type="button" asChild>
-            <Link to={`/conti/${weekOf}`}>콘티 편집</Link>
-          </Button>
+          {/* A member reads the week and changes nothing: the server refuses
+              every write and the conti screen itself, so none of the ways in
+              are drawn for them. */}
+          {canManage ? (
+            <Button variant="outline" size="sm" type="button" asChild>
+              <Link to={`/conti/${weekOf}`}>콘티 편집</Link>
+            </Button>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -36,27 +41,35 @@ export default function StageCard({ scores, weekOf, onUpdate, onDelete }) {
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-stone-100 text-xs font-semibold text-stone-700">
                 {index + 1}
               </span>
-              <button
-                type="button"
-                className="truncate text-left text-sm font-medium text-stone-900"
-                onClick={() => onUpdate(score)}
-              >
-                {score.title}
-              </button>
-              <div className="flex items-center gap-1">
-                <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score)}>
-                  수정
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
+              {canManage ? (
+                <button
                   type="button"
-                  className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                  onClick={() => onDelete(score.id)}
+                  className="truncate text-left text-sm font-medium text-stone-900"
+                  onClick={() => onUpdate(score)}
                 >
-                  삭제
-                </Button>
-              </div>
+                  {score.title}
+                </button>
+              ) : (
+                <span className="truncate text-left text-sm font-medium text-stone-900">
+                  {score.title}
+                </span>
+              )}
+              {canManage ? (
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="sm" type="button" onClick={() => onUpdate(score)}>
+                    수정
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                    onClick={() => onDelete(score.id)}
+                  >
+                    삭제
+                  </Button>
+                </div>
+              ) : null}
             </div>
           ))
         )}

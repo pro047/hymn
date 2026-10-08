@@ -5,7 +5,9 @@ import { API_PATHS } from "../../../api/paths";
 import { alertMessageOf, readApiError } from "../../../lib/api-error";
 import { isAuthenticated } from "../../../lib/auth-storage";
 
-export function useScores() {
+// canManage defaults to true: the hook does what it is asked, and it is the
+// page that knows who is looking (home-page.jsx passes false for a member).
+export function useScores({ canManage = true } = {}) {
   const [scores, setScores] = useState([]);
   const [librarySongs, setLibrarySongs] = useState([]);
   const [error, setError] = useState("");
@@ -37,7 +39,9 @@ export function useScores() {
   }, []);
 
   const fetchLibrary = useCallback(async () => {
-    if (!isAuthenticated()) {
+    // The library is the leader's: the server answers 403 to a member, and
+    // asking anyway would put "요청 실패" on a screen where nothing failed.
+    if (!isAuthenticated() || !canManage) {
       setLibrarySongs([]);
       return;
     }
@@ -52,12 +56,17 @@ export function useScores() {
     } catch (err) {
       setError(err.message);
     }
-  }, []);
+  }, [canManage]);
 
+  // Two effects, not one: fetchLibrary changes identity when canManage settles,
+  // and sharing an effect would send the score list a second time with it.
   useEffect(() => {
     fetchScores();
+  }, [fetchScores]);
+
+  useEffect(() => {
     fetchLibrary();
-  }, [fetchLibrary, fetchScores]);
+  }, [fetchLibrary]);
 
   // Uploading files a song in the library and nothing else; a Sunday gets it
   // only through placeSongOnWeek.

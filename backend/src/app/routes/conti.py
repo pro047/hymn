@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.deps import ObjectReader, get_current_user, get_object_reader
+from app.deps import ObjectReader, get_object_reader, require_leader
 from app.models import User
 from app.rate_limit import CONTI_ORDER_LIMIT, CONTI_PDF_LIMIT, CONTI_READ_LIMIT, limiter
 from app.schemas.conti import ContiOrderRequest, ContiResponse, WeekOfPath
@@ -33,7 +33,7 @@ def get_week_conti_pdf(
     request: Request,
     week_of: WeekOfPath,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
     read_object: ObjectReader = Depends(get_object_reader),
 ) -> Response:
     # Every write path files a Score under the week's Sunday
@@ -67,7 +67,7 @@ def get_week_conti(
     request: Request,
     week_of: WeekOfPath,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ) -> ContiResponse:
     """This week's songs in running order, for the conti editing screen.
 
@@ -108,7 +108,7 @@ def patch_week_conti_order(
     week_of: WeekOfPath,
     payload: ContiOrderRequest,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ) -> ContiResponse:
     week_of = normalize_week_date(week_of)
     try:

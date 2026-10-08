@@ -145,31 +145,30 @@ def test_requesting_a_replacement_for_another_churchs_score_should_return_404(cl
     assert response.status_code == 404, response.text
 
 
-def test_requesting_a_replacement_for_a_fellow_members_score_should_return_403(client):
+def test_a_member_requesting_a_replacement_upload_should_return_403(client):
     """Same gate as PATCH and DELETE — the file is as much an edit as the title,
-    so it must not be the one write a member can make on someone else's row."""
+    so it must not be the one write a member can make."""
     # Arrange
-    _, code = _found_church(client)
-    uploader = _join_member(client, code, "uploader@example.com")
-    other = _join_member(client, code, "other@example.com")
-    score_id = _create_score(client, uploader)
+    leader, code = _found_church(client)
+    member = _join_member(client, code, "member@example.com")
+    score_id = _create_score(client, leader)
 
     # Act
-    response = client.post(f"/scores/{score_id}/file", json=REPLACEMENT, headers=other)
+    response = client.post(f"/scores/{score_id}/file", json=REPLACEMENT, headers=member)
 
     # Assert
     assert response.status_code == 403, response.text
 
 
-def test_a_member_should_replace_the_file_of_their_own_upload(client):
-    """The gate must not close the path it exists to protect."""
+def test_the_leader_should_replace_the_file_of_a_score(client):
+    """Was "a member should replace the file of their own upload". The path the
+    gate must not close is now the leader's alone."""
     # Arrange
-    _, code = _found_church(client)
-    uploader = _join_member(client, code, "uploader@example.com")
-    score_id = _create_score(client, uploader)
+    leader, _ = _found_church(client)
+    score_id = _create_score(client, leader)
 
     # Act
-    response = client.post(f"/scores/{score_id}/file", json=REPLACEMENT, headers=uploader)
+    response = client.post(f"/scores/{score_id}/file", json=REPLACEMENT, headers=leader)
 
     # Assert
     assert response.status_code == 200, response.text

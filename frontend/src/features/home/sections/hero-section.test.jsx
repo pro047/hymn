@@ -46,3 +46,12 @@ it("콘티에 곡 추가 버튼은 핸들러를 불러야 한다", () => {
   // Assert
   expect(onUpload).toHaveBeenCalledTimes(1);
 });
+
+it("올릴 수 없는 사람에게는 곡 추가 버튼을 보여주지 않아야 한다", () => {
+  // Arrange & Act — no onUpload is how the page says "this visitor cannot add".
+  render(<HeroSection totalSongs={3} />);
+
+  // Assert
+  expect(screen.queryByRole("button", { name: "콘티에 곡 추가" })).toBeNull();
+  expect(screen.getByText("3")).toBeTruthy();
+});

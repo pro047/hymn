@@ -13,7 +13,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.deps import ObjectProbe, get_current_user, get_object_probe
+from app.deps import ObjectProbe, get_object_probe, require_leader
 from app.models import Score, Song, User
 from app.schemas.song import (
     SongLibraryItem,
@@ -45,7 +45,7 @@ def _church_song_or_404(session: Session, user: User, song_id: str) -> Song:
 @router.get("", response_model=list[SongLibraryItem])
 def list_songs(
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
     # "Used" means filed on a Sunday, however it got there. Usages without a
     # week are legacy library-upload drafts and never counted.
@@ -87,7 +87,7 @@ def list_songs(
 def upload_song(
     payload: SongUploadRequest,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
     object_exists: ObjectProbe = Depends(get_object_probe),
 ):
     ext = extension_from_input(payload.filename, payload.content_type)
@@ -132,7 +132,7 @@ def place_song(
     song_id: str,
     payload: SongUsageRequest,
     session: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_leader),
 ):
     song = _church_song_or_404(session, user, song_id)
 

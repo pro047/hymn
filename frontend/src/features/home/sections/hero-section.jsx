@@ -18,9 +18,13 @@ export default function HeroSection({ totalSongs, onUpload }) {
               점검, 공유, 수정 흐름을 한 화면에서 관리하세요.
             </p>
           </div>
-          <Button type="button" onClick={onUpload}>
-            콘티에 곡 추가
-          </Button>
+          {/* No handler means the visitor cannot add: only a leader files
+              songs, and a button that could only be refused is not offered. */}
+          {onUpload ? (
+            <Button type="button" onClick={onUpload}>
+              콘티에 곡 추가
+            </Button>
+          ) : null}
         </div>
         {/* One tile, not three. "상태: Draft" and "버전: v1" were fixed strings:
             status never leaves the server (ScoreResponse omits it) and nothing

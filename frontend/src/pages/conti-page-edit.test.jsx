@@ -210,10 +210,21 @@ const renderConti = () =>
   );
 
 /** Opens the editor and waits until fabric has the sheet on screen — every
- * control is disabled until then, so clicking earlier does nothing. */
+ * control is disabled until then, so clicking earlier does nothing.
+ *
+ * Three seconds, not waitFor's default of one. The first time a file replays a
+ * saved document, loadFromJSON pays a one-off cost: measured on CI at 418 ms,
+ * then 1150 ms once more test files ran beside this one (every later replay
+ * was 31-37 ms). That is setup, not what any test here is about, so it gets
+ * room. Kept under the 5 s test timeout so that an editor which never becomes
+ * ready still fails on this line and says so. */
+const EDITOR_READY_TIMEOUT_MS = 3000;
+
 async function openEditor(title = "은혜") {
   fireEvent.click(await screen.findByRole("button", { name: `${title} 편집` }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "저장" }).disabled).toBe(false));
+  await waitFor(() => expect(screen.getByRole("button", { name: "저장" }).disabled).toBe(false), {
+    timeout: EDITOR_READY_TIMEOUT_MS,
+  });
 }
 
 /** A png's declared size, read out of its IHDR chunk.
@@ -443,13 +454,13 @@ describe("저장", () => {
   });
 
   it("서명 요청이 거절되면 서버가 준 이유를 보여야 한다", async () => {
-    // A member editing somebody else's upload gets 403 from
-    // _writable_score_or_error. A fixed "주소를 받지 못했습니다" would replace
-    // the one sentence that explains what to do about it.
+    // The server refuses anyone but the leader here (require_leader) and says
+    // so. A fixed "주소를 받지 못했습니다" would replace the one sentence that
+    // explains what happened.
     mockApi({
       signed: {
         status: 403,
-        body: { detail: "본인이 올린 악보만 수정하거나 삭제할 수 있습니다." },
+        body: { detail: "인도자만 할 수 있는 작업입니다." },
       },
     });
     renderConti();
@@ -457,7 +468,7 @@ describe("저장", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "저장" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("본인이 올린 악보만");
+    expect((await screen.findByRole("alert")).textContent).toContain("인도자만 할 수 있는");
   });
 
   it("업로드가 실패하면 편집본을 기록하지 않아야 한다", async () => {
