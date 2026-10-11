@@ -25,7 +25,8 @@ export function useScores({ canManage = true } = {}) {
   const fetchScores = useCallback(async () => {
     try {
       // apiFetch, not fetch: the list is scoped to the caller's church only
-      // when the request carries the token, and anonymous it is every church's.
+      // when the request carries the token, and anonymous it is the tablets'
+      // church whoever is asking.
       const response = await apiFetch(API_PATHS.scores);
       if (!response.ok) {
         throw new Error("악보 목록을 불러오지 못했습니다.");
