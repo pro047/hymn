@@ -258,7 +258,7 @@ def test_a_healed_song_should_show_its_new_file_on_the_sundays_it_was_placed_on(
     second = _upload(client, headers, "은혜")
 
     # Assert
-    [listed] = client.get("/scores").json()
+    [listed] = client.get("/scores", headers=headers).json()
     assert listed["file_uri"] == second["s3_key"]
 
 

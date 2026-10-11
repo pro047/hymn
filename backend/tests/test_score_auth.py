@@ -15,7 +15,7 @@ from datetime import date, timedelta
 
 from app.models import Score, Song
 from app.schemas.score import current_week_start
-from song_helpers import file_usage
+from song_helpers import file_usage, serve_anonymous_scores
 
 
 def _this_week_sunday() -> date:
@@ -70,8 +70,9 @@ def test_uploading_a_song_without_a_token_should_return_401(client):
 
 
 def test_placing_a_song_without_a_token_should_return_401(client):
-    _create_score(client, _register(client, SIGNUP_PAYLOAD))
-    song_id = client.get("/scores").json()[0]["song_id"]
+    headers = _register(client, SIGNUP_PAYLOAD)
+    _create_score(client, headers)
+    song_id = client.get("/scores", headers=headers).json()[0]["song_id"]
 
     response = client.post(f"/songs/{song_id}/usages", json={"week_of": THIS_WEEK.isoformat()})
 
@@ -154,10 +155,13 @@ def test_deleting_a_score_of_another_church_should_return_404(client):
     assert client.get(f"/scores/{score_id}", headers=owner).status_code == 200
 
 
-def test_listing_scores_should_stay_open_to_anonymous_callers(client):
-    """The tablets in the field depend on this. Closing it needs an app release
-    first — see the staged plan in .claude/handoff.md."""
-    _create_score(client, _register(client, SIGNUP_PAYLOAD))
+def test_listing_scores_should_stay_open_to_anonymous_callers(client, monkeypatch):
+    """The tablets in the field depend on this, and they are all one church's:
+    the deployment names it and a caller with no token is shown that church.
+    Which rows that is, is pinned in test_score_list_scope.py."""
+    headers = _register(client, SIGNUP_PAYLOAD)
+    serve_anonymous_scores(monkeypatch, client, headers)
+    _create_score(client, headers)
 
     response = client.get("/scores")
 
@@ -277,7 +281,7 @@ def test_placing_a_song_on_a_past_week_should_return_422(client):
 
     file_usage(client, headers, title="Amazing Grace", week=last_week, expect=422)
 
-    assert client.get("/scores").json() == []
+    assert client.get("/scores", headers=headers).json() == []
 
 
 def test_placing_a_song_on_the_current_week_should_be_accepted(client):

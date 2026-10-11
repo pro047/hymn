@@ -193,7 +193,9 @@ def _place_song(world: World):
     assert real.status_code == 404, real.text
     assert (missing.status_code, missing.json()) == (real.status_code, real.json())
     # Nothing was filed under either church by the attempt.
-    assert [item["id"] for item in world.client.get("/scores").json()] == [world.score_id]
+    owners = world.client.get("/scores", headers=world.owner).json()
+    assert [item["id"] for item in owners] == [world.score_id]
+    assert world.as_outsider("GET", "/scores").json() == []
 
 
 def _week_pdf(world: World):

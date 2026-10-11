@@ -29,7 +29,7 @@ from app.main import app
 from app.models import Score, SetItem, Song
 from app.services.song import attach_usage
 from app.utils.s3 import ObjectNotReadable
-from song_helpers import library_song
+from song_helpers import library_song, serve_anonymous_scores
 
 PAGE_W, PAGE_H = 1754, 1240
 MARGIN = 47
@@ -595,7 +595,7 @@ SCORES_CONTRACT_KEYS = {
 }
 
 
-def test_get_scores_should_keep_its_exact_key_set_and_ordering(client, reader):
+def test_get_scores_should_keep_its_exact_key_set_and_ordering(client, reader, monkeypatch):
     """Lives in this file because the verification step may only touch the two
     conti test files; test_song_split.py already checks the same route but with
     `>=`, so a key added to ScoreResponse would slip past it. The Flutter app
@@ -603,6 +603,7 @@ def test_get_scores_should_keep_its_exact_key_set_and_ordering(client, reader):
     """
     # Arrange — three usages, created in a known order
     headers = _register(client)
+    serve_anonymous_scores(monkeypatch, client, headers)
     songs = [
         _add_song(client, reader, headers, title=f"곡{i}", week=_week(i))
         for i in range(3)

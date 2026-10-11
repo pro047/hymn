@@ -20,7 +20,7 @@ from datetime import date, timedelta
 
 from app.models import Score
 from app.schemas.score import MAX_EDIT_DOC_BYTES
-from song_helpers import file_usage
+from song_helpers import file_usage, serve_anonymous_scores
 
 
 def _this_week_sunday() -> date:
@@ -515,9 +515,10 @@ def _listed(client, score_id: str) -> dict:
     return next(item for item in response.json() if item["id"] == score_id)
 
 
-def test_saving_an_edit_should_change_what_the_score_list_hands_the_app(client):
+def test_saving_an_edit_should_change_what_the_score_list_hands_the_app(client, monkeypatch):
     # Arrange
     leader = _found_church(client)
+    serve_anonymous_scores(monkeypatch, client, leader)
     score_id = _create_score(client, leader)
     before = _listed(client, score_id)
 
@@ -533,9 +534,10 @@ def test_saving_an_edit_should_change_what_the_score_list_hands_the_app(client):
     assert set(after.keys()) == set(before.keys())
 
 
-def test_an_unedited_score_should_be_listed_with_the_songs_own_file(client):
+def test_an_unedited_score_should_be_listed_with_the_songs_own_file(client, monkeypatch):
     # Arrange
     leader = _found_church(client)
+    serve_anonymous_scores(monkeypatch, client, leader)
     edited_id = _create_score(client, leader)
     unedited_id = _create_score(client, leader, {**NEW_SCORE, "title": "Be Thou My Vision"})
 
@@ -548,9 +550,10 @@ def test_an_unedited_score_should_be_listed_with_the_songs_own_file(client):
     assert edited_key not in unedited["download_url"]
 
 
-def test_clearing_an_edit_should_put_the_songs_file_back_in_the_score_list(client):
+def test_clearing_an_edit_should_put_the_songs_file_back_in_the_score_list(client, monkeypatch):
     # Arrange
     leader = _found_church(client)
+    serve_anonymous_scores(monkeypatch, client, leader)
     score_id = _create_score(client, leader)
     key = _save_edit(client, leader, score_id)
 
