@@ -85,8 +85,8 @@ def get_optional_user(
     the tablets call without a login). The split is on the header's presence,
     not its validity: a header that is there but stale gets the same 401 as on
     any protected route. Falling back to anonymous instead would show a leader
-    with an expired token every church's scores without a word, and the web
-    client would never see the 401 that makes it refresh.
+    with an expired token the tablets' church in place of their own without a
+    word, and the web client would never see the 401 that makes it refresh.
     """
     if authorization is None:
         return None

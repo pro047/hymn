@@ -1,3 +1,4 @@
+import os
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +28,8 @@ from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_put, presign_score_download
 
 router = APIRouter()
+
+ANONYMOUS_SCORES_CHURCH_ENV = "ANONYMOUS_SCORES_CHURCH_ID"
 
 
 def _reject_foreign_object_key(file_uri: str, church_id: str) -> None:
@@ -82,18 +85,38 @@ def _own_score_or_404(session: Session, score_id: str, user: User) -> Score:
     return score
 
 
+def _anonymous_church_id() -> str:
+    """The church a caller with no Authorization header is shown.
+
+    Read per request, and 503 when it is missing. The alternative to refusing
+    is the answer this replaced, every church's list, and a deployment that
+    dropped one line would hand that out without a sign that anything changed.
+    """
+    church_id = os.getenv(ANONYMOUS_SCORES_CHURCH_ENV, "").strip()
+    if not church_id:
+        raise HTTPException(503, "악보 목록을 불러올 수 없습니다.")
+    return church_id
+
+
 @router.get("/scores", response_model=list[ScoreResponse])
 def list_scores(
     session: Session = Depends(get_session),
     user: User | None = Depends(get_optional_user),
 ):
-    query = session.query(Score).options(joinedload(Score.song)).filter(Score.week_of.is_not(None))
     # A signed-in caller sees their own church. Without a token the answer is
-    # still every church's: the tablets cannot sign in yet, and closing that
-    # waits on an app release (.claude/plan-community.md, M4).
+    # one church's, named by the deployment: the tablets already in the field
+    # send no header, have no login screen, and all belong to that church.
     if user is not None:
-        query = query.filter(Score.church_id == user.church_id)
-    scores = query.order_by(Score.created_at.asc()).all()
+        church_id = user.church_id
+    else:
+        church_id = _anonymous_church_id()
+    scores = (
+        session.query(Score)
+        .options(joinedload(Score.song))
+        .filter(Score.week_of.is_not(None), Score.church_id == church_id)
+        .order_by(Score.created_at.asc())
+        .all()
+    )
     return [
         ScoreResponse(
             id=s.id,

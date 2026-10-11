@@ -17,7 +17,7 @@ week's use of it. The properties fixed here are the ones the design bought:
 from datetime import date, timedelta
 
 from app.models import Score, SetItem, Song
-from song_helpers import file_usage
+from song_helpers import file_usage, serve_anonymous_scores
 
 
 def _this_week_sunday() -> date:
@@ -91,7 +91,7 @@ def test_same_title_in_a_second_week_should_reuse_the_song(client, db_session):
     songs = _songs(db_session)
     assert len(songs) == 1
     assert db_session.query(Score).count() == 2
-    listed = client.get("/scores").json()
+    listed = client.get("/scores", headers=headers).json()
     assert len(listed) == 2
     assert listed[0]["song_id"] == listed[1]["song_id"] == songs[0].id
 
@@ -165,7 +165,7 @@ def test_replacing_the_file_should_show_on_every_week(client, db_session):
 
     # Assert — both weeks now serve the new file
     assert patched.status_code == 200, patched.text
-    listed = {item["id"]: item for item in client.get("/scores").json()}
+    listed = {item["id"]: item for item in client.get("/scores", headers=headers).json()}
     assert listed[usage1]["file_uri"] == new_key
     assert listed[usage2]["file_uri"] == new_key
     assert listed[usage2]["file_url"].startswith("http")
@@ -191,7 +191,7 @@ def test_renaming_should_change_the_title_of_every_week(client):
 
     # Assert
     assert patched.status_code == 200, patched.text
-    titles = [item["title"] for item in client.get("/scores").json()]
+    titles = [item["title"] for item in client.get("/scores", headers=headers).json()]
     assert titles == ["새 제목", "새 제목"]
 
 
@@ -207,7 +207,7 @@ def test_renaming_onto_an_existing_song_should_return_409(client):
     # Assert — refused in Korean, and the title did not move
     assert response.status_code == 409, response.text
     assert "같은 제목" in response.text
-    titles = {item["id"]: item["title"] for item in client.get("/scores").json()}
+    titles = {item["id"]: item["title"] for item in client.get("/scores", headers=headers).json()}
     assert titles[usage] == "가나다"
 
 
@@ -258,7 +258,7 @@ def test_deleting_one_usage_should_keep_the_song_and_the_other_weeks(client, db_
 
     # Assert
     assert response.status_code == 204, response.text
-    remaining = [item["id"] for item in client.get("/scores").json()]
+    remaining = [item["id"] for item in client.get("/scores", headers=headers).json()]
     assert remaining == [usage2]
     assert len(_songs(db_session)) == 1
 
@@ -309,9 +309,10 @@ CONTRACT_KEYS = {
 }
 
 
-def test_get_scores_should_keep_the_flutter_contract(client):
+def test_get_scores_should_keep_the_flutter_contract(client, monkeypatch):
     # Arrange — three usages in creation order, plus one library-only song
     headers = _register(client)
+    serve_anonymous_scores(monkeypatch, client, headers)
     ids = [
         _post_score(client, headers, title=f"곡{i}", week=_week(i)).json()["score_id"]
         for i in range(3)
@@ -367,7 +368,7 @@ def test_an_uploaded_song_should_reach_get_scores_only_once_placed(client, db_se
     headers = _register(client)
     body = _upload_saved(client, headers, title="보관곡").json()
     assert db_session.get(Song, body["song_id"]) is not None
-    assert client.get("/scores").json() == []
+    assert client.get("/scores", headers=headers).json() == []
 
     # Act
     placed = client.post(
@@ -378,7 +379,7 @@ def test_an_uploaded_song_should_reach_get_scores_only_once_placed(client, db_se
 
     # Assert
     assert placed.status_code == 200, placed.text
-    listed = [item for item in client.get("/scores").json() if item["song_id"] == body["song_id"]]
+    listed = [item for item in client.get("/scores", headers=headers).json() if item["song_id"] == body["song_id"]]
     assert [item["week_of"][:10] for item in listed] == [_week(0)]
 
 
@@ -452,7 +453,7 @@ def test_spacing_and_case_variants_should_all_be_the_same_song(client, db_sessio
     # Assert — one song, and the display title is the first registration's own
     assert statuses == [201, 409, 409, 409]
     assert len(_songs(db_session)) == 1
-    titles = {item["title"] for item in client.get("/scores").json()}
+    titles = {item["title"] for item in client.get("/scores", headers=headers).json()}
     assert titles == {"참 아름다워라"}
 
 
@@ -467,7 +468,7 @@ def test_title_case_should_not_split_a_song(client, db_session):
 
     # Assert
     assert len(_songs(db_session)) == 1
-    assert {item["title"] for item in client.get("/scores").json()} == {"Amazing Grace"}
+    assert {item["title"] for item in client.get("/scores", headers=headers).json()} == {"Amazing Grace"}
 
 
 def test_fullwidth_space_and_nbsp_should_normalize_too(client, db_session):

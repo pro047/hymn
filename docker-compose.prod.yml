@@ -47,6 +47,12 @@ services:
       EMAIL_SENDER: ses
       SES_FROM_ADDRESS: no-reply@score-hymn.com
       PASSWORD_RESET_URL_BASE: https://www.score-hymn.com/reset-password
+      # The church GET /scores shows a caller with no token: the tablets
+      # already in the field cannot sign in, and all of them are this church's.
+      # Unset, that route answers 503 instead of every church's list
+      # (backend/src/app/routes/score.py). An id, not a secret — the route has
+      # always returned it in every row.
+      ANONYMOUS_SCORES_CHURCH_ID: f162d9e6-df26-43f0-864c-21bf0f016b97
     restart: unless-stopped
 
   frontend:

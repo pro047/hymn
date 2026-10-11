@@ -8,6 +8,13 @@ title the church already has is placed as the song it already is.
 from app.services.song import normalize_title
 
 
+def serve_anonymous_scores(monkeypatch, client, headers) -> None:
+    """Names this account's church as the one GET /scores shows a caller that
+    sent no Authorization header — what the deployment does for the tablets."""
+    church_id = client.get("/auth/me", headers=headers).json()["user"]["church_id"]
+    monkeypatch.setenv("ANONYMOUS_SCORES_CHURCH_ID", church_id)
+
+
 def library_song(client, headers, *, title: str, filename: str = "score.png") -> dict:
     """{"song_id", "file_uri"} of the song with this title, uploading it first
     if the church has none."""

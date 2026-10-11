@@ -2,9 +2,12 @@
 
 Three cases, and the split between the first and the third is the point.
 
-No Authorization header at all: every church's filed scores, exactly as
-before. The tablets in the field send no header and have no login screen, so
-this answer is a contract with an app that cannot be updated in place.
+No Authorization header at all: the filed scores of the one church named by
+ANONYMOUS_SCORES_CHURCH_ID, and no other church's. The tablets in the field
+send no header and have no login screen, and they all belong to that church,
+so this answer is a contract with an app that cannot be updated in place.
+With the variable unset the answer is 503 rather than every church's list:
+a deployment that forgot the line must fail where a smoke test sees it.
 
 A valid access token: the caller's own church and nothing else, in the same
 order and the same shape.
@@ -18,6 +21,7 @@ the 401 that triggers it.
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from jose import jwt
 
 from app.deps import SESSION_EXPIRED_MESSAGE
@@ -66,6 +70,13 @@ SCORE_KEYS = {
 
 EXPIRED_BODY = {"detail": SESSION_EXPIRED_MESSAGE}
 
+ANONYMOUS_CHURCH_ENV = "ANONYMOUS_SCORES_CHURCH_ID"
+
+
+def _serve_anonymous(monkeypatch, account: dict) -> None:
+    """Names the account's church as the one header-less callers are shown."""
+    monkeypatch.setenv(ANONYMOUS_CHURCH_ENV, account["user"]["church_id"])
+
 
 def _signup(client, payload: dict) -> dict:
     response = client.post("/auth/signup", json=payload)
@@ -108,11 +119,20 @@ def _two_churches_with_one_score_each(client) -> tuple[dict, dict, str, str]:
 # --- no header: the app's contract ---------------------------------------
 
 
-def test_listing_without_a_header_should_return_every_churchs_scores_oldest_first(client, db_session):
-    # Arrange — stamped against insertion order, so only a sort produces this.
-    a, b, a_score, b_score = _two_churches_with_one_score_each(client)
-    _stamp(db_session, a_score, minute=30)
-    _stamp(db_session, b_score, minute=10)
+def test_listing_without_a_header_should_return_only_the_named_churchs_scores_oldest_first(
+    client, db_session, monkeypatch
+):
+    # Arrange — stamped against insertion order, so only a sort produces this,
+    # with one of B's between A's in time.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    b = _signup(client, CHURCH_B_PAYLOAD)
+    late = _place(client, a, "Amazing Grace")
+    early = _place(client, a, "Be Thou My Vision")
+    foreign = _place(client, b, "How Great Thou Art")
+    _stamp(db_session, late, minute=30)
+    _stamp(db_session, foreign, minute=20)
+    _stamp(db_session, early, minute=10)
+    _serve_anonymous(monkeypatch, a)
 
     # Act
     response = client.get("/scores")
@@ -120,13 +140,78 @@ def test_listing_without_a_header_should_return_every_churchs_scores_oldest_firs
     # Assert
     assert response.status_code == 200, response.text
     listed = response.json()
-    assert [item["id"] for item in listed] == [b_score, a_score]
-    assert [item["church_id"] for item in listed] == [b["user"]["church_id"], a["user"]["church_id"]]
-    assert [item["title"] for item in listed] == ["How Great Thou Art", "Amazing Grace"]
+    assert [item["id"] for item in listed] == [early, late]
+    assert {item["church_id"] for item in listed} == {a["user"]["church_id"]}
+    assert [item["title"] for item in listed] == ["Be Thou My Vision", "Amazing Grace"]
     for item in listed:
         assert set(item) == SCORE_KEYS
         assert item["week_of"] == THIS_WEEK.isoformat()
         assert item["file_uri"].startswith(f"scores/{item['church_id']}/")
+
+
+def test_listing_without_a_header_should_follow_the_named_church_not_the_first_one(client, monkeypatch):
+    # Arrange — the other direction: a filter pinned to whichever church
+    # signed up first would pass the test above and fail here.
+    a, b, a_score, b_score = _two_churches_with_one_score_each(client)
+    _serve_anonymous(monkeypatch, b)
+
+    # Act
+    response = client.get("/scores")
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [b_score]
+
+
+def test_listing_without_a_header_should_return_an_empty_list_when_the_named_church_has_no_scores(
+    client, monkeypatch
+):
+    # Arrange — only the other church has filed anything.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    b = _signup(client, CHURCH_B_PAYLOAD)
+    _place(client, a, "Amazing Grace")
+    _serve_anonymous(monkeypatch, b)
+
+    # Act
+    response = client.get("/scores")
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+
+@pytest.mark.parametrize("value", [None, "", "   "], ids=["unset", "empty", "blank"])
+def test_listing_without_a_header_should_return_503_when_no_church_is_named(client, monkeypatch, value):
+    # Arrange — never the old answer: with no church named, every church's
+    # list is the one thing this must not fall back to.
+    _two_churches_with_one_score_each(client)
+    if value is None:
+        monkeypatch.delenv(ANONYMOUS_CHURCH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(ANONYMOUS_CHURCH_ENV, value)
+
+    # Act
+    response = client.get("/scores")
+
+    # Assert
+    assert response.status_code == 503, response.text
+    assert "id" not in response.text
+
+
+def test_listing_with_a_token_should_not_depend_on_the_named_church(client, monkeypatch):
+    # Arrange — the variable names A; B signs in.
+    a, b, _, b_score = _two_churches_with_one_score_each(client)
+    _serve_anonymous(monkeypatch, a)
+
+    # Act
+    named = client.get("/scores", headers=_headers(b))
+    monkeypatch.delenv(ANONYMOUS_CHURCH_ENV)
+    unnamed = client.get("/scores", headers=_headers(b))
+
+    # Assert
+    assert [item["id"] for item in named.json()] == [b_score]
+    assert unnamed.status_code == 200, unnamed.text
+    assert [item["id"] for item in unnamed.json()] == [b_score]
 
 
 # --- a valid token: the caller's church only -----------------------------
@@ -164,7 +249,7 @@ def test_listing_with_a_token_should_return_an_empty_list_for_a_church_with_no_s
     assert response.json() == []
 
 
-def test_listing_with_a_token_should_keep_the_created_at_order(client, db_session):
+def test_listing_with_a_token_should_keep_the_created_at_order(client, db_session, monkeypatch):
     # Arrange — three of A's, stamped out of insertion order, with one of B's
     # between them in time.
     a = _signup(client, CHURCH_A_PAYLOAD)
@@ -177,6 +262,7 @@ def test_listing_with_a_token_should_keep_the_created_at_order(client, db_sessio
     _stamp(db_session, second, minute=10)
     _stamp(db_session, foreign, minute=20)
     _stamp(db_session, third, minute=30)
+    _serve_anonymous(monkeypatch, a)
 
     # Act
     scoped = client.get("/scores", headers=_headers(a))
@@ -190,9 +276,10 @@ def test_listing_with_a_token_should_keep_the_created_at_order(client, db_sessio
     ]
 
 
-def test_listing_with_a_token_should_answer_in_the_same_shape_as_without(client):
+def test_listing_with_a_token_should_answer_in_the_same_shape_as_without(client, monkeypatch):
     # Arrange
     a, _, a_score, _ = _two_churches_with_one_score_each(client)
+    _serve_anonymous(monkeypatch, a)
 
     # Act
     scoped = client.get("/scores", headers=_headers(a)).json()
