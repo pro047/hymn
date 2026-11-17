@@ -1,32 +1,35 @@
 ### 이번 과제 — (각색: 매 과제마다 여기를 바꾼다)
 
-#### M0 — 교회 격리 선행분 (2026-09-30, 커뮤니티화 기획 `.claude/plan-community.md` 7-2 M0)
+#### 보관함 곡 수정 M1 — 백엔드 (2026-11-17, CRUD 전수조사 후속)
 
-배경: `GET /scores` 가 인증·교회 필터 없이 모든 교회 악보를 준다(`backend/src/app/routes/score.py:80-81`).
-소비자가 둘이다 — 태블릿 앱(`hymn_app/lib/data/scores_api.dart:12`, 로그인 없음)과 **웹 홈**
-(`frontend/src/features/score/hooks/use-scores.js:25`, 토큰 없는 plain `fetch`). 앱은 아직 로그인을
-못 하므로 무토큰 차단은 이번 과제가 아니다. 이번에는 **앱을 깨지 않고 웹 홈의 교회 간 노출을 닫는다.**
+배경: 곡(`songs`)의 제목·파일을 바꾸는 길이 `PATCH /scores/{id}` 하나뿐이다(`backend/src/app/routes/score.py:325`,
+`rename_song`·`replace_song_file` 호출 `:337`·`:355`). 이 라우트는 주차 사용 행(`Score`)이 있어야 부를 수 있어서,
+**보관함에만 올리고 주차에 배치하지 않은 곡은 제목 오타도 고칠 수 없다.** 보관함에서 곡을 직접 고치는 라우트를 추가한다.
+쓸 서비스는 이미 있다 — `services/song.py` 의 `rename_song`(제목 충돌 시 `SongTitleTaken`)·`replace_song_file`,
+키 검사 `routes/score.py` 의 `_reject_foreign_object_key`·`is_church_object_key`.
 
 요구 (번호가 검증 기준이 된다):
-1. `GET /scores` 에 `Authorization` 헤더가 **없으면** 응답이 지금과 완전히 같다 — 모든 교회의 행, 정렬·필드 불변.
-   기존 `backend/tests/test_score_auth.py` 의 무토큰 테스트가 계속 통과해야 한다
-2. 헤더가 있고 유효하면 **그 사용자의 교회(`user.church_id`) 행만** 준다
-3. 헤더가 있는데 무효·만료·형식 오류·`token_version` 불일치면 **401** 이다 — `deps.get_current_user` 와
-   같은 판정·같은 메시지. **전체 목록으로 폴백하지 않는다** (폴백하면 만료 토큰을 가진 인도자의 홈에
-   모든 교회 악보가 조용히 보이고, 웹 `apiFetch` 의 자동 refresh 도 안 돈다)
-4. 웹 홈 `use-scores.js` 의 `fetchScores` 가 `apiFetch`(`frontend/src/api/client.ts`)를 쓴다
-5. `/auth/me` 가 토큰 클레임의 `church_id` 가 아니라 DB 의 `user.church_id` 로 교회를 찾는다(`routes/auth.py:360` 부근)
-6. 업로드 키 검사 `_reject_foreign_object_key`(`routes/score.py:32-49`)를 접두사 비교에서 **세그먼트 파싱**으로
-   바꾼다 — `/` 로 나눠 정확히 3조각, 첫째 `scores`, 둘째가 교회 id 와 정확히 같고, 셋째가 비어 있지 않으며,
-   어느 조각도 `.`·`..` 가 아니다. `scores/{내교회}/../{남교회}/x.png` 는 400. 검사 시점(쓰기 때만)은 그대로
-7. **교회 간 유출 전수 테스트** — 교회 A 가 만든 리소스를 교회 B 토큰으로 데이터 라우트 전부(`routes/score.py`·
-   `song.py`·`conti.py`)에 대고 부르면 404(또는 A 의 데이터 0건). 그리고 **앱에 등록된 데이터 라우트 목록과
-   테스트가 다루는 목록이 같은지** 대조해, 새 라우트가 테스트 없이 추가되면 실패하게 한다
+1. `PATCH /songs/{song_id}` 를 추가한다. 본문 `{title?, file_uri?}` — 제약은 `ScoreUpdate`(`schemas/score.py:54`)와 같다
+   (title 1~255자, file_uri 최대 1024자). 둘 다 없으면 422
+2. 응답은 `GET /songs` 목록 한 항목과 **같은 모양**(`SongLibraryItem`)이다 — `use_count`·`last_week_of` 포함, 목록과 같은 계산
+3. title 변경은 `rename_song` 을 쓴다. 같은 교회에 같은 제목(정규화 키 기준)의 다른 곡이 있으면 409
+   `같은 제목의 곡이 이미 있습니다.`(`score.py:339` 와 같은 문구). **주차에 한 번도 배치되지 않은 곡도 200 으로 바뀐다**(이번 과제의 동기)
+4. title 변경은 그 곡의 사용 행(`Score.title` 스냅샷)을 바꾸지 않는다 — 표시는 이미 `songs.title` 을 읽는다(`score.py:125`)
+5. file_uri 변경은 `_reject_foreign_object_key` 를 거친다(남의 교회 키·모양이 다른 키는 400). 통과하면 `replace_song_file`
+   (file_url 은 `object_url(file_uri)`). **어느 주차의 필기 편집본(`edited_file_uri`·`edit_doc`·`edit_source_uri`)도 지우지 않는다**
+   — 편집본은 그린 원본(`edit_source_uri`)을 기억하므로 그대로 둔다
+6. `POST /songs/{song_id}/file` 을 추가한다. 본문 `{filename, content_type?}`(`ScoreFileUploadRequest` 와 같은 제약),
+   응답 `{upload_url, s3_key}`, 키는 `scores/{church_id}/{uuid}.{ext}`. **어떤 열도 바꾸지 않는다**(`score.py:170` 과 같은 3단계 모양)
+7. 두 라우트 모두 `require_leader` — 무토큰 401, 팀원 403, 다른 교회 곡 404(`_church_song_or_404`, `song.py:38`)
+8. 두 라우트를 `tests/test_leader_only.py` 의 `LEADER_ONLY` 와 `tests/test_church_isolation.py` 의 격리 케이스에 등록한다
+   (메타 테스트가 누락을 잡는다)
+9. 기존 테스트는 기대값을 바꾸지 않고 전부 통과한다
 
 범위 밖 (이미 결정됨 — BLOCKED 사유로 되돌리지 말 것):
-- 무토큰 `GET /scores` 를 401 로 막는 것 (앱 로그인 뒤, 기획서 M4)
-- Flutter 앱 변경 · 레이트 리밋 · 스키마·마이그레이션 변경 · 새 엔드포인트
-- `weeks`·`set_items` 의 `church_id` 부재 (읽기는 이미 `Score.church_id` 로 걸러진다)
+- 웹 UI(보관함 카드의 수정 버튼) — 다음 과제 M2
+- **주차별(그 주차에만 적용되는) 수정**과 `PATCH /scores/{id}` 의 동작 변경 — 사람과 따로 설계한다(스키마 결정)
+- 곡 삭제(휴지통은 의도적으로 제거됨, `.claude/handoff.md:1919`) · 스키마·마이그레이션 · Flutter 앱
+- 업로드 뒤 버려진 S3 객체 정리(`score.py:191-195` 와 같은 판단)
 
 > **낡은 과제 서술을 남겨두면 다음 실행이 그걸 읽는다.** 새 과제를 여기 쓰고,
 > 요구는 번호를 매겨 검증 가능한 문장으로 적는다 — 그 번호가 설계의 검증 기준이 된다.
