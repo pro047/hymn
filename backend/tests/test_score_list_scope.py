@@ -149,19 +149,24 @@ def _two_churches_with_one_score_each(client) -> tuple[dict, dict, str, str]:
 # --- no header: the app's contract ---------------------------------------
 
 
-def test_listing_without_a_header_should_return_only_the_named_churchs_scores_oldest_first(
+# AC-11
+def test_listing_without_a_header_should_return_only_the_named_churchs_scores_in_conti_order(
     client, db_session, monkeypatch
 ):
-    # Arrange — stamped against insertion order, so only a sort produces this,
-    # with one of B's between A's in time.
+    # Arrange — the conti order differs from both insertion order and
+    # created_at order, so only the conti order produces this, with one of
+    # B's between A's in time.
     a = _signup(client, CHURCH_A_PAYLOAD)
     b = _signup(client, CHURCH_B_PAYLOAD)
     late = _place(client, a, "Amazing Grace")
     early = _place(client, a, "Be Thou My Vision")
+    middle = _place(client, a, "Come Thou Fount")
     foreign = _place(client, b, "How Great Thou Art")
     _stamp(db_session, late, minute=30)
     _stamp(db_session, foreign, minute=20)
+    _stamp(db_session, middle, minute=25)
     _stamp(db_session, early, minute=10)
+    _reorder(client, a, [middle, late, early])
     _serve_anonymous(monkeypatch, a)
 
     # Act
@@ -170,9 +175,9 @@ def test_listing_without_a_header_should_return_only_the_named_churchs_scores_ol
     # Assert
     assert response.status_code == 200, response.text
     listed = response.json()
-    assert [item["id"] for item in listed] == [early, late]
+    assert [item["id"] for item in listed] == [middle, late, early]
     assert {item["church_id"] for item in listed} == {a["user"]["church_id"]}
-    assert [item["title"] for item in listed] == ["Be Thou My Vision", "Amazing Grace"]
+    assert [item["title"] for item in listed] == ["Come Thou Fount", "Amazing Grace", "Be Thou My Vision"]
     for item in listed:
         assert set(item) == SCORE_KEYS
         assert item["week_of"] == THIS_WEEK.isoformat()
@@ -279,9 +284,10 @@ def test_listing_with_a_token_should_return_an_empty_list_for_a_church_with_no_s
     assert response.json() == []
 
 
-def test_listing_with_a_token_should_keep_the_created_at_order(client, db_session, monkeypatch):
+# AC-10
+def test_listing_with_a_token_should_follow_the_conti_order(client, db_session, monkeypatch):
     # Arrange — three of A's, stamped out of insertion order, with one of B's
-    # between them in time.
+    # between them in time, then rearranged into a third order.
     a = _signup(client, CHURCH_A_PAYLOAD)
     b = _signup(client, CHURCH_B_PAYLOAD)
     first = _place(client, a, "Amazing Grace")
@@ -292,14 +298,16 @@ def test_listing_with_a_token_should_keep_the_created_at_order(client, db_sessio
     _stamp(db_session, second, minute=10)
     _stamp(db_session, foreign, minute=20)
     _stamp(db_session, third, minute=30)
+    _reorder(client, a, [third, first, second])
     _serve_anonymous(monkeypatch, a)
 
     # Act
     scoped = client.get("/scores", headers=_headers(a))
     public = client.get("/scores")
 
-    # Assert
-    assert [item["id"] for item in scoped.json()] == [second, third, first]
+    # Assert — neither insertion [first, second, third] nor created_at
+    # [second, third, first]: the order the leader set.
+    assert [item["id"] for item in scoped.json()] == [third, first, second]
     a_church = a["user"]["church_id"]
     assert [item["id"] for item in scoped.json()] == [
         item["id"] for item in public.json() if item["church_id"] == a_church
