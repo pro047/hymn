@@ -1,32 +1,36 @@
 ### 이번 과제 — (각색: 매 과제마다 여기를 바꾼다)
 
-#### 보관함 곡 수정 화면 M2 — 웹 (2026-11-18, M1 후속)
+#### 보관함 곡 삭제 — 하드 딜리트, 배치된 주차는 남긴다 (2026-11-18, 사람 결정)
 
-배경: 보관함 곡을 고치는 API 는 develop 에 있다(M1, `3183995`) — `POST /songs/{song_id}/file`(업로드 URL 발급, 열 안 바꿈),
-`PATCH /songs/{song_id}` 본문 `{title?, file_uri?}`, 응답은 `GET /songs` 항목과 같은 모양(`SongLibraryItem`), 같은 교회 같은
-제목이면 409 `같은 제목의 곡이 이미 있습니다.`. 그런데 이를 부르는 웹 화면이 없다. 또 week-copy(`faabe09`) 뒤로 주차 화면의
-수정은 그 주차만 바꾸므로, **곡 자체를 고치는 웹 경로는 이 과제가 유일하다.** 보관함에서 고친 값은 이후 새로 배치하는 주차부터
-복사되고, 이미 배치된 주차는 바뀌지 않는다(서버 동작, 이번에 바꾸지 않는다).
+배경: 곡 삭제 API 가 없다(2026-08 에 휴지통을 뺐다 — "곡 삭제 = FK CASCADE 로 모든 주차에서 사라짐", `.claude/handoff.md:1919`).
+지금 `scores.song_id` 는 `nullable=False`·`ondelete="CASCADE"`(`backend/src/app/models.py:179`, 제약 이름 `fk_scores_song_id_songs`,
+`alembic/versions/d2a7e5f1c3b9_split_songs_from_scores.py:79`)이고 ORM 도 `Song.usages` 가 `cascade="all, delete-orphan"`(`models.py:170`)이라
+곡을 지우면 그 곡의 모든 주차 행이 사라진다. 그런데 week-copy(`faabe09`) 뒤로 화면·앱·PDF 는 주차 행의 복사본(`scores.title`·`file_uri`)을
+읽으므로 주차 행은 곡 행 없이도 보일 수 있다. **사람 결정(2026-11-18): 하드 딜리트. 보관함에서 곡 행을 지우고, 이미 배치된 주차 행은
+`song_id` 만 비운 채 그대로 남긴다. 소프트 딜리트·되살리기는 하지 않는다.**
 
 요구 (번호가 검증 기준이 된다):
-1. 보관함 카드(`frontend/src/features/score/components/saved-scores-card.jsx`)의 곡마다 **"수정" 버튼**을 둔다.
-   **타일 버튼(`:50-53`, 누르면 배치 다이얼로그) 바깥**에 두어 버튼 안에 버튼이 없고, 수정을 눌러도 배치 다이얼로그(`onApplyRequest`)가 열리지 않는다
-2. 수정 버튼은 **기존 `ScoreEditDialog`(`score-edit-dialog.jsx`)를 그대로 재사용**해 연다(사람 결정). 다이얼로그 파일은 고치지 않는 것이 기본이며,
-   곡을 `{ id: song_id, title, download_url, file_url }` 모양으로 넘기고 `onSubmit` 만 곡 수정 함수로 바꿔 끼운다.
-   다이얼로그 수정이 불가피하면 주차 화면 동작이 그대로라는 기존 테스트(`score-edit-dialog.test.jsx`)가 기대값 변경 없이 통과해야 한다
-3. `useScores`(`features/score/hooks/use-scores.js`)에 곡 수정 함수(예: `updateSong`)를 둔다. 순서는 기존 `updateScore`(`:127-196`)와 같은 3단계:
-   파일이 있으면 `POST /songs/{id}/file` → 받은 `upload_url` 로 S3 PUT → `PATCH /songs/{id}` `{file_uri: s3_key}`(제목이 바뀌었으면 함께).
-   제목만이면 PATCH `{title}` 하나. 업로드가 실패하면 PATCH 를 보내지 않는다
-4. 성공하면 보관함 목록(`librarySongs`)에 바뀐 제목·이미지가 보인다(다시 읽거나 PATCH 응답으로 그 항목을 바꾼다). 주차 목록(`GET /scores`)은 다시 읽지 않아도 된다
-5. 409 등 실패 응답은 서버 `detail` 문구를 그대로 보인다(기존 `readApiError` 사용, `updateScore` 와 같은 방식)
-6. `API_PATHS`(`frontend/src/api/paths.ts`)에 곡 하나·곡 파일 경로를 추가한다
-7. 홈(`pages/home-page.jsx`)에서 연결한다 — 보관함 탭은 이미 인도자(`canManage`)에게만 보인다. 팀원에게 수정 버튼·요청이 생기지 않는다
-8. 기존 테스트는 기대값을 바꾸지 않고 전부 통과한다
+1. 마이그레이션 1개(현재 head `0ffde4301ddb` 다음): `scores.song_id` 를 nullable 로, FK `fk_scores_song_id_songs` 를 `ondelete="SET NULL"` 로
+   바꾼다. 데이터는 바꾸지 않는다. downgrade 는 `song_id IS NULL` 행이 하나라도 있으면 **지우지 않고 예외로 멈춘다**(데이터 손실 금지),
+   없으면 NOT NULL·CASCADE 로 되돌린다. 마이그레이션 테스트로 둘 다 고정
+2. ORM: `Score.song_id` 는 Optional, `Song.usages` 는 곡 삭제가 주차 행을 지우지 않도록(`delete-orphan` 제거, DB 의 SET NULL 에 맡김 —
+   `passive_deletes=True` 등) 바꾼다. **ORM 경로로 지워도 주차 행이 남는다**를 테스트로 고정
+3. `DELETE /songs/{song_id}` 추가 — 204. `require_leader`(무토큰 401·팀원 403), 다른 교회 곡 404(`_church_song_or_404`, `routes/song.py:38`)
+4. 삭제 뒤: `GET /songs` 에서 빠진다. 그 곡을 배치했던 주차의 `GET /scores`·`GET /scores/{id}`·콘티·PDF 는 **삭제 전과 같은 제목·파일·편집본**을
+   준다(`song_id` 만 null). 그 주차의 PATCH·편집 저장·편집 지우기·순서 변경·주차 이동도 200 으로 동작한다
+5. **S3 객체를 지우지 않는다.** 곡과 그 곡을 배치한 주차 복사본은 같은 S3 키를 가리킨다(`add_usage` 가 키를 복사). 앱 코드에 S3 삭제 호출이
+   지금 0건이며 이번에도 0건이어야 한다 — 삭제 라우트가 S3 클라이언트를 부르지 않음을 테스트로 고정
+6. 삭제 뒤 같은 교회에 같은 제목으로 `POST /songs` 하면 201(새 곡)이다. 지운 곡 id 로 `POST /songs/{id}/usages`·`PATCH /songs/{id}`·`POST /songs/{id}/file` 은 404
+7. 새 라우트를 `tests/test_leader_only.py` `LEADER_ONLY` 와 `tests/test_church_isolation.py` 격리 케이스에 등록한다(메타 테스트)
+8. 웹: 보관함 카드의 케밥 메뉴(`frontend/src/features/score/components/saved-scores-card.jsx`)에 **"삭제"** 항목을 수정 아래에 둔다.
+   누르면 `window.confirm("「<제목>」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다.")` — 취소면 요청 없음. 확인이면
+   `DELETE /songs/{id}` 후 보관함 목록에서 사라진다. 실패는 서버 `detail` 을 보인다(기존 `readApiError`). `API_PATHS` 의 곡 경로를 재사용.
+   `saved-scores-card.jsx:6-7` 의 "nothing to take out" 주석을 사실에 맞게 고친다
+9. 기존 테스트는 기대값을 바꾸지 않고 통과한다. 깨지는 기존 테스트가 있으면 구현으로 맞추지 말고 **[결정]으로 사람에게 올린다**
 
 범위 밖 (이미 결정됨 — BLOCKED 사유로 되돌리지 말 것):
-- 백엔드·스키마 변경 일체(M1 API 그대로) · 곡 삭제 · 이미 배치된 주차에 반영하는 옵션
-- 다이얼로그에 "이후 배치부터 적용" 같은 안내 문구(사람이 주차 쪽 문구도 넣지 않기로 했다)
-- 화면 낭독기 UUID 낭독 수정 · Flutter 앱 · 새 패키지
+- 소프트 딜리트·되살리기·휴지통 · S3 객체 정리 · 주차 행 삭제 방식 변경
+- Flutter 앱(앱은 `song_id` 를 읽지 않는다) · 화면 낭독기 UUID 낭독 · 새 패키지
 
 > **낡은 과제 서술을 남겨두면 다음 실행이 그걸 읽는다.** 새 과제를 여기 쓰고,
 > 요구는 번호를 매겨 검증 가능한 문장으로 적는다 — 그 번호가 설계의 검증 기준이 된다.
