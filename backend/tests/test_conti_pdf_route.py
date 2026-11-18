@@ -1100,6 +1100,169 @@ def test_a_break_on_a_later_song_should_be_kept(client, reader):
     assert [len(page) for page in response.json()["pages"]] == [1, 2]
 
 
+# --- the home card: GET /scores follows the conti, a missing flag keeps -----
+
+
+def _ids_only(score_ids: list[str]) -> list[dict]:
+    """The home card's payload: a running order, no page-break key at all."""
+    return [{"score_id": score_id} for score_id in score_ids]
+
+
+def _stored_flags(db_session, score_id: str) -> list[bool]:
+    db_session.expire_all()
+    return sorted(row.starts_new_page for row in db_session.query(SetItem).filter(SetItem.score_id == score_id))
+
+
+def _break_second_of_three(client, reader, headers: dict) -> list[str]:
+    """Three songs in week 0 with a break before the second; their ids in order."""
+    ids = [song["score_id"] for song in _seed_week(client, reader, headers, _week(0), 3)]
+    response = _patch_order(
+        client, headers, _week(0),
+        [{"score_id": score_id, "starts_new_page": n == 1} for n, score_id in enumerate(ids)],
+    )
+    assert response.status_code == 200, response.text
+    assert [i["starts_new_page"] for i in _conti_items(response)] == [False, True, False]
+    return ids
+
+
+# AC-6
+def test_get_scores_should_list_a_week_in_the_conti_order(client, reader, db_session):
+    # Arrange — shuffled, then one song stripped of its SetItem, plus a song
+    # in another week that the filter must drop.
+    headers = _register(client)
+    s0, s1, s2, s3 = (song["score_id"] for song in _seed_week(client, reader, headers, _week(0), 4))
+    _add_song(client, reader, headers, title="다음주곡", week=_week(1))
+    assert _patch_order(client, headers, _week(0), _ids_only([s2, s0, s3, s1])).status_code == 200
+    db_session.query(SetItem).filter(SetItem.score_id == s3).delete()
+    db_session.expire_all()
+
+    # Act
+    listed = client.get("/scores", headers=headers)
+    conti = _get_conti(client, headers, _week(0))
+
+    # Assert — the same order on both screens, and the order fixed here
+    assert listed.status_code == 200, listed.text
+    week_ids = [item["id"] for item in listed.json() if item["week_of"] == _week(0)]
+    conti_ids = [item["score_id"] for item in _conti_items(conti)]
+    assert week_ids == conti_ids
+    assert week_ids == [s2, s0, s1, s3]
+
+
+# AC-7
+def test_an_order_without_the_flag_should_keep_a_stored_break(client, reader, db_session):
+    # Arrange
+    headers = _register(client)
+    first, broken, third = _break_second_of_three(client, reader, headers)
+
+    # Act — [1, 3, 2], no key
+    response = _patch_order(client, headers, _week(0), _ids_only([first, third, broken]))
+
+    # Assert
+    assert response.status_code == 200, response.text
+    items = _conti_items(response)
+    assert [i["score_id"] for i in items] == [first, third, broken]
+    assert [i["starts_new_page"] for i in items] == [False, False, True]
+    assert _stored_flags(db_session, broken) == [True]
+
+
+def test_an_explicit_null_flag_should_keep_a_stored_break_like_an_omitted_one(client, reader, db_session):
+    # Arrange
+    headers = _register(client)
+    first, broken, third = _break_second_of_three(client, reader, headers)
+
+    # Act
+    response = _patch_order(
+        client, headers, _week(0),
+        [{"score_id": score_id, "starts_new_page": None} for score_id in (first, third, broken)],
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert [i["starts_new_page"] for i in _conti_items(response)] == [False, False, True]
+    assert _stored_flags(db_session, broken) == [True]
+
+
+# AC-8
+def test_an_order_without_the_flag_should_clear_a_break_moved_to_the_front(client, reader, db_session):
+    # Arrange
+    headers = _register(client)
+    first, broken, third = _break_second_of_three(client, reader, headers)
+
+    # Act — the broken song to position 1, no key
+    response = _patch_order(client, headers, _week(0), _ids_only([broken, first, third]))
+
+    # Assert — off in the answer and in the table
+    assert response.status_code == 200, response.text
+    assert [i["starts_new_page"] for i in _conti_items(response)] == [False, False, False]
+    assert _stored_flags(db_session, broken) == [False]
+
+
+# AC-9
+def test_an_order_without_the_flag_should_file_a_new_set_item_without_a_break(client, reader, db_session):
+    # Arrange — the third song loses its SetItem (a row from before set items)
+    headers = _register(client)
+    first, second, third = (song["score_id"] for song in _seed_week(client, reader, headers, _week(0), 3))
+    db_session.query(SetItem).filter(SetItem.score_id == third).delete()
+    db_session.expire_all()
+
+    # Act — it goes to position 2
+    response = _patch_order(client, headers, _week(0), _ids_only([first, third, second]))
+
+    # Assert
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    rows = db_session.query(SetItem).filter(SetItem.score_id == third).all()
+    assert [(row.order_no, row.starts_new_page) for row in rows] == [(2, False)]
+    assert [i["score_id"] for i in _conti_items(response)] == [first, third, second]
+
+
+# AC-12
+def test_an_explicit_flag_and_an_omitted_one_should_each_be_honoured_in_one_request(client, reader, db_session):
+    # Arrange — breaks before the second and the third
+    headers = _register(client)
+    first, a, b = (song["score_id"] for song in _seed_week(client, reader, headers, _week(0), 3))
+    _patch_order(
+        client, headers, _week(0),
+        [{"score_id": first, "starts_new_page": False},
+         {"score_id": a, "starts_new_page": True},
+         {"score_id": b, "starts_new_page": True}],
+    )
+
+    # Act — A explicitly off, B left out
+    response = _patch_order(
+        client, headers, _week(0),
+        [{"score_id": first}, {"score_id": a, "starts_new_page": False}, {"score_id": b}],
+    )
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert [i["starts_new_page"] for i in _conti_items(response)] == [False, False, True]
+    assert _stored_flags(db_session, a) == [False]
+    assert _stored_flags(db_session, b) == [True]
+
+
+def test_an_order_without_the_flag_should_keep_each_set_item_rows_own_value(client, reader, db_session):
+    # Arrange — the broken song also carries a second, unbroken SetItem for the
+    # same week (attach_usage can leave two). Each row keeps what it holds.
+    headers = _register(client)
+    first, broken, third = _break_second_of_three(client, reader, headers)
+    own = db_session.query(SetItem).filter(SetItem.score_id == broken).one()
+    db_session.add(
+        SetItem(week_id=own.week_id, week_date=own.week_date, score_id=broken, order_no=9, starts_new_page=False)
+    )
+    db_session.flush()
+
+    # Act — the broken song to the end, no key
+    response = _patch_order(client, headers, _week(0), _ids_only([first, third, broken]))
+
+    # Assert — renumbered together, flags untouched row by row
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    rows = db_session.query(SetItem).filter(SetItem.score_id == broken).all()
+    assert sorted((row.order_no, row.starts_new_page) for row in rows) == [(3, False), (3, True)]
+    assert [i["starts_new_page"] for i in _conti_items(response)] == [False, False, True]
+
+
 # --- code review 2026-09-08 --------------------------------------------------
 
 

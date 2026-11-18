@@ -50,7 +50,8 @@ class ContiResponse(BaseModel):
 
 class ContiOrderItemRequest(BaseModel):
     score_id: str
-    starts_new_page: bool = False
+    # Omitted or null keeps the stored break; the conti screen always sends it.
+    starts_new_page: bool | None = None
 
 
 class ContiOrderRequest(BaseModel):

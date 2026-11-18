@@ -16,7 +16,7 @@ from io import BytesIO
 from PIL import Image, ImageOps, UnidentifiedImageError  # type: ignore[import-not-found]
 from sqlalchemy import false as sa_false
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.deps import ObjectReader
 from app.models import Score, SetItem, Song
@@ -93,6 +93,42 @@ def _flatten_onto_white(image: Image.Image) -> Image.Image:
     return image.convert("RGB")
 
 
+def running_order_no(week_date):
+    """min(SetItem.order_no) of the enclosing query's Score in `week_date`.
+
+    `week_date` is a date value (conti: one week) or the column Score.week_of
+    (GET /scores: every week). One expression keeps the two orders from
+    drifting apart, which is what the home card relies on: what the leader
+    drags is what the conti screen and the PDF show.
+    """
+    return (
+        select(func.min(SetItem.order_no))
+        .where(SetItem.score_id == Score.id, SetItem.week_date == week_date)
+        .scalar_subquery()
+    )
+
+
+def list_filed_scores(session: Session, *, church_id: str) -> list[Score]:
+    """This church's scores with week_of set, in conti order within each week.
+
+    Weeks ascending first so the list stays grouped by Sunday; a Score with no
+    SetItem for its week goes last in that week, then the old created_at order
+    and id as the final tie-break so the answer never depends on the planner.
+    """
+    return (
+        session.query(Score)
+        .options(joinedload(Score.song))
+        .filter(Score.week_of.is_not(None), Score.church_id == church_id)
+        .order_by(
+            Score.week_of.asc(),
+            running_order_no(Score.week_of).asc().nulls_last(),
+            Score.created_at.asc(),
+            Score.id.asc(),
+        )
+        .all()
+    )
+
+
 def list_week_entries(session: Session, *, church_id: str, week_of: date) -> list[ContiEntry]:
     """This church's songs for this week, ordered for a stable set list.
 
@@ -102,11 +138,7 @@ def list_week_entries(session: Session, *, church_id: str, week_of: date) -> lis
     week) and would drop a Score that has none at all, which is still a song
     filed for this week.
     """
-    order_no = (
-        select(func.min(SetItem.order_no))
-        .where(SetItem.score_id == Score.id, SetItem.week_date == week_of)
-        .scalar_subquery()
-    )
+    order_no = running_order_no(week_of)
     # bool_or, not the flag of whichever row min(order_no) came from: a Score
     # can carry more than one SetItem for a week (attach_usage moves every
     # existing item onto the new week), and picking "a row" would make the
@@ -239,7 +271,7 @@ def build_week_conti_pdf(
 @dataclass(frozen=True)
 class ContiOrderItem:
     score_id: str
-    starts_new_page: bool
+    starts_new_page: bool | None  # None = keep what is stored
 
 
 def set_week_order(
@@ -286,12 +318,20 @@ def set_week_order(
             set_item.week_id = week.id
             set_item.week_date = week.date
             set_item.order_no = position
+            # An omitted flag keeps what this very row stored: the home card
+            # reorders without knowing the page breaks, and sending False for
+            # it would wipe the ones set on the conti screen. Per row, not per
+            # score, so the bool_or read above stays consistent.
+            if item.starts_new_page is None:
+                wanted = bool(set_item.starts_new_page)
+            else:
+                wanted = item.starts_new_page
             # The first song's flag is forced off, not stored as sent:
             # chunk_pages ignores a break there (it already starts a page), so
             # keeping it would leave a value that changes nothing, is invisible
             # on screen, and cannot be cleared — moving a broken-before song to
             # the front is exactly how a leader lands in that state.
-            set_item.starts_new_page = item.starts_new_page and position > 1
+            set_item.starts_new_page = wanted and position > 1
 
 
 def list_week_pages(

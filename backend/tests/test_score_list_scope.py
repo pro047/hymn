@@ -25,7 +25,7 @@ import pytest
 from jose import jwt
 
 from app.deps import SESSION_EXPIRED_MESSAGE
-from app.models import Score, User
+from app.models import Score, SetItem, User
 from app.services.auth import JWT_ALGORITHM, _encode_token, decode_token
 from song_helpers import file_usage
 
@@ -36,6 +36,7 @@ def _this_week_sunday() -> date:
 
 
 THIS_WEEK = _this_week_sunday()
+NEXT_WEEK = THIS_WEEK + timedelta(days=7)
 
 CHURCH_A_PAYLOAD = {
     "name": "leader a",
@@ -94,6 +95,35 @@ def _headers(account: dict) -> dict:
 
 def _place(client, account: dict, title: str) -> str:
     return file_usage(client, _headers(account), title=title, week=THIS_WEEK).json()["score_id"]
+
+
+def _place_on(client, account: dict, title: str, week: date) -> str:
+    return file_usage(client, _headers(account), title=title, week=week).json()["score_id"]
+
+
+def _reorder(client, account: dict, score_ids: list[str], week: date = THIS_WEEK) -> None:
+    """Sets the week's conti order the way the home card does: no page-break key."""
+    response = client.patch(
+        f"/weeks/{week.isoformat()}/conti/order",
+        headers=_headers(account),
+        json={"items": [{"score_id": score_id} for score_id in score_ids]},
+    )
+    assert response.status_code == 200, response.text
+
+
+def _drop_set_items(db_session, score_id: str) -> None:
+    db_session.query(SetItem).filter(SetItem.score_id == score_id).delete()
+    db_session.expire_all()
+
+
+def _set_order_no(db_session, score_id: str, order_no: int) -> None:
+    db_session.query(SetItem).filter(SetItem.score_id == score_id).update({"order_no": order_no})
+    db_session.expire_all()
+
+
+def _ids(response) -> list[str]:
+    assert response.status_code == 200, response.text
+    return [item["id"] for item in response.json()]
 
 
 def _stamp(db_session, score_id: str, minute: int) -> None:
@@ -309,6 +339,248 @@ def test_listing_with_a_token_should_still_leave_out_scores_with_no_week(client,
 
     # Assert
     assert [item["id"] for item in response.json()] == [kept]
+
+
+# --- the order: week, then the conti's running order ---------------------
+
+
+def _three_rearranged(client, db_session) -> tuple[dict, str, str, str]:
+    """x, y, z placed in that order, stamped y < z < x, rearranged to z, x, y.
+
+    Insertion, created_at and the conti each give a different order, so the
+    answer names which one the listing followed.
+    """
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    x = _place(client, a, "Amazing Grace")
+    y = _place(client, a, "Be Thou My Vision")
+    z = _place(client, a, "Come Thou Fount")
+    _stamp(db_session, y, minute=10)
+    _stamp(db_session, z, minute=20)
+    _stamp(db_session, x, minute=30)
+    _reorder(client, a, [z, x, y])
+    return a, x, y, z
+
+
+# AC-1
+def test_listing_with_a_token_after_a_reorder_should_answer_in_the_new_order(client, db_session):
+    # Arrange
+    a, x, y, z = _three_rearranged(client, db_session)
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [z, x, y]
+
+
+# AC-2
+def test_listing_without_a_header_after_a_reorder_should_answer_in_the_new_order(
+    client, db_session, monkeypatch
+):
+    # Arrange — the tablets' call: the same order reaches the app.
+    a, x, y, z = _three_rearranged(client, db_session)
+    _serve_anonymous(monkeypatch, a)
+
+    # Act
+    response = client.get("/scores")
+
+    # Assert
+    assert _ids(response) == [z, x, y]
+
+
+# AC-3
+def test_listing_should_put_an_earlier_week_first_even_when_a_later_weeks_score_is_older(client, db_session):
+    # Arrange — next week's song placed first and stamped earliest.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    later = _place_on(client, a, "How Great Thou Art", NEXT_WEEK)
+    first = _place(client, a, "Amazing Grace")
+    second = _place(client, a, "Be Thou My Vision")
+    _stamp(db_session, later, minute=5)
+    _stamp(db_session, first, minute=20)
+    _stamp(db_session, second, minute=30)
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [first, second, later]
+
+
+def test_listing_should_order_each_week_by_its_own_conti(client, db_session):
+    # Arrange — two weeks, each rearranged differently; the stamps interleave
+    # the weeks so neither created_at nor insertion order explains the answer.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    p = _place(client, a, "Amazing Grace")
+    q = _place(client, a, "Be Thou My Vision")
+    r = _place_on(client, a, "Come Thou Fount", NEXT_WEEK)
+    s = _place_on(client, a, "How Great Thou Art", NEXT_WEEK)
+    _stamp(db_session, s, minute=1)
+    _stamp(db_session, q, minute=2)
+    _stamp(db_session, r, minute=3)
+    _stamp(db_session, p, minute=4)
+    _reorder(client, a, [q, p])
+    _reorder(client, a, [s, r], week=NEXT_WEEK)
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [q, p, s, r]
+
+
+def test_listing_should_follow_placement_order_when_nobody_reordered(client, db_session):
+    # Arrange — a song filed long ago placed after a newer one: attach_usage
+    # puts it at the end of the week, created_at would put it first.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    newer = _place(client, a, "Amazing Grace")
+    older = _place(client, a, "Be Thou My Vision")
+    _stamp(db_session, newer, minute=30)
+    _stamp(db_session, older, minute=10)
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [newer, older]
+
+
+# AC-4 ① a score with no SetItem goes to the end of its week
+def test_listing_should_put_a_score_with_no_set_item_last_in_its_week(client, db_session):
+    # Arrange — the orphan is the oldest, so created_at alone would put it first.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    orphan = _place(client, a, "Amazing Grace")
+    y = _place(client, a, "Be Thou My Vision")
+    z = _place(client, a, "Come Thou Fount")
+    later = _place_on(client, a, "How Great Thou Art", NEXT_WEEK)
+    _stamp(db_session, later, minute=1)
+    _stamp(db_session, orphan, minute=5)
+    _stamp(db_session, z, minute=10)
+    _stamp(db_session, y, minute=20)
+    _drop_set_items(db_session, orphan)
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert — last within this week, still before next week
+    assert _ids(response) == [y, z, orphan, later]
+
+
+# AC-4 ② equal order_no falls back to created_at
+def test_listing_should_break_an_order_no_tie_by_created_at(client, db_session):
+    # Arrange — lead has the lowest number and the latest stamp; the tied pair
+    # is stamped against insertion order.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    lead = _place(client, a, "Amazing Grace")
+    x = _place(client, a, "Be Thou My Vision")
+    y = _place(client, a, "Come Thou Fount")
+    _set_order_no(db_session, lead, 1)
+    _set_order_no(db_session, x, 5)
+    _set_order_no(db_session, y, 5)
+    _stamp(db_session, lead, minute=50)
+    _stamp(db_session, y, minute=10)
+    _stamp(db_session, x, minute=20)
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [lead, y, x]
+
+
+# AC-4 ③ equal order_no and created_at fall back to id
+def test_listing_should_break_a_full_tie_by_id(client, db_session):
+    # Arrange
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    lead = _place(client, a, "Amazing Grace")
+    x = _place(client, a, "Be Thou My Vision")
+    y = _place(client, a, "Come Thou Fount")
+    _set_order_no(db_session, lead, 1)
+    _set_order_no(db_session, x, 2)
+    _set_order_no(db_session, y, 2)
+    _stamp(db_session, lead, minute=50)
+    _stamp(db_session, x, minute=10)
+    _stamp(db_session, y, minute=10)
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [lead, *sorted([x, y])]
+
+
+def test_listing_should_ignore_a_set_item_filed_under_another_week(client, db_session):
+    # Arrange — z also carries a SetItem numbered 0 under next week. Counted
+    # without the week match it would jump to the front of this week.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    later = _place_on(client, a, "How Great Thou Art", NEXT_WEEK)
+    x = _place(client, a, "Amazing Grace")
+    y = _place(client, a, "Be Thou My Vision")
+    z = _place(client, a, "Come Thou Fount")
+    _stamp(db_session, later, minute=1)
+    _stamp(db_session, z, minute=5)
+    _stamp(db_session, y, minute=10)
+    _stamp(db_session, x, minute=20)
+    next_week_item = db_session.query(SetItem).filter(SetItem.score_id == later).one()
+    db_session.add(
+        SetItem(week_id=next_week_item.week_id, week_date=next_week_item.week_date, score_id=z, order_no=0)
+    )
+    db_session.flush()
+    db_session.expire_all()
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [x, y, z, later]
+
+
+def test_listing_should_list_a_score_with_two_set_items_once(client, db_session):
+    # Arrange — attach_usage can leave two SetItems for one score in a week;
+    # the smaller number places it.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    x = _place(client, a, "Amazing Grace")
+    y = _place(client, a, "Be Thou My Vision")
+    _stamp(db_session, x, minute=10)
+    _stamp(db_session, y, minute=20)
+    _set_order_no(db_session, x, 7)
+    own = db_session.query(SetItem).filter(SetItem.score_id == y).one()
+    own.order_no = 9
+    db_session.add(SetItem(week_id=own.week_id, week_date=own.week_date, score_id=y, order_no=3))
+    db_session.flush()
+    db_session.expire_all()
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    assert _ids(response) == [y, x]
+
+
+# AC-5
+def test_listing_in_the_new_order_should_keep_the_shape_and_the_rows(client, db_session):
+    # Arrange — two weeks rearranged, a draft with no week, another church.
+    a = _signup(client, CHURCH_A_PAYLOAD)
+    b = _signup(client, CHURCH_B_PAYLOAD)
+    p = _place(client, a, "Amazing Grace")
+    q = _place(client, a, "Be Thou My Vision")
+    r = _place_on(client, a, "Come Thou Fount", NEXT_WEEK)
+    draft = _place(client, a, "It Is Well")
+    _place(client, b, "How Great Thou Art")
+    _reorder(client, a, [draft, q, p])
+    db_session.query(Score).filter(Score.id == draft).update({"week_of": None})
+    db_session.expire_all()
+
+    # Act
+    response = client.get("/scores", headers=_headers(a))
+
+    # Assert
+    listed = response.json()
+    assert _ids(response) == [q, p, r]
+    assert {item["id"] for item in listed} == {p, q, r}
+    for item in listed:
+        assert set(item) == SCORE_KEYS
+        assert item["church_id"] == a["user"]["church_id"]
+        assert item["week_of"] is not None
 
 
 # --- a header that does not hold up: 401, never the public list ----------

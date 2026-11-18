@@ -408,3 +408,197 @@ it("보관함 업로드는 곡만 만들고 받은 주소로 파일을 올려야
   expect(outcome).toEqual({ ok: true, songId: "song-9" });
   expect(calls.slice(0, 2)).toEqual(["POST /songs", "PUT https://s3.example.com/put?sig=9"]);
 });
+
+// --- reorderWeek: the home card's drag ------------------------------------
+
+const WEEK_OF = "2026-11-22";
+const LISTED = [
+  { id: "u1", song_id: "s1", title: "A", week_of: WEEK_OF },
+  { id: "u2", song_id: "s2", title: "B", week_of: WEEK_OF },
+];
+const MISMATCH = "그 주차의 곡 전체를 한 번씩 보내야 합니다.";
+const SAVED_NOT_REREAD = "순서는 저장했지만 목록을 다시 불러오지 못했습니다.";
+
+const isOrderPatch = (url, options = {}) =>
+  String(url) === API_PATHS.weekContiOrder(WEEK_OF) && options.method === "PATCH";
+
+/** apiFetch with the order PATCH and the score list answered by the test. */
+function apiFetchReorder({ patch, listing = async () => ok(LISTED) }) {
+  return async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    if (isOrderPatch(url, options)) return patch();
+    if (isScoreListRequest(url, options)) return listing();
+    return ok([]);
+  };
+}
+
+async function mountedWithList() {
+  apiFetch.mockImplementation(apiFetchListing(LISTED));
+  const result = await mountedHook();
+  await waitFor(() => expect(result.current.scores).toEqual(LISTED));
+  return result;
+}
+
+// AC-21
+it("순서 저장은 주차 순서 PATCH 를 score_id 만 실어 보내고 목록을 다시 불러야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(apiFetchReorder({ patch: async () => ok({ pages: [] }) }));
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert — PATCH first, then the re-read
+  expect(outcome).toEqual({ ok: true, saved: true });
+  expect(calls).toHaveLength(2);
+  expect(calls[0].startsWith("PATCH ")).toBe(true);
+  expect(calls[1]).toBe("GET /scores");
+  const [url, options] = apiFetch.mock.calls.find(([, init]) => init?.method === "PATCH");
+  expect(url).toBe(API_PATHS.weekContiOrder(WEEK_OF));
+  expect(options.headers).toEqual({ "Content-Type": "application/json" });
+  const body = JSON.parse(options.body);
+  expect(body).toEqual({ items: [{ score_id: "u2" }, { score_id: "u1" }] });
+  body.items.forEach((item) => expect(Object.keys(item)).toEqual(["score_id"]));
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-21
+it("순서 저장과 재조회가 되면 새 목록으로 바꾸고 오류를 지워야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  const reread = [LISTED[1], LISTED[0]];
+  apiFetch.mockImplementation(
+    apiFetchReorder({ patch: async () => ok({ pages: [] }), listing: async () => ok(reread) })
+  );
+
+  // Act
+  await act(async () => {
+    await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert
+  expect(result.current.scores).toEqual(reread);
+  expect(result.current.error).toBe("");
+});
+
+// AC-22
+it("순서 저장이 거절되면 목록을 다시 읽고 서버 detail 을 오류로 남겨야 한다", async () => {
+  // Arrange — another device added a song, so the set no longer matches
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      patch: async () => ({ ok: false, status: 400, json: async () => ({ detail: MISMATCH }) }),
+    })
+  );
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert — the re-read's own setError("") must not wipe the reason
+  expect(outcome).toEqual({ ok: false, saved: false, message: MISMATCH });
+  expect(calls[0].startsWith("PATCH ")).toBe(true);
+  expect(calls).toContain("GET /scores");
+  await waitFor(() => expect(result.current.error).toBe(MISMATCH));
+});
+
+// AC-22
+it("순서 저장 요청이 네트워크에서 끊기면 저장 실패로 알리고 목록을 다시 읽어야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      patch: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    })
+  );
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, saved: false, message: "순서를 저장하지 못했습니다." });
+  expect(calls).toContain("GET /scores");
+  await waitFor(() => expect(result.current.error).toBe("순서를 저장하지 못했습니다."));
+});
+
+// AC-27
+it("순서는 저장됐는데 재조회가 실패하면 saved 로 알리고 이전 목록을 지켜야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      patch: async () => ok({ pages: [] }),
+      listing: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+    })
+  );
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert — not "ok": the list on screen is the old one
+  expect(outcome).toEqual({ ok: false, saved: true, message: SAVED_NOT_REREAD });
+  await waitFor(() => expect(result.current.error).toBe(SAVED_NOT_REREAD));
+  expect(result.current.scores).toEqual(LISTED);
+});
+
+// AC-23
+it.each([
+  ["성공", { patch: async () => ok({ pages: [] }) }],
+  [
+    "거절",
+    {
+      patch: async () => ({ ok: false, status: 400, json: async () => ({ detail: MISMATCH }) }),
+    },
+  ],
+  [
+    "재조회 실패",
+    {
+      patch: async () => ok({ pages: [] }),
+      listing: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+    },
+  ],
+])("순서 저장 중에는 isReordering 이 참이고 끝나면(%s) 거짓이어야 한다", async (_, answers) => {
+  // Arrange — the PATCH is held open until the test lets it go
+  const result = await mountedWithList();
+  expect(result.current.isReordering).toBe(false);
+  let release;
+  const gate = new Promise((settle) => {
+    release = settle;
+  });
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      ...answers,
+      patch: async () => {
+        await gate;
+        return answers.patch();
+      },
+    })
+  );
+
+  // Act
+  let running;
+  act(() => {
+    running = result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert
+  await waitFor(() => expect(result.current.isReordering).toBe(true));
+  await act(async () => {
+    release();
+    await running;
+  });
+  expect(result.current.isReordering).toBe(false);
+});

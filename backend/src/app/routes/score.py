@@ -2,7 +2,7 @@ import os
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.db import get_session
 from app.deps import get_current_user, get_optional_user, require_leader
@@ -16,6 +16,7 @@ from app.schemas.score import (
     ScoreResponse,
     ScoreUpdate,
 )
+from app.services.conti import list_filed_scores
 from app.services.score_edit import clear_edit, save_edit
 from app.services.song import (
     SongTitleTaken,
@@ -110,13 +111,7 @@ def list_scores(
         church_id = user.church_id
     else:
         church_id = _anonymous_church_id()
-    scores = (
-        session.query(Score)
-        .options(joinedload(Score.song))
-        .filter(Score.week_of.is_not(None), Score.church_id == church_id)
-        .order_by(Score.created_at.asc())
-        .all()
-    )
+    scores = list_filed_scores(session, church_id=church_id)
     return [
         ScoreResponse(
             id=s.id,

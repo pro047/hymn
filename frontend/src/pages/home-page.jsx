@@ -46,6 +46,8 @@ export default function HomePage({ headerActions = null, canManage = false }) {
     isUploading,
     isUpdating,
     isPlacingSong,
+    isReordering,
+    reorderWeek,
     uploadSong,
     updateScore,
     deleteScore,
@@ -149,6 +151,8 @@ export default function HomePage({ headerActions = null, canManage = false }) {
               onUpdate={setEditingScore}
               onDelete={deleteScore}
               canManage={canManage}
+              onReorder={(scoreIds) => reorderWeek({ weekOf: upcomingSundayWeekOf, scoreIds })}
+              isReordering={isReordering}
             />
           ) : (
             <SavedScoresCard

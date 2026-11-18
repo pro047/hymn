@@ -4,6 +4,7 @@ import { apiFetch } from "../../../api/client";
 import { API_PATHS } from "../../../api/paths";
 import { alertMessageOf, readApiError } from "../../../lib/api-error";
 import { isAuthenticated } from "../../../lib/auth-storage";
+import { toStageOrderPayload } from "../../../lib/stage-order";
 
 // canManage defaults to true: the hook does what it is asked, and it is the
 // page that knows who is looking (home-page.jsx passes false for a member).
@@ -14,6 +15,7 @@ export function useScores({ canManage = true } = {}) {
   const [isUploading, setIsUploading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isPlacingSong, setIsPlacingSong] = useState(false);
+  const [isReordering, setIsReordering] = useState(false);
 
   // Falls back to title when song_id is absent so a frontend deployed ahead
   // of the migration still shows a meaningful count instead of 0.
@@ -34,8 +36,10 @@ export function useScores({ canManage = true } = {}) {
       const data = await response.json();
       setScores(data);
       setError("");
+      return true;
     } catch (err) {
       setError(err.message);
+      return false;
     }
   }, []);
 
@@ -237,6 +241,45 @@ export function useScores({ canManage = true } = {}) {
     }
   };
 
+  // `saved` and `ok` are different questions. fetchScores swallows its own
+  // failure, so "the PATCH went through but the re-read did not" is a state
+  // the caller has to be told about: the server holds the new order while
+  // `scores` still holds the old one.
+  const reorderWeek = async ({ weekOf, scoreIds }) => {
+    if (!isAuthenticated()) {
+      setError("로그인이 필요합니다.");
+      return { ok: false, saved: false };
+    }
+    setIsReordering(true);
+    try {
+      let message;
+      try {
+        const response = await apiFetch(API_PATHS.weekContiOrder(weekOf), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: toStageOrderPayload(scoreIds) }),
+        });
+        if (response.ok) {
+          const refreshed = await fetchScores();
+          if (refreshed) return { ok: true, saved: true };
+          const staleMessage = "순서는 저장했지만 목록을 다시 불러오지 못했습니다.";
+          setError(staleMessage);
+          return { ok: false, saved: true, message: staleMessage };
+        }
+        message = alertMessageOf(await readApiError(response, "순서를 저장하지 못했습니다.", []));
+      } catch {
+        message = "순서를 저장하지 못했습니다.";
+      }
+      // Re-read first, report second: a successful fetchScores clears
+      // `error`, which would erase the message set before it.
+      await fetchScores();
+      setError(message);
+      return { ok: false, saved: false, message };
+    } finally {
+      setIsReordering(false);
+    }
+  };
+
   return {
     scores,
     totalSongs,
@@ -245,6 +288,8 @@ export function useScores({ canManage = true } = {}) {
     isUploading,
     isUpdating,
     isPlacingSong,
+    isReordering,
+    reorderWeek,
     uploadSong,
     updateScore,
     deleteScore,
