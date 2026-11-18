@@ -154,6 +154,7 @@ const UPLOAD_HEADING = "보관함에서 곡을 골라 콘티에 추가하세요"
 async function openLibraryEdit() {
   renderHome(true);
   fireEvent.click(screen.getByRole("button", { name: "보관함" }));
+  fireEvent.click(screen.getByRole("button", { name: `${LIBRARY_SONG.title} 메뉴` }));
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: `${LIBRARY_SONG.title} 수정` }));
   });
@@ -228,6 +229,7 @@ it("팀원에게는 보관함 탭도 보관함 곡 수정 버튼도 그리지 �
   // Assert
   expect(screen.queryAllByRole("button", { name: "보관함" })).toHaveLength(0);
   expect(screen.queryByText("악보 보관함")).toBeNull();
+  expect(screen.queryByRole("button", { name: `${LIBRARY_SONG.title} 메뉴` })).toBeNull();
   expect(screen.queryByRole("button", { name: `${LIBRARY_SONG.title} 수정` })).toBeNull();
   expect(updateSong).not.toHaveBeenCalled();
 });

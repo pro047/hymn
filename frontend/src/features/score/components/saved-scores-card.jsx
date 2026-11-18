@@ -1,12 +1,16 @@
-import { useRef } from "react";
+import { EllipsisVertical } from "lucide-react";
+import { useRef, useState } from "react";
 
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover";
 
 // Every song the church has is here, so there is nothing to take out: deleting
 // a song would take it off every Sunday that used it.
 export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload, onEditRequest }) {
   const fileInputRef = useRef(null);
+  // One menu open at a time, closed again once 수정 hands the song over.
+  const [menuFor, setMenuFor] = useState(null);
 
   const handleFileChange = (event) => {
     const selectedFile = event.target.files?.[0] || null;
@@ -46,7 +50,7 @@ export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload,
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
             {scores.map((score) => (
-              <div key={score.song_id} className="group min-w-0">
+              <div key={score.song_id} className="group relative min-w-0">
                 <button
                   type="button"
                   className="block w-full text-left"
@@ -66,18 +70,37 @@ export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload,
                   </div>
                 </button>
                 {/* A sibling of the tile, not a child: a button inside a button is
-                    invalid HTML and a click would bubble into onApplyRequest. */}
+                    invalid HTML and a click would bubble into onApplyRequest.
+                    Shown on hover or focus where there is a pointer, always on
+                    touch screens, which have no hover to reveal it with. */}
                 {onEditRequest ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="mt-2 w-full"
-                    aria-label={`${score.title} 수정`}
-                    onClick={() => onEditRequest(score)}
+                  <Popover
+                    open={menuFor === score.song_id}
+                    onOpenChange={(open) => setMenuFor(open ? score.song_id : null)}
                   >
-                    수정
-                  </Button>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`${score.title} 메뉴`}
+                        className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-md bg-white/90 text-stone-600 opacity-0 shadow-sm transition hover:bg-white hover:text-stone-900 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100"
+                      >
+                        <EllipsisVertical className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-32 p-1">
+                      <button
+                        type="button"
+                        aria-label={`${score.title} 수정`}
+                        className="w-full rounded px-3 py-2 text-left text-sm text-stone-800 hover:bg-stone-100"
+                        onClick={() => {
+                          setMenuFor(null);
+                          onEditRequest(score);
+                        }}
+                      >
+                        수정
+                      </button>
+                    </PopoverContent>
+                  </Popover>
                 ) : null}
               </div>
             ))}
