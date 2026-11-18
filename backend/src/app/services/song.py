@@ -144,6 +144,44 @@ def replace_song_file(session: Session, song: Song, *, file_url: str, file_uri: 
     song.file_uri = file_uri
 
 
+def rename_usage(score: Score, new_title: str) -> None:
+    """Renames one week's copy only. The song and every other week keep their
+    titles, so there is no collision to check."""
+    score.title = new_title.strip()
+
+
+def replace_usage_file(score: Score, *, file_url: str, file_uri: str) -> None:
+    """Points one week's copy at a new file. The edit was drawn on the sheet
+    being replaced, so it goes too; other weeks' edits are their own sheets."""
+    score.file_url = file_url
+    score.file_uri = file_uri
+    clear_edit(score)
+
+
+def heal_song_file(session: Session, song: Song, *, file_url: str, file_uri: str) -> int:
+    """Gives a song whose file never arrived a new one, and moves the weeks
+    that were still holding the dead key along with it.
+
+    Matched on the old key rather than on song_id alone: a week whose file was
+    replaced through PATCH /scores holds a key that is alive, and healing must
+    not overwrite it. Edit columns are left alone for the same reason.
+    Returns how many weeks moved.
+    """
+    old = song.file_uri
+    replace_song_file(session, song, file_url=file_url, file_uri=file_uri)
+    if old is None:
+        return 0
+    rows = (
+        session.query(Score)
+        .filter(Score.song_id == song.id, Score.file_uri == old)
+        .all()
+    )
+    for row in rows:
+        row.file_url = file_url
+        row.file_uri = file_uri
+    return len(rows)
+
+
 def rename_song(session: Session, song: Song, new_title: str) -> None:
     """Renames a song for every week it was used. Raises SongTitleTaken if the
     new title already names a different song in the same church — merging two

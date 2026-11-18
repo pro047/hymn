@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.deps import ObjectReader
-from app.models import Score, SetItem, Song
+from app.models import Score, SetItem
 from app.services.conti_pdf import chunk_pages, render_conti_pdf
 from app.services.song import ensure_week
 from app.utils.s3 import ObjectNotReadable
@@ -149,23 +149,18 @@ def list_week_entries(session: Session, *, church_id: str, week_of: date) -> lis
         .where(SetItem.score_id == Score.id, SetItem.week_date == week_of)
         .scalar_subquery()
     )
-    # This week's edit first, the song only as the fallback: an edit made for
-    # one Sunday belongs to that Sunday, and writing it onto the song would
-    # reach back into every week that ever used it -- including PDFs of
-    # services already held. edited_file_uri is NULL until someone edits, so
-    # this picks exactly what Song.file_uri picked before it existed.
-    # Deliberately not Score.file_uri: that is the filing snapshot, and the
-    # song-split downgrade rebuilds the old table from it.
-    file_uri = func.coalesce(Score.edited_file_uri, Song.file_uri)
+    # This week's edit first, then this week's own copy of the song's file: a
+    # Sunday already held must not change when the library is fixed later, so
+    # neither title nor file is read off the song row.
+    file_uri = func.coalesce(Score.edited_file_uri, Score.file_uri)
     rows = session.execute(
         select(
             Score.id,
-            Song.title,
+            Score.title,
             file_uri.label("file_uri"),
             order_no.label("order_no"),
             starts_new_page.label("starts_new_page"),
         )
-        .join(Song, Song.id == Score.song_id)
         .where(Score.church_id == church_id, Score.week_of == week_of)
         .order_by(order_no.asc().nulls_last(), Score.created_at.asc(), Score.id.asc())
     ).all()

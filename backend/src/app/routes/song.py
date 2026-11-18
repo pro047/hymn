@@ -30,6 +30,7 @@ from app.services.song import (
     add_usage,
     get_or_reuse_song,
     has_usage_in_week,
+    heal_song_file,
     library_rows,
     normalize_week_date,
     rename_song,
@@ -142,7 +143,7 @@ def upload_song(
         # route mints are probed, since legacy keys ("a.pdf") were never in the
         # bucket to begin with.
         if song.file_uri and song.file_uri.startswith(f"scores/{user.church_id}/") and not object_exists(song.file_uri):
-            replace_song_file(session, song, file_url=object_url(key), file_uri=key)
+            heal_song_file(session, song, file_url=object_url(key), file_uri=key)
         else:
             # Otherwise a same-titled upload is refused rather than reused: the
             # song is already in the library, and taking the new file silently
