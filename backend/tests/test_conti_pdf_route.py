@@ -26,7 +26,7 @@ from PIL import Image
 
 from app.deps import get_object_reader
 from app.main import app
-from app.models import Score, SetItem, Song
+from app.models import Score, SetItem
 from app.services.song import attach_usage
 from app.utils.s3 import ObjectNotReadable
 from song_helpers import library_song, serve_anonymous_scores
@@ -523,8 +523,8 @@ def test_a_song_with_no_file_uri_should_502_without_a_read(client, reader, db_se
     # "the loop never got there"
     headers = _register(client)
     good, broken = _seed_week(client, reader, headers, _week(0), 2)
-    song_id = db_session.get(Score, broken["score_id"]).song_id
-    db_session.query(Song).filter(Song.id == song_id).update({"file_uri": None})
+    # The week's own copy is what the conti reads, so that is what is broken.
+    db_session.query(Score).filter(Score.id == broken["score_id"]).update({"file_uri": None})
 
     # Act
     response = _get_pdf(client, headers, _week(0))
@@ -542,8 +542,7 @@ def test_a_key_outside_the_scores_prefix_should_502_without_a_read(client, reade
     headers = _register(client)
     off_bucket_key = "uploads/../../etc/passwd"
     good, broken = _seed_week(client, reader, headers, _week(0), 2)
-    song_id = db_session.get(Score, broken["score_id"]).song_id
-    db_session.query(Song).filter(Song.id == song_id).update({"file_uri": off_bucket_key})
+    db_session.query(Score).filter(Score.id == broken["score_id"]).update({"file_uri": off_bucket_key})
     reader.serve(off_bucket_key, _png(PURPLE))
 
     # Act
@@ -566,8 +565,7 @@ def test_a_legacy_placeholder_key_should_still_render(client, reader, db_session
     headers = _register(client)
     legacy_key = "scores/.../7957df3e-1663-474a-b104-993dc738a311.png"
     good, legacy = _seed_week(client, reader, headers, _week(0), 2)
-    song_id = db_session.get(Score, legacy["score_id"]).song_id
-    db_session.query(Song).filter(Song.id == song_id).update({"file_uri": legacy_key})
+    db_session.query(Score).filter(Score.id == legacy["score_id"]).update({"file_uri": legacy_key})
     reader.serve(legacy_key, _png(PURPLE))
 
     # Act
@@ -1314,13 +1312,8 @@ def test_a_song_whose_key_is_not_ours_should_have_no_image_url(client, reader, d
     # Arrange — one normal song and one carrying a legacy full URL
     headers = _register(client)
     good, legacy = _seed_week(client, reader, headers, _week(0), 2)
-    song = (
-        db_session.query(Song)
-        .join(Score, Score.song_id == Song.id)
-        .filter(Score.id == legacy["score_id"])
-        .one()
-    )
-    song.file_uri = "https://old-bucket.example.com/legacy/sheet.png"
+    score = db_session.get(Score, legacy["score_id"])
+    score.file_uri = "https://old-bucket.example.com/legacy/sheet.png"
     db_session.commit()
 
     # Act

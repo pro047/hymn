@@ -1,9 +1,9 @@
 """Editing a song from the library: PATCH /songs/{id} and POST /songs/{id}/file.
 
 The library is where a song lives, so it is where its title and file are fixed,
-whether or not any Sunday uses it. A change shows on every Sunday that reads
-the song; it never rewrites a usage row, and it never throws away an edit drawn
-on one Sunday -- that week keeps showing its own flattened picture.
+whether or not any Sunday uses it. A change is copied into the Sundays the song
+is placed on from then on; a Sunday it is already placed on keeps its own copy
+of the title and file, and never loses an edit drawn on it.
 """
 
 import re
@@ -331,10 +331,10 @@ def test_another_churchs_title_should_not_block_a_rename_AC_5(client):
     assert [item["title"] for item in _library(client, other)] == ["참 아름다워라"]
 
 
-# --- AC-6: a new title shows on every Sunday, usage rows untouched ------------
+# --- AC-6: a library rename does not reach Sundays already placed -------------
 
 
-def test_a_rename_should_show_on_every_sunday_without_rewriting_usages_AC_6(client, db_session):
+def test_a_library_rename_should_not_show_on_sundays_already_placed_AC_6(client, db_session):
     # Arrange (AC-6)
     headers = _register(client)
     song_id = _upload(client, headers, "옛 제목")
@@ -344,17 +344,22 @@ def test_a_rename_should_show_on_every_sunday_without_rewriting_usages_AC_6(clie
     # Act
     response = _patch(client, headers, song_id, {"title": "새 제목"})
 
-    # Assert — the usage rows keep their snapshot
+    # Assert — the usage rows keep their copy
     assert response.status_code == 200, response.text
+    assert response.json()["title"] == "새 제목"
     for score_id in (first, second):
         score = db_session.get(Score, score_id)
         db_session.refresh(score)
         assert score.title == "옛 제목"
-    # Assert — every read that shows the song shows the new title
+    # Assert — every read of those Sundays shows the title they were placed with
     listed = _scores(client, headers)
-    assert [listed[first]["title"], listed[second]["title"]] == ["새 제목", "새 제목"]
-    assert _conti_titles(client, headers, _week(0)) == ["새 제목"]
-    assert _conti_titles(client, headers, _week(1)) == ["새 제목"]
+    assert [listed[first]["title"], listed[second]["title"]] == ["옛 제목", "옛 제목"]
+    assert _conti_titles(client, headers, _week(0)) == ["옛 제목"]
+    assert _conti_titles(client, headers, _week(1)) == ["옛 제목"]
+    # Assert — a Sunday placed after the rename copies the new title
+    third = _place(client, headers, song_id, _week(2))
+    assert _scores(client, headers)[third]["title"] == "새 제목"
+    assert _conti_titles(client, headers, _week(2)) == ["새 제목"]
 
 
 # --- AC-7: only a key this church may name ------------------------------------
@@ -413,10 +418,10 @@ def test_a_bad_key_should_leave_the_title_alone_too_AC_7(client, db_session):
     assert _listed(client, headers, song_id)["title"] == "원래 제목"
 
 
-# --- AC-8: a new file shows on every Sunday with no edit ----------------------
+# --- AC-8: a library file swap does not reach Sundays already placed ----------
 
 
-def test_replacing_the_file_should_show_it_on_every_unedited_sunday_AC_8(client, db_session):
+def test_replacing_the_file_should_not_show_on_sundays_already_placed_AC_8(client, db_session):
     # Arrange (AC-8)
     headers = _register(client)
     church_id = _church_id(client, headers)
@@ -424,6 +429,7 @@ def test_replacing_the_file_should_show_it_on_every_unedited_sunday_AC_8(client,
     first = _place(client, headers, song_id, _week(0))
     second = _place(client, headers, song_id, _week(1))
     snapshots = {score_id: _usage_state(db_session, score_id) for score_id in (first, second)}
+    old_key = db_session.get(Song, song_id).file_uri
     key = f"scores/{church_id}/new.png"
 
     # Act
@@ -436,11 +442,12 @@ def test_replacing_the_file_should_show_it_on_every_unedited_sunday_AC_8(client,
     assert body["file_url"].endswith(key)
     assert key in body["download_url"]
     assert body["title"] == "파일 교체곡"
-    # Assert — both Sundays read it
+    # Assert — both Sundays keep the file they were placed with
     listed = _scores(client, headers)
     for score_id in (first, second):
-        assert listed[score_id]["file_uri"] == key
-        assert key in listed[score_id]["download_url"]
+        assert listed[score_id]["file_uri"] == old_key
+        assert old_key in listed[score_id]["download_url"]
+        assert key not in listed[score_id]["download_url"]
     # Assert — and neither usage row was rewritten
     for score_id in (first, second):
         assert _usage_state(db_session, score_id) == snapshots[score_id]
@@ -525,13 +532,14 @@ def test_replacing_the_file_should_keep_the_edit_drawn_on_one_sunday_AC_9(client
     opened = client.get(f"/scores/{edited_id}/edit", headers=headers)
     assert opened.status_code == 200, opened.text
     assert (opened.json()["edited_file_uri"], opened.json()["edit_doc"]) == (drawn, doc)
-    # Assert — the edited Sunday shows its edit; the other shows the new file
+    # Assert — the edited Sunday shows its edit; the other keeps its own old file
     listed = _scores(client, headers)
     assert drawn in listed[edited_id]["download_url"]
     assert new_key not in listed[edited_id]["download_url"]
-    assert new_key in listed[plain_id]["download_url"]
-    assert listed[edited_id]["file_uri"] == new_key
-    assert listed[plain_id]["file_uri"] == new_key
+    assert old_key in listed[plain_id]["download_url"]
+    assert new_key not in listed[plain_id]["download_url"]
+    assert listed[edited_id]["file_uri"] == old_key
+    assert listed[plain_id]["file_uri"] == old_key
 
 
 # --- AC-10: signing an upload for a song --------------------------------------
