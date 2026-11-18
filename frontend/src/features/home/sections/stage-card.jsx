@@ -14,6 +14,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { GripVertical } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -80,9 +81,9 @@ function SortableScoreRow({ score, index, locked, onUpdate, onDelete }) {
       {...attributes}
       {...listeners}
       aria-label={`${score.title} 순서 바꾸기`}
-      className="touch-none cursor-grab select-none px-1 text-stone-400"
+      className="flex touch-none cursor-grab select-none items-center px-1 text-stone-400 hover:text-stone-600"
     >
-      ⋮⋮
+      <GripVertical className="h-[18px] w-[18px]" aria-hidden="true" />
     </button>
   );
 
