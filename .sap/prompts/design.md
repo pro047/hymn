@@ -1,35 +1,41 @@
 ### 이번 과제 — (각색: 매 과제마다 여기를 바꾼다)
 
-#### 보관함 곡 수정 M1 — 백엔드 (2026-11-17, CRUD 전수조사 후속)
+#### 홈 콘티 카드 드래그 정렬 (2026-11-18, CRUD 전수조사 후속)
 
-배경: 곡(`songs`)의 제목·파일을 바꾸는 길이 `PATCH /scores/{id}` 하나뿐이다(`backend/src/app/routes/score.py:325`,
-`rename_song`·`replace_song_file` 호출 `:337`·`:355`). 이 라우트는 주차 사용 행(`Score`)이 있어야 부를 수 있어서,
-**보관함에만 올리고 주차에 배치하지 않은 곡은 제목 오타도 고칠 수 없다.** 보관함에서 곡을 직접 고치는 라우트를 추가한다.
-쓸 서비스는 이미 있다 — `services/song.py` 의 `rename_song`(제목 충돌 시 `SongTitleTaken`)·`replace_song_file`,
-키 검사 `routes/score.py` 의 `_reject_foreign_object_key`·`is_church_object_key`.
+배경: 홈의 콘티 카드(`frontend/src/features/home/sections/stage-card.jsx`)는 `GET /scores` 가 주는 **업로드 시각 순**
+(`backend/src/app/routes/score.py:117` `order_by(Score.created_at.asc())`)으로 곡을 그린다. 콘티 화면의 순서는
+`set_items.order_no` 라서 두 순서가 다를 수 있다. 인도자가 홈 카드에서 **드래그로(휴대폰·태블릿 터치 포함)** 곡 순서를
+바꾸고, 그 순서가 웹 홈·콘티 화면·태블릿 앱에 똑같이 보이게 한다. 순서 저장 API 는 이미 있다
+(`PATCH /weeks/{week_of}/conti/order`, `routes/conti.py:104`, `services/conti.py` `set_week_order`).
+드래그 패키지는 develop 에 이미 들어 있다 — `@dnd-kit/core`·`@dnd-kit/sortable`·`@dnd-kit/utilities`(`frontend/package.json`, 커밋 `a58112a`).
+**새 패키지를 추가하지 않는다.**
 
 요구 (번호가 검증 기준이 된다):
-1. `PATCH /songs/{song_id}` 를 추가한다. 본문 `{title?, file_uri?}` — 제약은 `ScoreUpdate`(`schemas/score.py:54`)와 같다
-   (title 1~255자, file_uri 최대 1024자). 둘 다 없으면 422
-2. 응답은 `GET /songs` 목록 한 항목과 **같은 모양**(`SongLibraryItem`)이다 — `use_count`·`last_week_of` 포함, 목록과 같은 계산
-3. title 변경은 `rename_song` 을 쓴다. 같은 교회에 같은 제목(정규화 키 기준)의 다른 곡이 있으면 409
-   `같은 제목의 곡이 이미 있습니다.`(`score.py:339` 와 같은 문구). **주차에 한 번도 배치되지 않은 곡도 200 으로 바뀐다**(이번 과제의 동기)
-4. title 변경은 그 곡의 사용 행(`Score.title` 스냅샷)을 바꾸지 않는다 — 표시는 이미 `songs.title` 을 읽는다(`score.py:125`)
-5. file_uri 변경은 `_reject_foreign_object_key` 를 거친다(남의 교회 키·모양이 다른 키는 400). 통과하면 `replace_song_file`
-   (file_url 은 `object_url(file_uri)`). **어느 주차의 필기 편집본(`edited_file_uri`·`edit_doc`·`edit_source_uri`)도 지우지 않는다**
-   — 편집본은 그린 원본(`edit_source_uri`)을 기억하므로 그대로 둔다
-6. `POST /songs/{song_id}/file` 을 추가한다. 본문 `{filename, content_type?}`(`ScoreFileUploadRequest` 와 같은 제약),
-   응답 `{upload_url, s3_key}`, 키는 `scores/{church_id}/{uuid}.{ext}`. **어떤 열도 바꾸지 않는다**(`score.py:170` 과 같은 3단계 모양)
-7. 두 라우트 모두 `require_leader` — 무토큰 401, 팀원 403, 다른 교회 곡 404(`_church_song_or_404`, `song.py:38`)
-8. 두 라우트를 `tests/test_leader_only.py` 의 `LEADER_ONLY` 와 `tests/test_church_isolation.py` 의 격리 케이스에 등록한다
-   (메타 테스트가 누락을 잡는다)
-9. 기존 테스트는 기대값을 바꾸지 않고 전부 통과한다
+1. `GET /scores` 의 정렬을 바꾼다: `week_of` 오름차순 → 같은 주차 안에서는 콘티와 **같은 규칙**
+   (`services/conti.py` `list_week_entries` 의 `order_by(order_no.asc().nulls_last(), Score.created_at.asc(), Score.id.asc())`,
+   `order_no` 는 그 score 의 `min(SetItem.order_no)`). 토큰 유무와 무관하게 같은 규칙이다
+2. `GET /scores` 의 응답 키 집합·행 집합(교회 필터·`week_of IS NOT NULL`)은 바뀌지 않는다
+   (`tests/test_conti_pdf_route.py:598` `test_get_scores_should_keep_its_exact_key_set_and_ordering` 계속 통과)
+3. 같은 주차에서 `GET /scores` 의 순서와 `GET /weeks/{week_of}/conti` 의 순서(페이지를 펼친 순서)가 같다 — 테스트로 고정
+4. `PATCH /weeks/{week_of}/conti/order` 의 항목 `starts_new_page` 를 **생략 가능**하게 바꾼다(`schemas/conti.py:53`, 지금은 기본 `False`).
+   생략하면 그 곡의 **기존 값을 유지**하고, SetItem 이 새로 만들어지는 곡은 `False`. 명시하면 지금처럼 그 값을 쓴다.
+   첫 자리 곡의 표시를 끄는 규칙(`set_week_order` 의 `item.starts_new_page and position > 1`)은 유지
+5. 콘티 화면은 계속 `starts_new_page` 를 명시해 보낸다(`frontend/src/lib/conti-order.ts:166` `toOrderPayload`) — 동작 불변
+6. 홈 콘티 카드에서 **인도자(`canManage`)만** 곡을 드래그해 순서를 바꿀 수 있다. dnd-kit 의 포인터·터치·키보드 센서를 쓰고,
+   터치에서는 스크롤과 구분되도록 활성화 조건(지연 또는 거리)을 둔다. 팀원에게는 드래그 손잡이·이벤트가 없다
+7. 놓으면 그 주차 곡 **전체**(카드가 5곡만 그려도 `upcomingSundayScores` 전체, 그린 범위 밖 곡은 기존 상대 순서로 뒤에)를
+   `starts_new_page` **없이** 보낸다. 성공하면 점수 목록을 다시 읽어 서버 순서로 그린다. 실패하면 오류를 보여주고 서버 순서로 되돌린다.
+   저장 중에는 다음 드래그를 막는다
+8. `stage-card.jsx:11-15` 의 "reordering has no API" 주석을 사실에 맞게 고친다(섞기·발행 버튼 부활은 하지 않는다)
+9. 기존 테스트 중 **기대값 변경은 `tests/test_score_list_scope.py:252` `test_listing_with_a_token_should_keep_the_created_at_order`
+   하나만 허용**한다(사람 승인 2026-11-18). 업로드 시각 순 대신 콘티 순서를 기대하도록 바꾸고 테스트 이름도 맞춘다.
+   그 밖의 기존 테스트는 기대값을 바꾸지 않고 통과한다
 
 범위 밖 (이미 결정됨 — BLOCKED 사유로 되돌리지 말 것):
-- 웹 UI(보관함 카드의 수정 버튼) — 다음 과제 M2
-- **주차별(그 주차에만 적용되는) 수정**과 `PATCH /scores/{id}` 의 동작 변경 — 사람과 따로 설계한다(스키마 결정)
-- 곡 삭제(휴지통은 의도적으로 제거됨, `.claude/handoff.md:1919`) · 스키마·마이그레이션 · Flutter 앱
-- 업로드 뒤 버려진 S3 객체 정리(`score.py:191-195` 와 같은 판단)
+- Flutter 앱 코드 변경 — 앱 홈 탭은 서버 순서를 그대로 쓰고(`hymn_app/lib/screens/home_tab.dart:15-24`), 우리 교회 태블릿은 구버전 앱 고정이다
+- 콘티 화면의 기존 드래그·위아래 버튼을 dnd-kit 으로 옮기는 것
+- 홈 카드의 5곡 제한 해제 · 섞기/발행 버튼 · 스키마·마이그레이션 · 새 엔드포인트 · 새 패키지
+- 보관함 곡 수정 UI(별도 과제)
 
 > **낡은 과제 서술을 남겨두면 다음 실행이 그걸 읽는다.** 새 과제를 여기 쓰고,
 > 요구는 번호를 매겨 검증 가능한 문장으로 적는다 — 그 번호가 설계의 검증 기준이 된다.
