@@ -602,3 +602,344 @@ it.each([
   });
   expect(result.current.isReordering).toBe(false);
 });
+
+// --- updateSong: the library card's edit ----------------------------------
+
+const SONG_ID = "song-1";
+const RENAMED = [{ song_id: SONG_ID, title: "새 제목", file_url: "f", use_count: 1 }];
+
+/** apiFetch answering the song PATCH, its signing and the library re-read. */
+function apiFetchSongEdit({ patch = async () => ok(RENAMED[0]), library = RENAMED } = {}) {
+  return async (url, options = {}) => {
+    const method = options.method ?? "GET";
+    trace(method, url);
+    if (String(url).endsWith("/file")) return ok(SIGNED);
+    if (method === "PATCH") return patch();
+    if (String(url).endsWith("/songs") && method === "GET") return ok(library);
+    return ok([]);
+  };
+}
+
+async function updateSongWith(result, args) {
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.updateSong(args);
+  });
+  return outcome;
+}
+
+// AC-304
+it("곡 제목만 바꾸면 곡 PATCH 에 title 만 싣고 보관함만 다시 불러야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: null,
+    currentTitle: "옛 제목",
+  });
+
+  // Assert — no signing, no PUT, and the week list is not re-read
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual(["PATCH /songs/song-1", "GET /songs"]);
+  const [url, options] = apiFetch.mock.calls.find(([, init]) => init?.method === "PATCH");
+  expect(url).toBe(API_PATHS.song(SONG_ID));
+  expect(options.headers).toEqual({ "Content-Type": "application/json" });
+  expect(patchBody()).toEqual({ title: "새 제목" });
+  expect(calls).not.toContain("GET /scores");
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-305
+it("곡 파일만 바꾸면 곡 서명·업로드·PATCH 순서로 file_uri 만 보내야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "은혜",
+    file: IMAGE(),
+    currentTitle: "은혜",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls.slice(0, 3)).toEqual([
+    "POST /songs/song-1/file",
+    `PUT ${SIGNED.upload_url}`,
+    "PATCH /songs/song-1",
+  ]);
+  const [signUrl, signOptions] = apiFetch.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(signUrl).toBe(API_PATHS.songFile(SONG_ID));
+  expect(JSON.parse(signOptions.body)).toEqual({
+    filename: "rescan.png",
+    content_type: "image/png",
+  });
+  // A same title must not ride along: it says nothing changed about the name.
+  expect(patchBody()).toEqual({ file_uri: SIGNED.s3_key });
+  expect(calls).not.toContain("GET /scores");
+  expect(calls.some((call) => call.includes("/scores/"))).toBe(false);
+});
+
+// AC-306
+it("곡 파일과 제목을 함께 바꾸면 PATCH 에 title 과 file_uri 를 함께 실어야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual([
+    "POST /songs/song-1/file",
+    `PUT ${SIGNED.upload_url}`,
+    "PATCH /songs/song-1",
+    "GET /songs",
+  ]);
+  expect(patchBody()).toEqual({ title: "새 제목", file_uri: SIGNED.s3_key });
+});
+
+// AC-307
+it("곡 파일의 S3 업로드가 실패하면 곡 PATCH 를 보내지 않고 실패 문구를 돌려줘야 한다", async () => {
+  // Arrange — the bucket refuses the PUT; the song must keep its current file.
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+  globalThis.fetch = vi.fn(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return { ok: false, json: async () => ({}) };
+  });
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "S3 업로드에 실패했습니다." });
+  expect(calls).toEqual(["POST /songs/song-1/file", `PUT ${SIGNED.upload_url}`]);
+  await waitFor(() => expect(result.current.error).toBe("S3 업로드에 실패했습니다."));
+  expect(result.current.isUpdating).toBe(false);
+});
+
+// AC-307
+it("곡 파일 서명이 실패하면 업로드도 PATCH 도 하지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    if (String(url).endsWith("/file")) return { ok: false, json: async () => ({}) };
+    return ok({});
+  });
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(calls).toEqual(["POST /songs/song-1/file"]);
+  expect(outcome).toEqual({ ok: false, message: "업로드 주소를 받지 못했습니다." });
+});
+
+// AC-308
+it("곡 PATCH 가 제목 충돌 409 면 서버 detail 을 메시지로 돌려줘야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongEdit({
+      patch: async () => ({
+        ok: false,
+        status: 409,
+        json: async () => ({ detail: "같은 제목의 곡이 이미 있습니다." }),
+      }),
+    })
+  );
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "겹치는 제목",
+    file: null,
+    currentTitle: "옛 제목",
+  });
+
+  // Assert — nothing was saved, so nothing is re-read
+  expect(outcome).toEqual({ ok: false, message: "같은 제목의 곡이 이미 있습니다." });
+  expect(calls).toEqual(["PATCH /songs/song-1"]);
+  await waitFor(() => expect(result.current.error).toBe("같은 제목의 곡이 이미 있습니다."));
+});
+
+it("곡 PATCH 가 detail 없이 실패하면 곡 수정 실패 문구를 돌려줘야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongEdit({ patch: async () => ({ ok: false, status: 500, json: async () => ({}) }) })
+  );
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "곡 수정에 실패했습니다." });
+});
+
+// AC-309
+it("곡 수정이 되면 다시 불러온 보관함 목록으로 librarySongs 를 바꿔야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  expect(result.current.librarySongs).toEqual([]);
+  apiFetch.mockImplementation(apiFetchSongEdit({ library: RENAMED }));
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: null,
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(result.current.librarySongs).toEqual(RENAMED);
+  expect(result.current.isUpdating).toBe(false);
+});
+
+// AC-310
+it("곡 제목이 255자를 넘으면 아무 요청도 보내지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "가".repeat(256),
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "제목은 255자 이내로 입력해주세요." });
+  expect(calls).toEqual([]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-310 — the boundary itself is allowed: the column is varchar(255)
+it("곡 제목이 정확히 255자면 PATCH 를 보내야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+  const title = "가".repeat(255);
+
+  // Act
+  const outcome = await updateSongWith(result, { songId: SONG_ID, title, currentTitle: "옛 제목" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(patchBody()).toEqual({ title });
+});
+
+it("currentTitle 을 주지 않으면 제목을 바뀐 것으로 보고 PATCH 에 실어야 한다", async () => {
+  // Arrange — 3-2 step 3: an unknown original counts as a change
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual(["PATCH /songs/song-1", "GET /songs"]);
+  expect(patchBody()).toEqual({ title: "은혜" });
+});
+
+it("제목이 그대로고 파일도 없으면 요청 없이 ok 를 돌려줘야 한다", async () => {
+  // Arrange — the server answers an empty PATCH body with 422
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "은혜",
+    file: null,
+    currentTitle: "은혜",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual([]);
+});
+
+it("곡 수정 중에는 isUpdating 이 참이고 끝나면 거짓이어야 한다", async () => {
+  // Arrange — the PATCH is held open until the test lets it go
+  const result = await mountedHook();
+  let release;
+  const gate = new Promise((settle) => {
+    release = settle;
+  });
+  apiFetch.mockImplementation(
+    apiFetchSongEdit({
+      patch: async () => {
+        await gate;
+        return ok(RENAMED[0]);
+      },
+    })
+  );
+
+  // Act
+  let running;
+  act(() => {
+    running = result.current.updateSong({
+      songId: SONG_ID,
+      title: "새 제목",
+      currentTitle: "옛 제목",
+    });
+  });
+
+  // Assert
+  await waitFor(() => expect(result.current.isUpdating).toBe(true));
+  await act(async () => {
+    release();
+    await running;
+  });
+  expect(result.current.isUpdating).toBe(false);
+});
+
+it("주차 악보 파일 교체는 곡 서명이 아니라 악보 서명 경로를 계속 써야 한다", async () => {
+  // Arrange — uploadReplacementFile now takes the signing path; updateScore
+  // must keep handing it the score's one.
+  const result = await mountedHook();
+
+  // Act
+  await act(async () => {
+    await result.current.updateScore({ scoreId: "score-1", title: "은혜", file: IMAGE() });
+  });
+
+  // Assert
+  const [signUrl] = apiFetch.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(signUrl).toBe(API_PATHS.scoreFile("score-1"));
+  expect(calls).not.toContain("GET /songs");
+});

@@ -17,6 +17,10 @@ export const API_PATHS = {
   // The library: every song of the caller's church. POST files a song with no
   // Sunday; a Sunday gets one only through songUsages.
   songs: `${API_BASE}/songs`,
+  // PATCH target for a library song: renames it and/or moves it onto a new file.
+  song: (songId: string) => `${API_BASE}/songs/${songId}`,
+  // Signs a PUT for a song's replacement file. Writes nothing, like scoreFile.
+  songFile: (songId: string) => `${API_BASE}/songs/${songId}/file`,
   songUsages: (songId: string) => `${API_BASE}/songs/${songId}/usages`,
   // The address goes in the query string, so it must be escaped: `+` and `&` are
   // legal in a local part and would otherwise be read as syntax.

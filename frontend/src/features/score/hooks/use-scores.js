@@ -124,8 +124,10 @@ export function useScores({ canManage = true } = {}) {
     }
   };
 
-  const uploadReplacementFile = async (scoreId, file) => {
-    const issued = await apiFetch(API_PATHS.scoreFile(scoreId), {
+  // signPath differs per caller (a week's score vs. a library song); the
+  // sign-then-PUT sequence is the same for both.
+  const uploadReplacementFile = async (signPath, file) => {
+    const issued = await apiFetch(signPath, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: file.name, content_type: file.type }),
@@ -164,7 +166,7 @@ export function useScores({ canManage = true } = {}) {
       // Upload first, PATCH second. Reversed, a failed PUT would leave the row
       // pointing at an object that was never written — a broken image on the
       // page. This way the score keeps the file it already had.
-      const fileUri = file ? await uploadReplacementFile(scoreId, file) : null;
+      const fileUri = file ? await uploadReplacementFile(API_PATHS.scoreFile(scoreId), file) : null;
       const response = await apiFetch(API_PATHS.score(scoreId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -184,6 +186,54 @@ export function useScores({ canManage = true } = {}) {
       // Returned as well as pushed to `error`, because the page's alert renders
       // behind the dialog's own fixed backdrop — the caller has to show this
       // itself or the user sees the button stop spinning and nothing else.
+      setError(err.message);
+      return { ok: false, message: err.message };
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // Edits the library song itself. Weeks hold their own copies, so scores are
+  // not re-read: only the library list changes.
+  const updateSong = async ({ songId, title, file = null, currentTitle }) => {
+    if (!isAuthenticated()) {
+      setError("로그인이 필요합니다.");
+      return { ok: false };
+    }
+    if (title.length > 255) {
+      const message = "제목은 255자 이내로 입력해주세요.";
+      setError(message);
+      return { ok: false, message };
+    }
+
+    // An unchanged title is left out of the body, not just harmless: the
+    // server rejects a body with neither field (422).
+    const titleChanged = currentTitle === undefined || title !== currentTitle;
+
+    setIsUpdating(true);
+    try {
+      // Upload first so a failed PUT never leaves the song pointing at a
+      // missing object.
+      const fileUri = file ? await uploadReplacementFile(API_PATHS.songFile(songId), file) : null;
+      const body = {
+        ...(titleChanged ? { title } : {}),
+        ...(fileUri ? { file_uri: fileUri } : {}),
+      };
+      if (Object.keys(body).length === 0) {
+        return { ok: true };
+      }
+      const response = await apiFetch(API_PATHS.song(songId), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const apiError = await readApiError(response, "곡 수정에 실패했습니다.", []);
+        throw new Error(alertMessageOf(apiError));
+      }
+      await fetchLibrary();
+      return { ok: true };
+    } catch (err) {
       setError(err.message);
       return { ok: false, message: err.message };
     } finally {
@@ -292,6 +342,7 @@ export function useScores({ canManage = true } = {}) {
     reorderWeek,
     uploadSong,
     updateScore,
+    updateSong,
     deleteScore,
     placeSongOnWeek,
   };

@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui
 
 // Every song the church has is here, so there is nothing to take out: deleting
 // a song would take it off every Sunday that used it.
-export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload }) {
+export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload, onEditRequest }) {
   const fileInputRef = useRef(null);
 
   const handleFileChange = (event) => {
@@ -65,6 +65,20 @@ export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload 
                     </div>
                   </div>
                 </button>
+                {/* A sibling of the tile, not a child: a button inside a button is
+                    invalid HTML and a click would bubble into onApplyRequest. */}
+                {onEditRequest ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="mt-2 w-full"
+                    aria-label={`${score.title} 수정`}
+                    onClick={() => onEditRequest(score)}
+                  >
+                    수정
+                  </Button>
+                ) : null}
               </div>
             ))}
           </div>
