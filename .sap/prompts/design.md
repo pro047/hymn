@@ -1,48 +1,32 @@
 ### 이번 과제 — (각색: 매 과제마다 여기를 바꾼다)
 
-#### 주차별 수정 — 주차는 보관함 곡의 복사본을 쓴다 (2026-11-18, 사람 결정)
+#### 보관함 곡 수정 화면 M2 — 웹 (2026-11-18, M1 후속)
 
-배경: 화면·앱·PDF 가 곡 행(`songs.title`·`songs.file_uri`)을 읽어서, 한 곡을 배치한 **모든 주차가 같은 값을 공유**한다.
-주차 화면에서 고치면(`PATCH /scores/{id}`) 곡 행이 바뀌어 지나간 주차까지 바뀌고(`routes/score.py:337`·`:350`),
-보관함에서 고쳐도(`PATCH /songs/{id}`) 모든 주차가 바뀐다. **사람 결정(2026-11-18): 보관함이 정본이고, 주차는 배치하는
-순간 그 값을 복사해 쓴다. 이후 보관함을 고쳐도 이미 배치된 주차는 바뀌지 않는다. 주차 화면에서 고치면 그 주차만 바뀐다.**
-복사는 이미 일어나고 있다 — `add_usage`(`services/song.py:126-133`)가 배치 때 `scores.title`·`file_url`·`file_uri` 에 곡 값을 쓴다.
-**읽는 곳을 이 복사본으로 옮기는 것이 이번 과제의 본체다. 스키마·마이그레이션 변경 없음.**
-
-운영 실측(2026-11-18, `.claude/ops/measure-snapshot-drift-out.txt`): 배치 210행 중 복사본 ≠ 곡 — 제목 2행(끝 공백만),
-파일 내용(size:ETag) 7행(전부 2026-02~03 지난 주차), 복사본 키가 S3 에 없는 행 0. **이 7행은 전환 뒤 당시 올린 파일로 보이는 것을
-사람이 승인했다(데이터를 맞추지 않는다).**
+배경: 보관함 곡을 고치는 API 는 develop 에 있다(M1, `3183995`) — `POST /songs/{song_id}/file`(업로드 URL 발급, 열 안 바꿈),
+`PATCH /songs/{song_id}` 본문 `{title?, file_uri?}`, 응답은 `GET /songs` 항목과 같은 모양(`SongLibraryItem`), 같은 교회 같은
+제목이면 409 `같은 제목의 곡이 이미 있습니다.`. 그런데 이를 부르는 웹 화면이 없다. 또 week-copy(`faabe09`) 뒤로 주차 화면의
+수정은 그 주차만 바꾸므로, **곡 자체를 고치는 웹 경로는 이 과제가 유일하다.** 보관함에서 고친 값은 이후 새로 배치하는 주차부터
+복사되고, 이미 배치된 주차는 바뀌지 않는다(서버 동작, 이번에 바꾸지 않는다).
 
 요구 (번호가 검증 기준이 된다):
-1. `GET /scores`·`GET /scores/{id}` 의 `title`·`file_url`·`file_uri` 는 **그 행의 복사본**(`Score.title`·`Score.file_url`·`Score.file_uri`)이다.
-   `download_url` 은 `edited_file_uri` 가 있으면 그것, 없으면 `Score.file_uri` 를 서명한다(지금 `score.py:120-126`·`:157-160` 은 곡 값)
-2. 콘티(`GET /weeks/{week_of}/conti`)와 PDF 는 제목 `Score.title`, 파일 `coalesce(Score.edited_file_uri, Score.file_uri)` 를 쓴다(`services/conti.py:159`·`:163`)
-3. `PATCH /scores/{id}` 는 **그 행만** 바꾼다
-   - `title`: `Score.title` 만 바꾼다(앞뒤 공백 제거). `rename_song` 을 부르지 않고, **곡 제목 중복 409 는 더 이상 없다**. 길이 검증은 그대로
-   - `file_uri`: 기존 키 검사(`_reject_foreign_object_key`) 후 `Score.file_uri`·`Score.file_url`(`object_url`) 만 바꾸고, 그 행의 편집본을 지운다(`clear_edit`, 지금과 같음). `replace_song_file` 을 부르지 않는다
-   - `week_of`: 지금과 같다
-   - 응답은 요구 1 과 같은 규칙(복사본 + 편집본 우선)
-   - **곡 행(`songs`)은 이 라우트로 절대 바뀌지 않는다** — 테스트로 고정
-4. 편집기: `GET /scores/{id}/edit` 의 바탕 이미지는 `edit_source_uri` 가 있으면 그것, 없으면 **`Score.file_uri`**(지금 `score.py:214` 는 곡 파일).
-   `PUT /scores/{id}/edit` 이 기록하는 `edit_source_uri` 도 **`Score.file_uri`**(지금 `score.py:290` 은 곡 파일)
-5. 보관함(`GET /songs`·`PATCH /songs/{id}`·`POST /songs/{id}/file`)은 곡 행만 읽고 쓴다 — 동작 불변. 보관함에서 고친 뒤
-   **이미 배치된 주차의 `GET /scores`·콘티·PDF 가 바뀌지 않고**, 그 뒤 새로 배치한 주차는 고친 값을 복사한다 — 테스트로 고정
-6. 보관함 업로드의 "파일이 도착하지 않은 곡 치유" 경로(`routes/song.py:144-145`)는 곡 파일을 바꿀 때, 그 곡의 사용 행 중
-   **복사본 키가 치유 전 곡 키와 같은 행**의 `file_uri`·`file_url` 도 새 키로 바꾼다(그 행들은 존재하지 않는 파일을 복사해 갔다).
-   `tests/test_song_library.py:250` `test_a_healed_song_should_show_its_new_file_on_the_sundays_it_was_placed_on` 이 기대값 변경 없이 통과
-7. 기존 테스트 기대값 변경은 **아래 5개만 허용**(사람 승인 2026-11-18) — 모두 "고치면 모든 주차가 바뀐다"를 고정한 테스트다.
-   새 의미(복사본)에 맞게 기대값과 이름을 바꾼다. 그 밖에 깨지는 기존 테스트가 있으면 구현으로 맞추지 말고 **[결정]으로 사람에게 올린다**
-   - `tests/test_song_split.py:154` `test_replacing_the_file_should_show_on_every_week`
-   - `tests/test_song_split.py:183` `test_renaming_should_change_the_title_of_every_week`
-   - `tests/test_song_split.py:401` `test_the_library_should_follow_the_song_after_a_rename_or_file_swap`
-   - `tests/test_song_edit.py:337` `test_a_rename_should_show_on_every_sunday_without_rewriting_usages_AC_6`
-   - `tests/test_song_edit.py:419` `test_replacing_the_file_should_show_it_on_every_unedited_sunday_AC_8`
+1. 보관함 카드(`frontend/src/features/score/components/saved-scores-card.jsx`)의 곡마다 **"수정" 버튼**을 둔다.
+   **타일 버튼(`:50-53`, 누르면 배치 다이얼로그) 바깥**에 두어 버튼 안에 버튼이 없고, 수정을 눌러도 배치 다이얼로그(`onApplyRequest`)가 열리지 않는다
+2. 수정 버튼은 **기존 `ScoreEditDialog`(`score-edit-dialog.jsx`)를 그대로 재사용**해 연다(사람 결정). 다이얼로그 파일은 고치지 않는 것이 기본이며,
+   곡을 `{ id: song_id, title, download_url, file_url }` 모양으로 넘기고 `onSubmit` 만 곡 수정 함수로 바꿔 끼운다.
+   다이얼로그 수정이 불가피하면 주차 화면 동작이 그대로라는 기존 테스트(`score-edit-dialog.test.jsx`)가 기대값 변경 없이 통과해야 한다
+3. `useScores`(`features/score/hooks/use-scores.js`)에 곡 수정 함수(예: `updateSong`)를 둔다. 순서는 기존 `updateScore`(`:127-196`)와 같은 3단계:
+   파일이 있으면 `POST /songs/{id}/file` → 받은 `upload_url` 로 S3 PUT → `PATCH /songs/{id}` `{file_uri: s3_key}`(제목이 바뀌었으면 함께).
+   제목만이면 PATCH `{title}` 하나. 업로드가 실패하면 PATCH 를 보내지 않는다
+4. 성공하면 보관함 목록(`librarySongs`)에 바뀐 제목·이미지가 보인다(다시 읽거나 PATCH 응답으로 그 항목을 바꾼다). 주차 목록(`GET /scores`)은 다시 읽지 않아도 된다
+5. 409 등 실패 응답은 서버 `detail` 문구를 그대로 보인다(기존 `readApiError` 사용, `updateScore` 와 같은 방식)
+6. `API_PATHS`(`frontend/src/api/paths.ts`)에 곡 하나·곡 파일 경로를 추가한다
+7. 홈(`pages/home-page.jsx`)에서 연결한다 — 보관함 탭은 이미 인도자(`canManage`)에게만 보인다. 팀원에게 수정 버튼·요청이 생기지 않는다
+8. 기존 테스트는 기대값을 바꾸지 않고 전부 통과한다
 
 범위 밖 (이미 결정됨 — BLOCKED 사유로 되돌리지 말 것):
-- 스키마·마이그레이션·운영 데이터 수정(7행을 맞추지 않는다 — 사람 결정) · `songs.title`/`scores.title` 정규화
-- 보관함 곡 수정 웹 화면(M2, 별도 과제) · 지나간 주차 잠금 · 곡 삭제 · Flutter 앱 코드
-- 화면 낭독기 안내 문구(UUID 낭독) 수정
-- 웹 프론트 변경 전부 — 수정 다이얼로그 문구·409 분기 포함(사람 결정 2026-11-18: 넣지 않는다)
+- 백엔드·스키마 변경 일체(M1 API 그대로) · 곡 삭제 · 이미 배치된 주차에 반영하는 옵션
+- 다이얼로그에 "이후 배치부터 적용" 같은 안내 문구(사람이 주차 쪽 문구도 넣지 않기로 했다)
+- 화면 낭독기 UUID 낭독 수정 · Flutter 앱 · 새 패키지
 
 > **낡은 과제 서술을 남겨두면 다음 실행이 그걸 읽는다.** 새 과제를 여기 쓰고,
 > 요구는 번호를 매겨 검증 가능한 문장으로 적는다 — 그 번호가 설계의 검증 기준이 된다.
