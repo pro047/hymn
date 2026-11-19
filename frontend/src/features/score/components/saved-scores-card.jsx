@@ -5,9 +5,15 @@ import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover";
 
-// Every song the church has is here, so there is nothing to take out: deleting
-// a song would take it off every Sunday that used it.
-export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload, onEditRequest }) {
+// Every song the church has is here. Deleting one removes it from the library
+// only: Sundays that already placed it keep their own copy.
+export default function SavedScoresCard({
+  scores,
+  onApplyRequest,
+  onQuickUpload,
+  onEditRequest,
+  onDeleteRequest,
+}) {
   const fileInputRef = useRef(null);
   // One menu open at a time, closed again once 수정 hands the song over.
   const [menuFor, setMenuFor] = useState(null);
@@ -73,7 +79,7 @@ export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload,
                     invalid HTML and a click would bubble into onApplyRequest.
                     Shown on hover or focus where there is a pointer, always on
                     touch screens, which have no hover to reveal it with. */}
-                {onEditRequest ? (
+                {onEditRequest || onDeleteRequest ? (
                   <Popover
                     open={menuFor === score.song_id}
                     onOpenChange={(open) => setMenuFor(open ? score.song_id : null)}
@@ -88,17 +94,32 @@ export default function SavedScoresCard({ scores, onApplyRequest, onQuickUpload,
                       </button>
                     </PopoverTrigger>
                     <PopoverContent align="end" className="w-32 p-1">
-                      <button
-                        type="button"
-                        aria-label={`${score.title} 수정`}
-                        className="w-full rounded px-3 py-2 text-left text-sm text-stone-800 hover:bg-stone-100"
-                        onClick={() => {
-                          setMenuFor(null);
-                          onEditRequest(score);
-                        }}
-                      >
-                        수정
-                      </button>
+                      {onEditRequest ? (
+                        <button
+                          type="button"
+                          aria-label={`${score.title} 수정`}
+                          className="w-full rounded px-3 py-2 text-left text-sm text-stone-800 hover:bg-stone-100"
+                          onClick={() => {
+                            setMenuFor(null);
+                            onEditRequest(score);
+                          }}
+                        >
+                          수정
+                        </button>
+                      ) : null}
+                      {onDeleteRequest ? (
+                        <button
+                          type="button"
+                          aria-label={`${score.title} 삭제`}
+                          className="w-full rounded px-3 py-2 text-left text-sm text-red-700 hover:bg-stone-100"
+                          onClick={() => {
+                            setMenuFor(null);
+                            onDeleteRequest(score);
+                          }}
+                        >
+                          삭제
+                        </button>
+                      ) : null}
                     </PopoverContent>
                   </Popover>
                 ) : null}

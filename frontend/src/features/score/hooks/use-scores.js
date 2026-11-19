@@ -241,6 +241,31 @@ export function useScores({ canManage = true } = {}) {
     }
   };
 
+  // Hard-deletes the library song. Weeks keep their copies but their song_id
+  // turns null, so scores are re-read along with the library.
+  const deleteSong = async ({ songId, title }) => {
+    if (!isAuthenticated()) {
+      setError("로그인이 필요합니다.");
+      return { ok: false };
+    }
+    const confirmed = window.confirm(
+      `「${title}」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다.`
+    );
+    if (!confirmed) return { ok: false, cancelled: true };
+    try {
+      const response = await apiFetch(API_PATHS.song(songId), { method: "DELETE" });
+      if (!response.ok) {
+        const apiError = await readApiError(response, "곡 삭제에 실패했습니다.", []);
+        throw new Error(alertMessageOf(apiError));
+      }
+      await Promise.all([fetchLibrary(), fetchScores()]);
+      return { ok: true };
+    } catch (err) {
+      setError(err.message);
+      return { ok: false, message: err.message };
+    }
+  };
+
   const deleteScore = async (scoreId) => {
     const confirmed = window.confirm("정말 삭제할까요?");
     if (!confirmed) return;
@@ -343,6 +368,7 @@ export function useScores({ canManage = true } = {}) {
     uploadSong,
     updateScore,
     updateSong,
+    deleteSong,
     deleteScore,
     placeSongOnWeek,
   };

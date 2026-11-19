@@ -943,3 +943,138 @@ it("주차 악보 파일 교체는 곡 서명이 아니라 악보 서명 경로�
   expect(signUrl).toBe(API_PATHS.scoreFile("score-1"));
   expect(calls).not.toContain("GET /songs");
 });
+
+// --- deleteSong: the library card's delete ---------------------------------
+
+const DELETE_CONFIRM = "「은혜」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다.";
+const KEPT_SONG = { song_id: "song-2", title: "평안", file_url: "f2", use_count: 0 };
+// The week the deleted song was on, as GET /scores answers once it is gone.
+const ORPHANED_WEEK = { id: "score-1", song_id: null, title: "은혜", week_of: "2026-11-22" };
+
+/** apiFetch answering the song DELETE and the two re-reads after it. */
+function apiFetchSongDelete({
+  remove = async () => ({ ok: true, status: 204, json: async () => ({}) }),
+  library = [KEPT_SONG],
+  scores = [ORPHANED_WEEK],
+} = {}) {
+  return async (url, options = {}) => {
+    const method = options.method ?? "GET";
+    trace(method, url);
+    if (method === "DELETE") return remove();
+    if (String(url).endsWith("/songs") && method === "GET") return ok(library);
+    if (isScoreListRequest(url, options)) return ok(scores);
+    return ok([]);
+  };
+}
+
+async function deleteSongWith(result, args) {
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.deleteSong(args);
+  });
+  return outcome;
+}
+
+// AC-18
+it("곡 삭제를 취소하면 확인 문구를 한 번 띄우고 아무 요청도 보내지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongDelete());
+  apiFetch.mockClear();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  confirm.mockClear();
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(confirm).toHaveBeenCalledWith(DELETE_CONFIRM);
+  expect(apiFetch).not.toHaveBeenCalled();
+  expect(calls).toEqual([]);
+  expect(outcome).toEqual({ ok: false, cancelled: true });
+});
+
+// AC-18: the confirm names the song it was asked about.
+it("곡 삭제 확인 문구에는 넘겨받은 제목이 들어가야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  confirm.mockClear();
+
+  // Act
+  await deleteSongWith(result, { songId: "song-9", title: "주의 사랑" });
+
+  // Assert
+  expect(confirm).toHaveBeenCalledWith(
+    "「주의 사랑」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다."
+  );
+});
+
+// AC-19
+it("곡 삭제를 확인하면 곡 DELETE 뒤 보관함과 악보 목록을 다시 불러 바꿔야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongDelete());
+  apiFetch.mockClear();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  confirm.mockClear();
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(calls[0]).toBe("DELETE /songs/song-1");
+  expect([...calls.slice(1)].sort()).toEqual(["GET /scores", "GET /songs"]);
+  const [url, options] = apiFetch.mock.calls.find(([, init]) => init?.method === "DELETE");
+  expect(url).toBe(API_PATHS.song(SONG_ID));
+  expect(options.method).toBe("DELETE");
+  expect(result.current.librarySongs).toEqual([KEPT_SONG]);
+  expect(result.current.scores).toEqual([ORPHANED_WEEK]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-20
+it("곡 DELETE 가 404 면 서버 detail 을 오류와 메시지로 올리고 아무것도 다시 부르지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongDelete({
+      remove: async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: "Song not found" }),
+      }),
+    })
+  );
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "Song not found" });
+  expect(calls).toEqual(["DELETE /songs/song-1"]);
+  await waitFor(() => expect(result.current.error).toBe("Song not found"));
+  expect(result.current.librarySongs).toEqual([]);
+});
+
+// AC-20
+it("곡 DELETE 가 detail 없이 실패하면 곡 삭제 실패 문구를 돌려줘야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongDelete({ remove: async () => ({ ok: false, status: 500, json: async () => ({}) }) })
+  );
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "곡 삭제에 실패했습니다." });
+  expect(calls).toEqual(["DELETE /songs/song-1"]);
+  await waitFor(() => expect(result.current.error).toBe("곡 삭제에 실패했습니다."));
+});

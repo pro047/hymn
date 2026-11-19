@@ -124,6 +124,8 @@ LEADER_ONLY = {
         f"/songs/{c.song_id}/file",
         {"json": {"filename": "rescan.png", "content_type": "image/png"}},
     ),
+    # AC-14: deleting a song from the library is the leader's too.
+    ("DELETE", "/songs/{song_id}"): lambda c: (f"/songs/{c.song_id}", {}),
     ("GET", "/weeks/{week_of}/pdf"): lambda c: (f"/weeks/{WEEK}/pdf", {}),
     ("GET", "/weeks/{week_of}/conti"): lambda c: (f"/weeks/{WEEK}/conti", {}),
     ("PATCH", "/weeks/{week_of}/conti/order"): lambda c: (

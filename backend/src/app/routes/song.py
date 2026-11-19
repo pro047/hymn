@@ -104,6 +104,19 @@ def update_song(
     return _library_item(*row)
 
 
+@router.delete("/{song_id}", status_code=204)
+def delete_song(
+    song_id: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_leader),
+) -> None:
+    song = _church_song_or_404(session, user, song_id)
+    # Hard delete of the song only: the FK empties song_id on the Sundays that
+    # placed it, and the S3 object stays because those rows share its key.
+    session.delete(song)
+    session.commit()
+
+
 @router.post("/{song_id}/file", response_model=ScoreFileUploadResponse)
 def sign_song_file_upload(
     song_id: str,

@@ -221,6 +221,12 @@ def _sign_song_file_upload(world: World):
     )
 
 
+# AC-15: a stranger cannot delete A's song, and _assert_owner_data_is_untouched
+# then checks it is still in A's library with its Sunday.
+def _delete_song(world: World):
+    _assert_indistinguishable_from_a_missing_song(world, "DELETE")
+
+
 def _week_pdf(world: World):
     response = world.as_outsider("GET", f"/weeks/{WEEK}/pdf")
 
@@ -260,6 +266,7 @@ CASES = {
     ("POST", "/songs/{song_id}/usages"): _place_song,
     ("PATCH", "/songs/{song_id}"): _update_song,  # AC-12
     ("POST", "/songs/{song_id}/file"): _sign_song_file_upload,  # AC-12
+    ("DELETE", "/songs/{song_id}"): _delete_song,  # AC-15
     ("GET", "/weeks/{week_of}/pdf"): _week_pdf,
     ("GET", "/weeks/{week_of}/conti"): _week_conti,
     ("PATCH", "/weeks/{week_of}/conti/order"): _reorder_week,

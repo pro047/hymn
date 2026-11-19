@@ -66,12 +66,14 @@ const LIBRARY_SONG = {
 
 let reorderWeek;
 let updateSong;
+let deleteSong;
 let hookValue;
 
 beforeEach(() => {
   dnd.props = null;
   reorderWeek = vi.fn(async () => ({ ok: true, saved: true }));
   updateSong = vi.fn(async () => ({ ok: true }));
+  deleteSong = vi.fn(async () => ({ ok: true }));
   hookValue = {
     scores: SCORES,
     totalSongs: 7,
@@ -87,6 +89,7 @@ beforeEach(() => {
     placeSongOnWeek: vi.fn(),
     reorderWeek,
     updateSong,
+    deleteSong,
   };
   useScores.mockReturnValue(hookValue);
 });
@@ -232,4 +235,36 @@ it("팀원에게는 보관함 탭도 보관함 곡 수정 버튼도 그리지 �
   expect(screen.queryByRole("button", { name: `${LIBRARY_SONG.title} 메뉴` })).toBeNull();
   expect(screen.queryByRole("button", { name: `${LIBRARY_SONG.title} 수정` })).toBeNull();
   expect(updateSong).not.toHaveBeenCalled();
+});
+
+// --- the library card's delete ----------------------------------------------
+
+// AC-21
+it("인도자가 보관함에서 곡의 삭제를 누르면 deleteSong 을 곡 id 와 제목으로 한 번 불러야 한다", async () => {
+  // Arrange
+  renderHome(true);
+  fireEvent.click(screen.getByRole("button", { name: "보관함" }));
+  fireEvent.click(screen.getByRole("button", { name: `${LIBRARY_SONG.title} 메뉴` }));
+
+  // Act
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: `${LIBRARY_SONG.title} 삭제` }));
+  });
+
+  // Assert — the library song, not a week's score; nothing else fired
+  expect(deleteSong).toHaveBeenCalledTimes(1);
+  expect(deleteSong).toHaveBeenCalledWith({ songId: "lib-1", title: "보관함곡" });
+  expect(hookValue.deleteScore).not.toHaveBeenCalled();
+  expect(updateSong).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText("악보 제목")).toBeNull();
+});
+
+// AC-21: a member has no library, so no delete either.
+it("팀원에게는 보관함 곡 삭제 버튼을 그리지 않아야 한다", () => {
+  // Arrange & Act
+  renderHome(false);
+
+  // Assert
+  expect(screen.queryByRole("button", { name: `${LIBRARY_SONG.title} 삭제` })).toBeNull();
+  expect(deleteSong).not.toHaveBeenCalled();
 });

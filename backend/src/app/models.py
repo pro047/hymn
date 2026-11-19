@@ -167,7 +167,7 @@ class Song(Base):
     )
 
     church: Mapped["Church"] = relationship(back_populates="songs")
-    usages: Mapped[list["Score"]] = relationship(back_populates="song", cascade="all, delete-orphan")
+    usages: Mapped[list["Score"]] = relationship(back_populates="song", passive_deletes=True)
 
 
 class Score(Base):
@@ -176,7 +176,9 @@ class Score(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     church_id: Mapped[str] = mapped_column(ForeignKey("churches.id", ondelete="CASCADE"), nullable=False)
     uploader_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    song_id: Mapped[str] = mapped_column(ForeignKey("songs.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Emptied, not cascaded, when the song is deleted: the row keeps its own
+    # copy of title, file and edits, so the Sunday still reads without it.
+    song_id: Mapped[str | None] = mapped_column(ForeignKey("songs.id", ondelete="SET NULL"), nullable=True, index=True)
     # Weekly snapshot: what was actually filed for this week. `songs` holds the
     # canonical values GET /scores now serves; these stay so a reupload can be
     # traced and so downgrading the split migration loses nothing.
@@ -211,7 +213,7 @@ class Score(Base):
 
     church: Mapped["Church"] = relationship(back_populates="scores")
     uploader: Mapped["User"] = relationship(back_populates="uploaded_scores")
-    song: Mapped["Song"] = relationship(back_populates="usages")
+    song: Mapped["Song | None"] = relationship(back_populates="usages")
     assets: Mapped[list["ScoreAsset"]] = relationship(back_populates="score", cascade="all, delete-orphan")
     set_items: Mapped[list["SetItem"]] = relationship(back_populates="score", cascade="all, delete-orphan")
 

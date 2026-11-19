@@ -52,6 +52,7 @@ export default function HomePage({ headerActions = null, canManage = false }) {
     uploadSong,
     updateScore,
     updateSong,
+    deleteSong,
     deleteScore,
     placeSongOnWeek,
   } = useScores({ canManage });
@@ -160,6 +161,7 @@ export default function HomePage({ headerActions = null, canManage = false }) {
             <SavedScoresCard
               scores={librarySongs}
               onEditRequest={setEditingSong}
+              onDeleteRequest={(song) => deleteSong({ songId: song.song_id, title: song.title })}
               onApplyRequest={(score) => openUploadDialog({ mode: "library", savedScore: score })}
               onQuickUpload={(file) =>
                 openUploadDialog({
