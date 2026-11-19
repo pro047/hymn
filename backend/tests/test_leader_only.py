@@ -117,6 +117,15 @@ LEADER_ONLY = {
         {"json": {"title": "A New Song", "filename": "score.png", "content_type": "image/png"}},
     ),
     ("POST", "/songs/{song_id}/usages"): lambda c: (f"/songs/{c.song_id}/usages", {"json": {"week_of": NEXT_WEEK}}),
+    # AC-12: editing a song from the library is the leader's.
+    ("PATCH", "/songs/{song_id}"): lambda c: (f"/songs/{c.song_id}", {"json": {"title": "renamed"}}),
+    # AC-12: so is signing a replacement file for it.
+    ("POST", "/songs/{song_id}/file"): lambda c: (
+        f"/songs/{c.song_id}/file",
+        {"json": {"filename": "rescan.png", "content_type": "image/png"}},
+    ),
+    # AC-14: deleting a song from the library is the leader's too.
+    ("DELETE", "/songs/{song_id}"): lambda c: (f"/songs/{c.song_id}", {}),
     ("GET", "/weeks/{week_of}/pdf"): lambda c: (f"/weeks/{WEEK}/pdf", {}),
     ("GET", "/weeks/{week_of}/conti"): lambda c: (f"/weeks/{WEEK}/conti", {}),
     ("PATCH", "/weeks/{week_of}/conti/order"): lambda c: (

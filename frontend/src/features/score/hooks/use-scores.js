@@ -4,6 +4,7 @@ import { apiFetch } from "../../../api/client";
 import { API_PATHS } from "../../../api/paths";
 import { alertMessageOf, readApiError } from "../../../lib/api-error";
 import { isAuthenticated } from "../../../lib/auth-storage";
+import { toStageOrderPayload } from "../../../lib/stage-order";
 
 // canManage defaults to true: the hook does what it is asked, and it is the
 // page that knows who is looking (home-page.jsx passes false for a member).
@@ -14,6 +15,7 @@ export function useScores({ canManage = true } = {}) {
   const [isUploading, setIsUploading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isPlacingSong, setIsPlacingSong] = useState(false);
+  const [isReordering, setIsReordering] = useState(false);
 
   // Falls back to title when song_id is absent so a frontend deployed ahead
   // of the migration still shows a meaningful count instead of 0.
@@ -34,8 +36,10 @@ export function useScores({ canManage = true } = {}) {
       const data = await response.json();
       setScores(data);
       setError("");
+      return true;
     } catch (err) {
       setError(err.message);
+      return false;
     }
   }, []);
 
@@ -120,8 +124,10 @@ export function useScores({ canManage = true } = {}) {
     }
   };
 
-  const uploadReplacementFile = async (scoreId, file) => {
-    const issued = await apiFetch(API_PATHS.scoreFile(scoreId), {
+  // signPath differs per caller (a week's score vs. a library song); the
+  // sign-then-PUT sequence is the same for both.
+  const uploadReplacementFile = async (signPath, file) => {
+    const issued = await apiFetch(signPath, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: file.name, content_type: file.type }),
@@ -160,7 +166,7 @@ export function useScores({ canManage = true } = {}) {
       // Upload first, PATCH second. Reversed, a failed PUT would leave the row
       // pointing at an object that was never written — a broken image on the
       // page. This way the score keeps the file it already had.
-      const fileUri = file ? await uploadReplacementFile(scoreId, file) : null;
+      const fileUri = file ? await uploadReplacementFile(API_PATHS.scoreFile(scoreId), file) : null;
       const response = await apiFetch(API_PATHS.score(scoreId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -184,6 +190,79 @@ export function useScores({ canManage = true } = {}) {
       return { ok: false, message: err.message };
     } finally {
       setIsUpdating(false);
+    }
+  };
+
+  // Edits the library song itself. Weeks hold their own copies, so scores are
+  // not re-read: only the library list changes.
+  const updateSong = async ({ songId, title, file = null, currentTitle }) => {
+    if (!isAuthenticated()) {
+      setError("로그인이 필요합니다.");
+      return { ok: false };
+    }
+    if (title.length > 255) {
+      const message = "제목은 255자 이내로 입력해주세요.";
+      setError(message);
+      return { ok: false, message };
+    }
+
+    // An unchanged title is left out of the body, not just harmless: the
+    // server rejects a body with neither field (422).
+    const titleChanged = currentTitle === undefined || title !== currentTitle;
+
+    setIsUpdating(true);
+    try {
+      // Upload first so a failed PUT never leaves the song pointing at a
+      // missing object.
+      const fileUri = file ? await uploadReplacementFile(API_PATHS.songFile(songId), file) : null;
+      const body = {
+        ...(titleChanged ? { title } : {}),
+        ...(fileUri ? { file_uri: fileUri } : {}),
+      };
+      if (Object.keys(body).length === 0) {
+        return { ok: true };
+      }
+      const response = await apiFetch(API_PATHS.song(songId), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const apiError = await readApiError(response, "곡 수정에 실패했습니다.", []);
+        throw new Error(alertMessageOf(apiError));
+      }
+      await fetchLibrary();
+      return { ok: true };
+    } catch (err) {
+      setError(err.message);
+      return { ok: false, message: err.message };
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // Hard-deletes the library song. Weeks keep their copies but their song_id
+  // turns null, so scores are re-read along with the library.
+  const deleteSong = async ({ songId, title }) => {
+    if (!isAuthenticated()) {
+      setError("로그인이 필요합니다.");
+      return { ok: false };
+    }
+    const confirmed = window.confirm(
+      `「${title}」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다.`
+    );
+    if (!confirmed) return { ok: false, cancelled: true };
+    try {
+      const response = await apiFetch(API_PATHS.song(songId), { method: "DELETE" });
+      if (!response.ok) {
+        const apiError = await readApiError(response, "곡 삭제에 실패했습니다.", []);
+        throw new Error(alertMessageOf(apiError));
+      }
+      await Promise.all([fetchLibrary(), fetchScores()]);
+      return { ok: true };
+    } catch (err) {
+      setError(err.message);
+      return { ok: false, message: err.message };
     }
   };
 
@@ -237,6 +316,45 @@ export function useScores({ canManage = true } = {}) {
     }
   };
 
+  // `saved` and `ok` are different questions. fetchScores swallows its own
+  // failure, so "the PATCH went through but the re-read did not" is a state
+  // the caller has to be told about: the server holds the new order while
+  // `scores` still holds the old one.
+  const reorderWeek = async ({ weekOf, scoreIds }) => {
+    if (!isAuthenticated()) {
+      setError("로그인이 필요합니다.");
+      return { ok: false, saved: false };
+    }
+    setIsReordering(true);
+    try {
+      let message;
+      try {
+        const response = await apiFetch(API_PATHS.weekContiOrder(weekOf), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: toStageOrderPayload(scoreIds) }),
+        });
+        if (response.ok) {
+          const refreshed = await fetchScores();
+          if (refreshed) return { ok: true, saved: true };
+          const staleMessage = "순서는 저장했지만 목록을 다시 불러오지 못했습니다.";
+          setError(staleMessage);
+          return { ok: false, saved: true, message: staleMessage };
+        }
+        message = alertMessageOf(await readApiError(response, "순서를 저장하지 못했습니다.", []));
+      } catch {
+        message = "순서를 저장하지 못했습니다.";
+      }
+      // Re-read first, report second: a successful fetchScores clears
+      // `error`, which would erase the message set before it.
+      await fetchScores();
+      setError(message);
+      return { ok: false, saved: false, message };
+    } finally {
+      setIsReordering(false);
+    }
+  };
+
   return {
     scores,
     totalSongs,
@@ -245,8 +363,12 @@ export function useScores({ canManage = true } = {}) {
     isUploading,
     isUpdating,
     isPlacingSong,
+    isReordering,
+    reorderWeek,
     uploadSong,
     updateScore,
+    updateSong,
+    deleteSong,
     deleteScore,
     placeSongOnWeek,
   };

@@ -198,6 +198,35 @@ def _place_song(world: World):
     assert world.as_outsider("GET", "/scores").json() == []
 
 
+def _assert_indistinguishable_from_a_missing_song(world: World, method: str, suffix: str = "", **kwargs):
+    """404 for A's song, and the very same answer for an id that names nothing."""
+    real = world.as_outsider(method, f"/songs/{world.song_id}{suffix}", **kwargs)
+    missing = world.as_outsider(method, f"/songs/{uuid4()}{suffix}", **kwargs)
+
+    assert real.status_code == 404, real.text
+    assert real.json() == {"detail": "Song not found"}
+    assert (missing.status_code, missing.json()) == (real.status_code, real.json())
+
+
+# AC-12: a stranger's rename is a 404, and _assert_owner_data_is_untouched
+# then checks the owner's title did not change.
+def _update_song(world: World):
+    _assert_indistinguishable_from_a_missing_song(world, "PATCH", json={"title": "hijacked"})
+
+
+# AC-12: a stranger cannot sign a file for A's song either.
+def _sign_song_file_upload(world: World):
+    _assert_indistinguishable_from_a_missing_song(
+        world, "POST", "/file", json={"filename": "x.png", "content_type": "image/png"}
+    )
+
+
+# AC-15: a stranger cannot delete A's song, and _assert_owner_data_is_untouched
+# then checks it is still in A's library with its Sunday.
+def _delete_song(world: World):
+    _assert_indistinguishable_from_a_missing_song(world, "DELETE")
+
+
 def _week_pdf(world: World):
     response = world.as_outsider("GET", f"/weeks/{WEEK}/pdf")
 
@@ -235,6 +264,9 @@ CASES = {
     ("GET", "/songs"): _list_songs,
     ("POST", "/songs"): _upload_song,
     ("POST", "/songs/{song_id}/usages"): _place_song,
+    ("PATCH", "/songs/{song_id}"): _update_song,  # AC-12
+    ("POST", "/songs/{song_id}/file"): _sign_song_file_upload,  # AC-12
+    ("DELETE", "/songs/{song_id}"): _delete_song,  # AC-15
     ("GET", "/weeks/{week_of}/pdf"): _week_pdf,
     ("GET", "/weeks/{week_of}/conti"): _week_conti,
     ("PATCH", "/weeks/{week_of}/conti/order"): _reorder_week,

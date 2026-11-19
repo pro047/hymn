@@ -1,32 +1,36 @@
 ### 이번 과제 — (각색: 매 과제마다 여기를 바꾼다)
 
-#### M0 — 교회 격리 선행분 (2026-09-30, 커뮤니티화 기획 `.claude/plan-community.md` 7-2 M0)
+#### 보관함 곡 삭제 — 하드 딜리트, 배치된 주차는 남긴다 (2026-11-18, 사람 결정)
 
-배경: `GET /scores` 가 인증·교회 필터 없이 모든 교회 악보를 준다(`backend/src/app/routes/score.py:80-81`).
-소비자가 둘이다 — 태블릿 앱(`hymn_app/lib/data/scores_api.dart:12`, 로그인 없음)과 **웹 홈**
-(`frontend/src/features/score/hooks/use-scores.js:25`, 토큰 없는 plain `fetch`). 앱은 아직 로그인을
-못 하므로 무토큰 차단은 이번 과제가 아니다. 이번에는 **앱을 깨지 않고 웹 홈의 교회 간 노출을 닫는다.**
+배경: 곡 삭제 API 가 없다(2026-08 에 휴지통을 뺐다 — "곡 삭제 = FK CASCADE 로 모든 주차에서 사라짐", `.claude/handoff.md:1919`).
+지금 `scores.song_id` 는 `nullable=False`·`ondelete="CASCADE"`(`backend/src/app/models.py:179`, 제약 이름 `fk_scores_song_id_songs`,
+`alembic/versions/d2a7e5f1c3b9_split_songs_from_scores.py:79`)이고 ORM 도 `Song.usages` 가 `cascade="all, delete-orphan"`(`models.py:170`)이라
+곡을 지우면 그 곡의 모든 주차 행이 사라진다. 그런데 week-copy(`faabe09`) 뒤로 화면·앱·PDF 는 주차 행의 복사본(`scores.title`·`file_uri`)을
+읽으므로 주차 행은 곡 행 없이도 보일 수 있다. **사람 결정(2026-11-18): 하드 딜리트. 보관함에서 곡 행을 지우고, 이미 배치된 주차 행은
+`song_id` 만 비운 채 그대로 남긴다. 소프트 딜리트·되살리기는 하지 않는다.**
 
 요구 (번호가 검증 기준이 된다):
-1. `GET /scores` 에 `Authorization` 헤더가 **없으면** 응답이 지금과 완전히 같다 — 모든 교회의 행, 정렬·필드 불변.
-   기존 `backend/tests/test_score_auth.py` 의 무토큰 테스트가 계속 통과해야 한다
-2. 헤더가 있고 유효하면 **그 사용자의 교회(`user.church_id`) 행만** 준다
-3. 헤더가 있는데 무효·만료·형식 오류·`token_version` 불일치면 **401** 이다 — `deps.get_current_user` 와
-   같은 판정·같은 메시지. **전체 목록으로 폴백하지 않는다** (폴백하면 만료 토큰을 가진 인도자의 홈에
-   모든 교회 악보가 조용히 보이고, 웹 `apiFetch` 의 자동 refresh 도 안 돈다)
-4. 웹 홈 `use-scores.js` 의 `fetchScores` 가 `apiFetch`(`frontend/src/api/client.ts`)를 쓴다
-5. `/auth/me` 가 토큰 클레임의 `church_id` 가 아니라 DB 의 `user.church_id` 로 교회를 찾는다(`routes/auth.py:360` 부근)
-6. 업로드 키 검사 `_reject_foreign_object_key`(`routes/score.py:32-49`)를 접두사 비교에서 **세그먼트 파싱**으로
-   바꾼다 — `/` 로 나눠 정확히 3조각, 첫째 `scores`, 둘째가 교회 id 와 정확히 같고, 셋째가 비어 있지 않으며,
-   어느 조각도 `.`·`..` 가 아니다. `scores/{내교회}/../{남교회}/x.png` 는 400. 검사 시점(쓰기 때만)은 그대로
-7. **교회 간 유출 전수 테스트** — 교회 A 가 만든 리소스를 교회 B 토큰으로 데이터 라우트 전부(`routes/score.py`·
-   `song.py`·`conti.py`)에 대고 부르면 404(또는 A 의 데이터 0건). 그리고 **앱에 등록된 데이터 라우트 목록과
-   테스트가 다루는 목록이 같은지** 대조해, 새 라우트가 테스트 없이 추가되면 실패하게 한다
+1. 마이그레이션 1개(현재 head `0ffde4301ddb` 다음): `scores.song_id` 를 nullable 로, FK `fk_scores_song_id_songs` 를 `ondelete="SET NULL"` 로
+   바꾼다. 데이터는 바꾸지 않는다. downgrade 는 `song_id IS NULL` 행이 하나라도 있으면 **지우지 않고 예외로 멈춘다**(데이터 손실 금지),
+   없으면 NOT NULL·CASCADE 로 되돌린다. 마이그레이션 테스트로 둘 다 고정
+2. ORM: `Score.song_id` 는 Optional, `Song.usages` 는 곡 삭제가 주차 행을 지우지 않도록(`delete-orphan` 제거, DB 의 SET NULL 에 맡김 —
+   `passive_deletes=True` 등) 바꾼다. **ORM 경로로 지워도 주차 행이 남는다**를 테스트로 고정
+3. `DELETE /songs/{song_id}` 추가 — 204. `require_leader`(무토큰 401·팀원 403), 다른 교회 곡 404(`_church_song_or_404`, `routes/song.py:38`)
+4. 삭제 뒤: `GET /songs` 에서 빠진다. 그 곡을 배치했던 주차의 `GET /scores`·`GET /scores/{id}`·콘티·PDF 는 **삭제 전과 같은 제목·파일·편집본**을
+   준다(`song_id` 만 null). 그 주차의 PATCH·편집 저장·편집 지우기·순서 변경·주차 이동도 200 으로 동작한다
+5. **S3 객체를 지우지 않는다.** 곡과 그 곡을 배치한 주차 복사본은 같은 S3 키를 가리킨다(`add_usage` 가 키를 복사). 앱 코드에 S3 삭제 호출이
+   지금 0건이며 이번에도 0건이어야 한다 — 삭제 라우트가 S3 클라이언트를 부르지 않음을 테스트로 고정
+6. 삭제 뒤 같은 교회에 같은 제목으로 `POST /songs` 하면 201(새 곡)이다. 지운 곡 id 로 `POST /songs/{id}/usages`·`PATCH /songs/{id}`·`POST /songs/{id}/file` 은 404
+7. 새 라우트를 `tests/test_leader_only.py` `LEADER_ONLY` 와 `tests/test_church_isolation.py` 격리 케이스에 등록한다(메타 테스트)
+8. 웹: 보관함 카드의 케밥 메뉴(`frontend/src/features/score/components/saved-scores-card.jsx`)에 **"삭제"** 항목을 수정 아래에 둔다.
+   누르면 `window.confirm("「<제목>」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다.")` — 취소면 요청 없음. 확인이면
+   `DELETE /songs/{id}` 후 보관함 목록에서 사라진다. 실패는 서버 `detail` 을 보인다(기존 `readApiError`). `API_PATHS` 의 곡 경로를 재사용.
+   `saved-scores-card.jsx:6-7` 의 "nothing to take out" 주석을 사실에 맞게 고친다
+9. 기존 테스트는 기대값을 바꾸지 않고 통과한다. 깨지는 기존 테스트가 있으면 구현으로 맞추지 말고 **[결정]으로 사람에게 올린다**
 
 범위 밖 (이미 결정됨 — BLOCKED 사유로 되돌리지 말 것):
-- 무토큰 `GET /scores` 를 401 로 막는 것 (앱 로그인 뒤, 기획서 M4)
-- Flutter 앱 변경 · 레이트 리밋 · 스키마·마이그레이션 변경 · 새 엔드포인트
-- `weeks`·`set_items` 의 `church_id` 부재 (읽기는 이미 `Score.church_id` 로 걸러진다)
+- 소프트 딜리트·되살리기·휴지통 · S3 객체 정리 · 주차 행 삭제 방식 변경
+- Flutter 앱(앱은 `song_id` 를 읽지 않는다) · 화면 낭독기 UUID 낭독 · 새 패키지
 
 > **낡은 과제 서술을 남겨두면 다음 실행이 그걸 읽는다.** 새 과제를 여기 쓰고,
 > 요구는 번호를 매겨 검증 가능한 문장으로 적는다 — 그 번호가 설계의 검증 기준이 된다.

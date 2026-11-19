@@ -2,7 +2,7 @@ import os
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.db import get_session
 from app.deps import get_current_user, get_optional_user, require_leader
@@ -16,13 +16,13 @@ from app.schemas.score import (
     ScoreResponse,
     ScoreUpdate,
 )
+from app.services.conti import list_filed_scores
 from app.services.score_edit import clear_edit, save_edit
 from app.services.song import (
-    SongTitleTaken,
     attach_usage,
     normalize_week_date,
-    rename_song,
-    replace_song_file,
+    rename_usage,
+    replace_usage_file,
 )
 from app.utils.files import extension_from_input
 from app.utils.s3 import object_url, presign_put, presign_score_download
@@ -98,6 +98,28 @@ def _anonymous_church_id() -> str:
     return church_id
 
 
+def score_response(score: Score) -> ScoreResponse:
+    """One week's row as the clients see it, read from the row's own copy.
+
+    A single builder so the three routes that answer with a score cannot
+    disagree on which file wins: this week's edit first, as conti reads it.
+    The app draws download_url and nothing else, so it is the only place an
+    edit can reach it. file_uri stays the copy's own key: the web replaces the
+    file through it.
+    """
+    return ScoreResponse(
+        id=score.id,
+        church_id=score.church_id,
+        week_of=score.week_of,
+        title=score.title,
+        file_url=score.file_url,
+        file_uri=score.file_uri,
+        download_url=presign_score_download(score.edited_file_uri or score.file_uri),
+        created_at=score.created_at,
+        song_id=score.song_id,
+    )
+
+
 @router.get("/scores", response_model=list[ScoreResponse])
 def list_scores(
     session: Session = Depends(get_session),
@@ -110,30 +132,9 @@ def list_scores(
         church_id = user.church_id
     else:
         church_id = _anonymous_church_id()
-    scores = (
-        session.query(Score)
-        .options(joinedload(Score.song))
-        .filter(Score.week_of.is_not(None), Score.church_id == church_id)
-        .order_by(Score.created_at.asc())
-        .all()
-    )
-    return [
-        ScoreResponse(
-            id=s.id,
-            church_id=s.church_id,
-            week_of=s.week_of,
-            title=s.song.title,
-            file_url=s.song.file_url,
-            file_uri=s.song.file_uri,
-            # This week's edit first, as conti reads it. The app draws this URL
-            # and nothing else, so it is the only place an edit can reach it.
-            # file_uri stays the song's: the web replaces the file through it.
-            download_url=presign_score_download(s.edited_file_uri or s.song.file_uri),
-            created_at=s.created_at,
-            song_id=s.song_id,
-        )
-        for s in scores
-    ]
+    scores = list_filed_scores(session, church_id=church_id)
+    return [score_response(s) for s in scores]
+
 
 @router.get("/scores/{score_id}", response_model=ScoreResponse)
 def get_score(
@@ -153,19 +154,7 @@ def get_score(
     for PATCH and DELETE only. Closing it therefore breaks nothing. It is kept
     rather than deleted so the next reader copies a protected route.
     """
-    score = _own_score_or_404(session, score_id, user)
-    song = score.song
-    return ScoreResponse(
-        id=score.id,
-        church_id=score.church_id,
-        week_of=score.week_of,
-        title=song.title,
-        file_url=song.file_url,
-        file_uri=song.file_uri,
-        download_url=presign_score_download(song.file_uri),
-        created_at=score.created_at,
-        song_id=score.song_id,
-    )
+    return score_response(_own_score_or_404(session, score_id, user))
 
 @router.post("/scores/{score_id}/file", response_model=ScoreFileUploadResponse)
 def create_score_file_upload(
@@ -216,7 +205,7 @@ def _edit_state_of(score: Score) -> ScoreEditResponse:
     return ScoreEditResponse(
         edited_file_uri=score.edited_file_uri,
         edit_doc=score.edit_doc,
-        source_image_url=presign_score_download(score.edit_source_uri or score.song.file_uri),
+        source_image_url=presign_score_download(score.edit_source_uri or score.file_uri),
     )
 
 
@@ -289,10 +278,10 @@ def save_score_edit(
         score,
         edited_file_uri=payload.edited_file_uri,
         edit_doc=payload.edit_doc,
-        # The song's file as it stands now, which is the sheet the editor was
+        # This week's file as it stands now, which is the sheet the editor was
         # handed when it opened. Reading it here rather than trusting the
         # request keeps the record honest with no second source to reconcile.
-        source_file_uri=score.song.file_uri,
+        source_file_uri=score.file_uri,
     )
     session.commit()
     session.refresh(score)
@@ -330,54 +319,30 @@ def update_score(
     user: User = Depends(require_leader),
 ):
     score = _own_score_or_404(session, score_id, user)
-    song = score.song
 
+    # Every check runs before any assignment, so a 400 never leaves a
+    # half-edited row visible to whatever shares this session. The song row is
+    # never written here: this route edits one week's copy, and the library
+    # has its own PATCH.
+    if payload.file_uri is not None:
+        _reject_foreign_object_key(payload.file_uri, score.church_id)
     if payload.title is not None:
-        try:
-            rename_song(session, song, payload.title)
-        except SongTitleTaken:
-            raise HTTPException(409, "같은 제목의 곡이 이미 있습니다.") from None
-        # Keeps this usage's own snapshot in step with the rename it asked
-        # for; other weeks' snapshots are untouched, same as the file case.
-        score.title = song.title
+        rename_usage(score, payload.title)
     if payload.week_of is not None:
         normalized_week_of = normalize_week_date(payload.week_of)
         if normalized_week_of != score.week_of:
             attach_usage(session, score, normalized_week_of)
     if payload.file_uri is not None:
-        _reject_foreign_object_key(payload.file_uri, score.church_id)
         # object_url, not the key itself — the column holds a URL everywhere
         # else (the library upload does the same) and every client
-        # reads it as `download_url ?? file_url`. Storing the bare key survives
-        # only because the gate above forces the scores/ prefix, which is
-        # exactly what makes presign_score_download sign it and hide the fallback.
-        file_url = object_url(payload.file_uri)
-        replace_song_file(session, song, file_url=file_url, file_uri=payload.file_uri)
-        score.file_url = file_url
-        score.file_uri = payload.file_uri
-        # An edit was drawn on the sheet being replaced, so it cannot survive
-        # the replacement: conti reads coalesce(edited_file_uri, song file),
-        # and leaving it set would keep drawing the old sheet while the upload
-        # looked like it had done nothing. Only this usage's edit is dropped —
-        # other weeks' edits are their own finished sheets, and this route was
-        # never asked about them.
-        clear_edit(score)
+        # reads it as `download_url ?? file_url`.
+        replace_usage_file(
+            score, file_url=object_url(payload.file_uri), file_uri=payload.file_uri
+        )
 
     session.commit()
     session.refresh(score)
-    session.refresh(song)
-
-    return ScoreResponse(
-        id=score.id,
-        church_id=score.church_id,
-        week_of=score.week_of,
-        title=song.title,
-        file_url=song.file_url,
-        file_uri=song.file_uri,
-        download_url=presign_score_download(song.file_uri),
-        created_at=score.created_at,
-        song_id=score.song_id,
-    )
+    return score_response(score)
 
 @router.delete('/scores/{score_id}', status_code=204)
 def delete_score(

@@ -2,7 +2,7 @@ import datetime as dt
 import re
 import unicodedata
 
-from sqlalchemy import func
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.models import Score, SetItem, Song, Week
@@ -69,6 +69,39 @@ def get_or_reuse_song(
     return song, True
 
 
+def library_rows(
+    session: Session,
+    *,
+    church_id: str,
+    song_id: str | None = None,
+) -> list[tuple[Song, int, dt.date | None]]:
+    """(song, use_count, last_week_of) for the church's songs, newest first.
+
+    A usage counts only when it has a week: usages without one are legacy
+    library-upload drafts. Shared by the list and the edit answer so the two
+    cannot drift apart. song_id narrows to one song.
+    """
+    usage = (
+        session.query(
+            Score.song_id.label("song_id"),
+            func.count(Score.id).label("use_count"),
+            func.max(Score.week_of).label("last_week_of"),
+        )
+        .filter(Score.church_id == church_id, Score.week_of.is_not(None))
+        .group_by(Score.song_id)
+        .subquery()
+    )
+    use_count = func.coalesce(usage.c.use_count, 0)
+    query = (
+        session.query(Song, use_count, usage.c.last_week_of)
+        .outerjoin(usage, usage.c.song_id == Song.id)
+        .filter(Song.church_id == church_id)
+    )
+    if song_id is not None:
+        query = query.filter(Song.id == song_id)
+    return [tuple(row) for row in query.order_by(desc(Song.created_at), Song.id).all()]
+
+
 def has_usage_in_week(session: Session, *, song_id: str, week_of: dt.date | None) -> bool:
     return (
         session.query(Score.id)
@@ -109,6 +142,44 @@ def add_usage(
 def replace_song_file(session: Session, song: Song, *, file_url: str, file_uri: str | None) -> None:
     song.file_url = file_url
     song.file_uri = file_uri
+
+
+def rename_usage(score: Score, new_title: str) -> None:
+    """Renames one week's copy only. The song and every other week keep their
+    titles, so there is no collision to check."""
+    score.title = new_title.strip()
+
+
+def replace_usage_file(score: Score, *, file_url: str, file_uri: str) -> None:
+    """Points one week's copy at a new file. The edit was drawn on the sheet
+    being replaced, so it goes too; other weeks' edits are their own sheets."""
+    score.file_url = file_url
+    score.file_uri = file_uri
+    clear_edit(score)
+
+
+def heal_song_file(session: Session, song: Song, *, file_url: str, file_uri: str) -> int:
+    """Gives a song whose file never arrived a new one, and moves the weeks
+    that were still holding the dead key along with it.
+
+    Matched on the old key rather than on song_id alone: a week whose file was
+    replaced through PATCH /scores holds a key that is alive, and healing must
+    not overwrite it. Edit columns are left alone for the same reason.
+    Returns how many weeks moved.
+    """
+    old = song.file_uri
+    replace_song_file(session, song, file_url=file_url, file_uri=file_uri)
+    if old is None:
+        return 0
+    rows = (
+        session.query(Score)
+        .filter(Score.song_id == song.id, Score.file_uri == old)
+        .all()
+    )
+    for row in rows:
+        row.file_url = file_url
+        row.file_uri = file_uri
+    return len(rows)
 
 
 def rename_song(session: Session, song: Song, new_title: str) -> None:

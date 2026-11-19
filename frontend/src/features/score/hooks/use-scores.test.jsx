@@ -408,3 +408,673 @@ it("보관함 업로드는 곡만 만들고 받은 주소로 파일을 올려야
   expect(outcome).toEqual({ ok: true, songId: "song-9" });
   expect(calls.slice(0, 2)).toEqual(["POST /songs", "PUT https://s3.example.com/put?sig=9"]);
 });
+
+// --- reorderWeek: the home card's drag ------------------------------------
+
+const WEEK_OF = "2026-11-22";
+const LISTED = [
+  { id: "u1", song_id: "s1", title: "A", week_of: WEEK_OF },
+  { id: "u2", song_id: "s2", title: "B", week_of: WEEK_OF },
+];
+const MISMATCH = "그 주차의 곡 전체를 한 번씩 보내야 합니다.";
+const SAVED_NOT_REREAD = "순서는 저장했지만 목록을 다시 불러오지 못했습니다.";
+
+const isOrderPatch = (url, options = {}) =>
+  String(url) === API_PATHS.weekContiOrder(WEEK_OF) && options.method === "PATCH";
+
+/** apiFetch with the order PATCH and the score list answered by the test. */
+function apiFetchReorder({ patch, listing = async () => ok(LISTED) }) {
+  return async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    if (isOrderPatch(url, options)) return patch();
+    if (isScoreListRequest(url, options)) return listing();
+    return ok([]);
+  };
+}
+
+async function mountedWithList() {
+  apiFetch.mockImplementation(apiFetchListing(LISTED));
+  const result = await mountedHook();
+  await waitFor(() => expect(result.current.scores).toEqual(LISTED));
+  return result;
+}
+
+// AC-21
+it("순서 저장은 주차 순서 PATCH 를 score_id 만 실어 보내고 목록을 다시 불러야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(apiFetchReorder({ patch: async () => ok({ pages: [] }) }));
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert — PATCH first, then the re-read
+  expect(outcome).toEqual({ ok: true, saved: true });
+  expect(calls).toHaveLength(2);
+  expect(calls[0].startsWith("PATCH ")).toBe(true);
+  expect(calls[1]).toBe("GET /scores");
+  const [url, options] = apiFetch.mock.calls.find(([, init]) => init?.method === "PATCH");
+  expect(url).toBe(API_PATHS.weekContiOrder(WEEK_OF));
+  expect(options.headers).toEqual({ "Content-Type": "application/json" });
+  const body = JSON.parse(options.body);
+  expect(body).toEqual({ items: [{ score_id: "u2" }, { score_id: "u1" }] });
+  body.items.forEach((item) => expect(Object.keys(item)).toEqual(["score_id"]));
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-21
+it("순서 저장과 재조회가 되면 새 목록으로 바꾸고 오류를 지워야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  const reread = [LISTED[1], LISTED[0]];
+  apiFetch.mockImplementation(
+    apiFetchReorder({ patch: async () => ok({ pages: [] }), listing: async () => ok(reread) })
+  );
+
+  // Act
+  await act(async () => {
+    await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert
+  expect(result.current.scores).toEqual(reread);
+  expect(result.current.error).toBe("");
+});
+
+// AC-22
+it("순서 저장이 거절되면 목록을 다시 읽고 서버 detail 을 오류로 남겨야 한다", async () => {
+  // Arrange — another device added a song, so the set no longer matches
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      patch: async () => ({ ok: false, status: 400, json: async () => ({ detail: MISMATCH }) }),
+    })
+  );
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert — the re-read's own setError("") must not wipe the reason
+  expect(outcome).toEqual({ ok: false, saved: false, message: MISMATCH });
+  expect(calls[0].startsWith("PATCH ")).toBe(true);
+  expect(calls).toContain("GET /scores");
+  await waitFor(() => expect(result.current.error).toBe(MISMATCH));
+});
+
+// AC-22
+it("순서 저장 요청이 네트워크에서 끊기면 저장 실패로 알리고 목록을 다시 읽어야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      patch: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    })
+  );
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, saved: false, message: "순서를 저장하지 못했습니다." });
+  expect(calls).toContain("GET /scores");
+  await waitFor(() => expect(result.current.error).toBe("순서를 저장하지 못했습니다."));
+});
+
+// AC-27
+it("순서는 저장됐는데 재조회가 실패하면 saved 로 알리고 이전 목록을 지켜야 한다", async () => {
+  // Arrange
+  const result = await mountedWithList();
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      patch: async () => ok({ pages: [] }),
+      listing: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+    })
+  );
+
+  // Act
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert — not "ok": the list on screen is the old one
+  expect(outcome).toEqual({ ok: false, saved: true, message: SAVED_NOT_REREAD });
+  await waitFor(() => expect(result.current.error).toBe(SAVED_NOT_REREAD));
+  expect(result.current.scores).toEqual(LISTED);
+});
+
+// AC-23
+it.each([
+  ["성공", { patch: async () => ok({ pages: [] }) }],
+  [
+    "거절",
+    {
+      patch: async () => ({ ok: false, status: 400, json: async () => ({ detail: MISMATCH }) }),
+    },
+  ],
+  [
+    "재조회 실패",
+    {
+      patch: async () => ok({ pages: [] }),
+      listing: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+    },
+  ],
+])("순서 저장 중에는 isReordering 이 참이고 끝나면(%s) 거짓이어야 한다", async (_, answers) => {
+  // Arrange — the PATCH is held open until the test lets it go
+  const result = await mountedWithList();
+  expect(result.current.isReordering).toBe(false);
+  let release;
+  const gate = new Promise((settle) => {
+    release = settle;
+  });
+  apiFetch.mockImplementation(
+    apiFetchReorder({
+      ...answers,
+      patch: async () => {
+        await gate;
+        return answers.patch();
+      },
+    })
+  );
+
+  // Act
+  let running;
+  act(() => {
+    running = result.current.reorderWeek({ weekOf: WEEK_OF, scoreIds: ["u2", "u1"] });
+  });
+
+  // Assert
+  await waitFor(() => expect(result.current.isReordering).toBe(true));
+  await act(async () => {
+    release();
+    await running;
+  });
+  expect(result.current.isReordering).toBe(false);
+});
+
+// --- updateSong: the library card's edit ----------------------------------
+
+const SONG_ID = "song-1";
+const RENAMED = [{ song_id: SONG_ID, title: "새 제목", file_url: "f", use_count: 1 }];
+
+/** apiFetch answering the song PATCH, its signing and the library re-read. */
+function apiFetchSongEdit({ patch = async () => ok(RENAMED[0]), library = RENAMED } = {}) {
+  return async (url, options = {}) => {
+    const method = options.method ?? "GET";
+    trace(method, url);
+    if (String(url).endsWith("/file")) return ok(SIGNED);
+    if (method === "PATCH") return patch();
+    if (String(url).endsWith("/songs") && method === "GET") return ok(library);
+    return ok([]);
+  };
+}
+
+async function updateSongWith(result, args) {
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.updateSong(args);
+  });
+  return outcome;
+}
+
+// AC-304
+it("곡 제목만 바꾸면 곡 PATCH 에 title 만 싣고 보관함만 다시 불러야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: null,
+    currentTitle: "옛 제목",
+  });
+
+  // Assert — no signing, no PUT, and the week list is not re-read
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual(["PATCH /songs/song-1", "GET /songs"]);
+  const [url, options] = apiFetch.mock.calls.find(([, init]) => init?.method === "PATCH");
+  expect(url).toBe(API_PATHS.song(SONG_ID));
+  expect(options.headers).toEqual({ "Content-Type": "application/json" });
+  expect(patchBody()).toEqual({ title: "새 제목" });
+  expect(calls).not.toContain("GET /scores");
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-305
+it("곡 파일만 바꾸면 곡 서명·업로드·PATCH 순서로 file_uri 만 보내야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "은혜",
+    file: IMAGE(),
+    currentTitle: "은혜",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls.slice(0, 3)).toEqual([
+    "POST /songs/song-1/file",
+    `PUT ${SIGNED.upload_url}`,
+    "PATCH /songs/song-1",
+  ]);
+  const [signUrl, signOptions] = apiFetch.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(signUrl).toBe(API_PATHS.songFile(SONG_ID));
+  expect(JSON.parse(signOptions.body)).toEqual({
+    filename: "rescan.png",
+    content_type: "image/png",
+  });
+  // A same title must not ride along: it says nothing changed about the name.
+  expect(patchBody()).toEqual({ file_uri: SIGNED.s3_key });
+  expect(calls).not.toContain("GET /scores");
+  expect(calls.some((call) => call.includes("/scores/"))).toBe(false);
+});
+
+// AC-306
+it("곡 파일과 제목을 함께 바꾸면 PATCH 에 title 과 file_uri 를 함께 실어야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual([
+    "POST /songs/song-1/file",
+    `PUT ${SIGNED.upload_url}`,
+    "PATCH /songs/song-1",
+    "GET /songs",
+  ]);
+  expect(patchBody()).toEqual({ title: "새 제목", file_uri: SIGNED.s3_key });
+});
+
+// AC-307
+it("곡 파일의 S3 업로드가 실패하면 곡 PATCH 를 보내지 않고 실패 문구를 돌려줘야 한다", async () => {
+  // Arrange — the bucket refuses the PUT; the song must keep its current file.
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+  globalThis.fetch = vi.fn(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    return { ok: false, json: async () => ({}) };
+  });
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "S3 업로드에 실패했습니다." });
+  expect(calls).toEqual(["POST /songs/song-1/file", `PUT ${SIGNED.upload_url}`]);
+  await waitFor(() => expect(result.current.error).toBe("S3 업로드에 실패했습니다."));
+  expect(result.current.isUpdating).toBe(false);
+});
+
+// AC-307
+it("곡 파일 서명이 실패하면 업로드도 PATCH 도 하지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(async (url, options = {}) => {
+    trace(options.method ?? "GET", url);
+    if (String(url).endsWith("/file")) return { ok: false, json: async () => ({}) };
+    return ok({});
+  });
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(calls).toEqual(["POST /songs/song-1/file"]);
+  expect(outcome).toEqual({ ok: false, message: "업로드 주소를 받지 못했습니다." });
+});
+
+// AC-308
+it("곡 PATCH 가 제목 충돌 409 면 서버 detail 을 메시지로 돌려줘야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongEdit({
+      patch: async () => ({
+        ok: false,
+        status: 409,
+        json: async () => ({ detail: "같은 제목의 곡이 이미 있습니다." }),
+      }),
+    })
+  );
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "겹치는 제목",
+    file: null,
+    currentTitle: "옛 제목",
+  });
+
+  // Assert — nothing was saved, so nothing is re-read
+  expect(outcome).toEqual({ ok: false, message: "같은 제목의 곡이 이미 있습니다." });
+  expect(calls).toEqual(["PATCH /songs/song-1"]);
+  await waitFor(() => expect(result.current.error).toBe("같은 제목의 곡이 이미 있습니다."));
+});
+
+it("곡 PATCH 가 detail 없이 실패하면 곡 수정 실패 문구를 돌려줘야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongEdit({ patch: async () => ({ ok: false, status: 500, json: async () => ({}) }) })
+  );
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "곡 수정에 실패했습니다." });
+});
+
+// AC-309
+it("곡 수정이 되면 다시 불러온 보관함 목록으로 librarySongs 를 바꿔야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  expect(result.current.librarySongs).toEqual([]);
+  apiFetch.mockImplementation(apiFetchSongEdit({ library: RENAMED }));
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "새 제목",
+    file: null,
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(result.current.librarySongs).toEqual(RENAMED);
+  expect(result.current.isUpdating).toBe(false);
+});
+
+// AC-310
+it("곡 제목이 255자를 넘으면 아무 요청도 보내지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "가".repeat(256),
+    file: IMAGE(),
+    currentTitle: "옛 제목",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "제목은 255자 이내로 입력해주세요." });
+  expect(calls).toEqual([]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-310 — the boundary itself is allowed: the column is varchar(255)
+it("곡 제목이 정확히 255자면 PATCH 를 보내야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+  const title = "가".repeat(255);
+
+  // Act
+  const outcome = await updateSongWith(result, { songId: SONG_ID, title, currentTitle: "옛 제목" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(patchBody()).toEqual({ title });
+});
+
+it("currentTitle 을 주지 않으면 제목을 바뀐 것으로 보고 PATCH 에 실어야 한다", async () => {
+  // Arrange — 3-2 step 3: an unknown original counts as a change
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual(["PATCH /songs/song-1", "GET /songs"]);
+  expect(patchBody()).toEqual({ title: "은혜" });
+});
+
+it("제목이 그대로고 파일도 없으면 요청 없이 ok 를 돌려줘야 한다", async () => {
+  // Arrange — the server answers an empty PATCH body with 422
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongEdit());
+
+  // Act
+  const outcome = await updateSongWith(result, {
+    songId: SONG_ID,
+    title: "은혜",
+    file: null,
+    currentTitle: "은혜",
+  });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(calls).toEqual([]);
+});
+
+it("곡 수정 중에는 isUpdating 이 참이고 끝나면 거짓이어야 한다", async () => {
+  // Arrange — the PATCH is held open until the test lets it go
+  const result = await mountedHook();
+  let release;
+  const gate = new Promise((settle) => {
+    release = settle;
+  });
+  apiFetch.mockImplementation(
+    apiFetchSongEdit({
+      patch: async () => {
+        await gate;
+        return ok(RENAMED[0]);
+      },
+    })
+  );
+
+  // Act
+  let running;
+  act(() => {
+    running = result.current.updateSong({
+      songId: SONG_ID,
+      title: "새 제목",
+      currentTitle: "옛 제목",
+    });
+  });
+
+  // Assert
+  await waitFor(() => expect(result.current.isUpdating).toBe(true));
+  await act(async () => {
+    release();
+    await running;
+  });
+  expect(result.current.isUpdating).toBe(false);
+});
+
+it("주차 악보 파일 교체는 곡 서명이 아니라 악보 서명 경로를 계속 써야 한다", async () => {
+  // Arrange — uploadReplacementFile now takes the signing path; updateScore
+  // must keep handing it the score's one.
+  const result = await mountedHook();
+
+  // Act
+  await act(async () => {
+    await result.current.updateScore({ scoreId: "score-1", title: "은혜", file: IMAGE() });
+  });
+
+  // Assert
+  const [signUrl] = apiFetch.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(signUrl).toBe(API_PATHS.scoreFile("score-1"));
+  expect(calls).not.toContain("GET /songs");
+});
+
+// --- deleteSong: the library card's delete ---------------------------------
+
+const DELETE_CONFIRM = "「은혜」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다.";
+const KEPT_SONG = { song_id: "song-2", title: "평안", file_url: "f2", use_count: 0 };
+// The week the deleted song was on, as GET /scores answers once it is gone.
+const ORPHANED_WEEK = { id: "score-1", song_id: null, title: "은혜", week_of: "2026-11-22" };
+
+/** apiFetch answering the song DELETE and the two re-reads after it. */
+function apiFetchSongDelete({
+  remove = async () => ({ ok: true, status: 204, json: async () => ({}) }),
+  library = [KEPT_SONG],
+  scores = [ORPHANED_WEEK],
+} = {}) {
+  return async (url, options = {}) => {
+    const method = options.method ?? "GET";
+    trace(method, url);
+    if (method === "DELETE") return remove();
+    if (String(url).endsWith("/songs") && method === "GET") return ok(library);
+    if (isScoreListRequest(url, options)) return ok(scores);
+    return ok([]);
+  };
+}
+
+async function deleteSongWith(result, args) {
+  let outcome;
+  await act(async () => {
+    outcome = await result.current.deleteSong(args);
+  });
+  return outcome;
+}
+
+// AC-18
+it("곡 삭제를 취소하면 확인 문구를 한 번 띄우고 아무 요청도 보내지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongDelete());
+  apiFetch.mockClear();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  confirm.mockClear();
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(confirm).toHaveBeenCalledWith(DELETE_CONFIRM);
+  expect(apiFetch).not.toHaveBeenCalled();
+  expect(calls).toEqual([]);
+  expect(outcome).toEqual({ ok: false, cancelled: true });
+});
+
+// AC-18: the confirm names the song it was asked about.
+it("곡 삭제 확인 문구에는 넘겨받은 제목이 들어가야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  confirm.mockClear();
+
+  // Act
+  await deleteSongWith(result, { songId: "song-9", title: "주의 사랑" });
+
+  // Assert
+  expect(confirm).toHaveBeenCalledWith(
+    "「주의 사랑」을 보관함에서 삭제할까요? 이미 배치된 주차에는 그대로 남습니다."
+  );
+});
+
+// AC-19
+it("곡 삭제를 확인하면 곡 DELETE 뒤 보관함과 악보 목록을 다시 불러 바꿔야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(apiFetchSongDelete());
+  apiFetch.mockClear();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  confirm.mockClear();
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: true });
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(calls[0]).toBe("DELETE /songs/song-1");
+  expect([...calls.slice(1)].sort()).toEqual(["GET /scores", "GET /songs"]);
+  const [url, options] = apiFetch.mock.calls.find(([, init]) => init?.method === "DELETE");
+  expect(url).toBe(API_PATHS.song(SONG_ID));
+  expect(options.method).toBe("DELETE");
+  expect(result.current.librarySongs).toEqual([KEPT_SONG]);
+  expect(result.current.scores).toEqual([ORPHANED_WEEK]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+// AC-20
+it("곡 DELETE 가 404 면 서버 detail 을 오류와 메시지로 올리고 아무것도 다시 부르지 않아야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongDelete({
+      remove: async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: "Song not found" }),
+      }),
+    })
+  );
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "Song not found" });
+  expect(calls).toEqual(["DELETE /songs/song-1"]);
+  await waitFor(() => expect(result.current.error).toBe("Song not found"));
+  expect(result.current.librarySongs).toEqual([]);
+});
+
+// AC-20
+it("곡 DELETE 가 detail 없이 실패하면 곡 삭제 실패 문구를 돌려줘야 한다", async () => {
+  // Arrange
+  const result = await mountedHook();
+  apiFetch.mockImplementation(
+    apiFetchSongDelete({ remove: async () => ({ ok: false, status: 500, json: async () => ({}) }) })
+  );
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  // Act
+  const outcome = await deleteSongWith(result, { songId: SONG_ID, title: "은혜" });
+
+  // Assert
+  expect(outcome).toEqual({ ok: false, message: "곡 삭제에 실패했습니다." });
+  expect(calls).toEqual(["DELETE /songs/song-1"]);
+  await waitFor(() => expect(result.current.error).toBe("곡 삭제에 실패했습니다."));
+});

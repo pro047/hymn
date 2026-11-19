@@ -8,8 +8,8 @@ week's use of it. The properties fixed here are the ones the design bought:
   is not cosmetic: with 44% of weekly uploads hitting an existing title, a
   same-titled upload that updated the file would rewrite every past week about
   twice a week.
-- A PATCH is the only way to change the file/title, and it changes every week
-  (D3/D8) — that is the "reupload fixes only one week" bug this split closes.
+- PATCH /scores/{id} changes that one week's copy of the title/file and
+  nothing else; the library song and the other weeks keep theirs (week-copy).
 - GET /scores keeps its Flutter contract: row-per-usage, created_at ascending,
   the original 8 keys, plus song_id and nothing else removed (D7).
 """
@@ -148,10 +148,10 @@ def test_the_same_song_in_the_same_week_should_return_409(client, db_session):
     assert len(_songs(db_session)) == 1
 
 
-# --- case 3: file replacement propagates to every week (D3) ------------------
+# --- case 3: a file replacement changes only that week (week-copy) -----------
 
 
-def test_replacing_the_file_should_show_on_every_week(client, db_session):
+def test_replacing_the_file_should_change_only_that_week(client, db_session):
     # Arrange
     headers = _register(client)
     usage1 = _post_score(client, headers, title="은혜", week=_week(0)).json()["score_id"]
@@ -163,52 +163,58 @@ def test_replacing_the_file_should_show_on_every_week(client, db_session):
     # Act
     patched = client.patch(f"/scores/{usage1}", json={"file_uri": new_key}, headers=headers)
 
-    # Assert — both weeks now serve the new file
+    # Assert — the patched week serves the new file
     assert patched.status_code == 200, patched.text
     listed = {item["id"]: item for item in client.get("/scores", headers=headers).json()}
     assert listed[usage1]["file_uri"] == new_key
-    assert listed[usage2]["file_uri"] == new_key
-    assert listed[usage2]["file_url"].startswith("http")
-    assert listed[usage2]["file_url"].endswith(new_key)
-    assert new_key in listed[usage2]["download_url"]
-    # The other week's *snapshot* stays what was actually filed then: the
-    # canonical value moved to songs, the history did not get rewritten.
+    assert listed[usage1]["file_url"].startswith("http")
+    assert listed[usage1]["file_url"].endswith(new_key)
+    assert new_key in listed[usage1]["download_url"]
+    # Assert — the other week keeps the file it was filed with
+    assert listed[usage2]["file_uri"] == snapshot_before
+    assert listed[usage2]["file_url"].endswith(snapshot_before)
+    assert snapshot_before in listed[usage2]["download_url"]
+    assert new_key not in listed[usage2]["download_url"]
     db_session.expire_all()
     assert db_session.get(Score, usage2).file_uri == snapshot_before
 
 
-# --- case 4: rename propagates, collision is 409 (D8) ------------------------
+# --- case 4: a rename changes only that week, no collision check (week-copy) --
 
 
-def test_renaming_should_change_the_title_of_every_week(client):
+def test_renaming_should_change_only_that_week(client):
     # Arrange
     headers = _register(client)
     usage1 = _post_score(client, headers, title="옛 제목", week=_week(0)).json()["score_id"]
-    _post_score(client, headers, title="옛 제목", week=_week(1))
+    usage2 = _post_score(client, headers, title="옛 제목", week=_week(1)).json()["score_id"]
 
     # Act
     patched = client.patch(f"/scores/{usage1}", json={"title": "새 제목"}, headers=headers)
 
     # Assert
     assert patched.status_code == 200, patched.text
-    titles = [item["title"] for item in client.get("/scores", headers=headers).json()]
-    assert titles == ["새 제목", "새 제목"]
+    titles = {item["id"]: item["title"] for item in client.get("/scores", headers=headers).json()}
+    assert titles == {usage1: "새 제목", usage2: "옛 제목"}
 
 
-def test_renaming_onto_an_existing_song_should_return_409(client):
+def test_renaming_onto_another_songs_title_should_change_only_that_week(client, db_session):
+    """A week's title is that week's copy, so another song already owning the
+    title is no collision: the songs table is not written at all."""
     # Arrange
     headers = _register(client)
     usage = _post_score(client, headers, title="가나다", week=_week(0)).json()["score_id"]
-    _post_score(client, headers, title="라마바", week=_week(0))
+    other = _post_score(client, headers, title="라마바", week=_week(0)).json()["score_id"]
 
     # Act
     response = client.patch(f"/scores/{usage}", json={"title": "라마바"}, headers=headers)
 
-    # Assert — refused in Korean, and the title did not move
-    assert response.status_code == 409, response.text
-    assert "같은 제목" in response.text
+    # Assert — accepted, only this week's title moved, both songs untouched
+    assert response.status_code == 200, response.text
+    assert response.json()["title"] == "라마바"
     titles = {item["id"]: item["title"] for item in client.get("/scores", headers=headers).json()}
-    assert titles[usage] == "가나다"
+    assert titles == {usage: "라마바", other: "라마바"}
+    db_session.expire_all()
+    assert sorted(song.title for song in _songs(db_session)) == ["가나다", "라마바"]
 
 
 def test_renaming_to_a_spacing_variant_of_itself_should_be_accepted(client, db_session):
@@ -334,16 +340,17 @@ def test_get_scores_should_keep_the_flutter_contract(client, monkeypatch):
     assert library_song not in {item["song_id"] for item in items}
 
 
-def test_get_one_score_should_serve_the_songs_file_not_the_snapshot(client, db_session):
+def test_get_one_score_should_serve_that_weeks_own_copy(client, db_session):
     """GET /scores/{id} builds its answer separately from the list route, so
-    the list serving canonical values does not prove the single route does.
-    After a file replacement, the *other* week's snapshot still holds the old
-    key — only reading through the song can answer with the new one."""
+    the list serving the week's copy does not prove the single route does.
+    After another week replaced its file, this week still answers with the
+    file it was filed with."""
     # Arrange
     headers = _register(client)
     usage1 = _post_score(client, headers, title="은혜", week=_week(0)).json()["score_id"]
     usage2 = _post_score(client, headers, title="은혜", week=_week(1)).json()["score_id"]
     church_id = db_session.get(Score, usage1).church_id
+    old_key = db_session.get(Score, usage2).file_uri
     new_key = f"scores/{church_id}/replacement.png"
     patched = client.patch(f"/scores/{usage1}", json={"file_uri": new_key}, headers=headers)
     assert patched.status_code == 200, patched.text
@@ -351,13 +358,15 @@ def test_get_one_score_should_serve_the_songs_file_not_the_snapshot(client, db_s
     # Act
     response = client.get(f"/scores/{usage2}", headers=headers)
 
-    # Assert — same key set as the list, and the song's file, not the snapshot
+    # Assert — same key set as the list, and this week's copy, not the other week's file
     assert response.status_code == 200, response.text
     body = response.json()
     assert set(body.keys()) >= CONTRACT_KEYS, body.keys()
     assert body["song_id"] is not None
-    assert body["file_uri"] == new_key
-    assert body["file_url"].endswith(new_key)
+    assert body["file_uri"] == old_key
+    assert body["file_url"].endswith(old_key)
+    assert old_key in body["download_url"]
+    assert new_key not in body["download_url"]
 
 
 # --- case 8 / 8-a: the library path ------------------------------------------
@@ -398,15 +407,15 @@ def test_reuploading_a_library_song_should_return_409(client, db_session):
     assert len(_songs(db_session)) == 1
 
 
-def test_the_library_should_follow_the_song_after_a_rename_or_file_swap(client, db_session):
-    """The library lists what the user would file *next*, so it reads the song —
-    unlike the per-week snapshots that test_replacing_the_file_should_show_on_
-    every_week deliberately freezes as history. Reading score.title/file_uri
-    here left the two tabs disagreeing after a PATCH on any other week, and the
-    superseded S3 key still resolves, so nothing surfaced the drift."""
+def test_the_library_should_not_follow_a_weeks_rename_or_file_swap(client, db_session):
+    """The library lists what the user would file *next*, so it reads the song,
+    and PATCH /scores/{id} only rewrites that one week's copy. A week's fix must
+    not reach back into the library and, through it, every later placement."""
     # Arrange — one library song, plus a week's usage of it
     headers = _register(client)
-    library_id = _upload_saved(client, headers, title="보관곡").json()["song_id"]
+    uploaded = _upload_saved(client, headers, title="보관곡").json()
+    library_id = uploaded["song_id"]
+    original_key = uploaded["s3_key"]
     usage_id = _post_score(client, headers, title="보관곡", week=_week(0)).json()["score_id"]
     church_id = db_session.get(Score, usage_id).church_id
     new_key = f"scores/{church_id}/renamed.png"
@@ -419,14 +428,18 @@ def test_the_library_should_follow_the_song_after_a_rename_or_file_swap(client, 
     )
     assert patched.status_code == 200, patched.text
 
-    # Assert
+    # Assert — the library still shows the song as uploaded
     listed = client.get("/songs", headers=headers)
     assert listed.status_code == 200, listed.text
     items = {item["song_id"]: item for item in listed.json()}
-    assert items[library_id]["title"] == "새 보관곡"
-    assert items[library_id]["file_uri"] == new_key
-    assert items[library_id]["file_url"].endswith(new_key)
-    assert new_key in items[library_id]["download_url"]
+    assert items[library_id]["title"] == "보관곡"
+    assert items[library_id]["file_uri"] == original_key
+    assert items[library_id]["file_url"].endswith(original_key)
+    assert original_key in items[library_id]["download_url"]
+    assert new_key not in items[library_id]["download_url"]
+    # Assert — while the week itself took both changes
+    week = {item["id"]: item for item in client.get("/scores", headers=headers).json()}[usage_id]
+    assert (week["title"], week["file_uri"]) == ("새 보관곡", new_key)
 
 
 # --- case 9 / 9-a: title normalization (D4) ----------------------------------

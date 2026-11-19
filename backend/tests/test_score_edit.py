@@ -403,7 +403,7 @@ def test_reopening_after_another_week_replaced_the_file_should_keep_the_drawn_sh
     drawn_on = client.get(f"/scores/{edited_id}", headers=leader).json()["file_uri"]
     _save_edit(client, leader, edited_id)
 
-    # Act — the *other* week swaps the song's file.
+    # Act — the *other* week swaps its own file.
     replacement = client.post(
         f"/scores/{other_id}/file",
         json={"filename": "rescan.png", "content_type": "image/png"},
@@ -416,7 +416,9 @@ def test_reopening_after_another_week_replaced_the_file_should_keep_the_drawn_sh
 
     # Assert
     db_session.expire_all()
-    assert db_session.get(Score, edited_id).song.file_uri == replacement
+    # The song keeps its file; only the week that asked holds the replacement.
+    assert db_session.get(Score, edited_id).song.file_uri == drawn_on
+    assert db_session.get(Score, other_id).file_uri == replacement
     body = client.get(f"/scores/{edited_id}/edit", headers=leader).json()
     assert drawn_on in body["source_image_url"]
     assert replacement not in body["source_image_url"]

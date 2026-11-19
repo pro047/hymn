@@ -37,6 +37,7 @@ export default function HomePage({ headerActions = null, canManage = false }) {
     sessionKey: 0,
   });
   const [editingScore, setEditingScore] = useState(null);
+  const [editingSong, setEditingSong] = useState(null);
 
   const {
     scores,
@@ -46,8 +47,12 @@ export default function HomePage({ headerActions = null, canManage = false }) {
     isUploading,
     isUpdating,
     isPlacingSong,
+    isReordering,
+    reorderWeek,
     uploadSong,
     updateScore,
+    updateSong,
+    deleteSong,
     deleteScore,
     placeSongOnWeek,
   } = useScores({ canManage });
@@ -149,10 +154,14 @@ export default function HomePage({ headerActions = null, canManage = false }) {
               onUpdate={setEditingScore}
               onDelete={deleteScore}
               canManage={canManage}
+              onReorder={(scoreIds) => reorderWeek({ weekOf: upcomingSundayWeekOf, scoreIds })}
+              isReordering={isReordering}
             />
           ) : (
             <SavedScoresCard
               scores={librarySongs}
+              onEditRequest={setEditingSong}
+              onDeleteRequest={(song) => deleteSong({ songId: song.song_id, title: song.title })}
               onApplyRequest={(score) => openUploadDialog({ mode: "library", savedScore: score })}
               onQuickUpload={(file) =>
                 openUploadDialog({
@@ -179,6 +188,32 @@ export default function HomePage({ headerActions = null, canManage = false }) {
             score={editingScore}
             onClose={() => setEditingScore(null)}
             onSubmit={updateScore}
+            loading={isUpdating}
+          />
+
+          {/* The dialog reads `score.id`, and a library song's id is `song_id`,
+              so the song is mapped to that shape; submit uses song_id directly.
+              The `song:` key prefix keeps it apart from the week dialog's key. */}
+          <ScoreEditDialog
+            key={editingSong ? `song:${editingSong.song_id}` : "song:none"}
+            open={Boolean(editingSong)}
+            score={
+              editingSong && {
+                id: editingSong.song_id,
+                title: editingSong.title,
+                download_url: editingSong.download_url,
+                file_url: editingSong.file_url,
+              }
+            }
+            onClose={() => setEditingSong(null)}
+            onSubmit={({ title, file }) =>
+              updateSong({
+                songId: editingSong.song_id,
+                title,
+                file,
+                currentTitle: editingSong.title,
+              })
+            }
             loading={isUpdating}
           />
 
